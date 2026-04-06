@@ -1,0 +1,27 @@
+[
+  { "comment": "1. Grobreinigung der Loops", "pattern": "(.+?)(?:\\s+\\1){2,}", "replacement": "\\1" },
+  { "pattern": "(?i)\\b(?:also also|ich ich|das das|und und|das ist das|das war das|das ist es)\\b", "replacement": "" },
+
+  { "comment": "2. Extraktion von System-Artefakten", "pattern": "(?i)(?:untertitel.*?(?:zdf|wdr|stephanie geiges|amara\\.org).*?\\.?|das war's für heute.*?nächsten mal\\.?|vielen dank fürs zuschauen.*?nächsten mal\\.?|danke fürs zuschauen|thanks for watching|\\$\\$(?:unverständlich|inaudible)\\$\\$)", "replacement": "" },
+
+  { "comment": "3. Denglisch-Mapping (Phonetik-basiert)", "pattern": "(?i)\\bWi[sz]{1,2}pa[rh]?\\b", "replacement": "Whisper" },
+  { "pattern": "(?i)\\bDieb\\s+Sie[gk]\\b", "replacement": "DeepSeek" },
+  { "pattern": "(?i)\\b[Jj][-\\s]?ohn\\b", "replacement": "JSON" },
+  { "pattern": "(?i)\\bTen[sz]er\\s?Floh\\b", "replacement": "TensorFlow" },
+  { "pattern": "(?i)\\bO[h]?\\s?Lama\\b", "replacement": "Ollama" },
+  { "pattern": "(?i)\\b(?:zerberus|cerberus)\\b", "replacement": "Zerberus" },
+  { "pattern": "(?i)\\bkotb(?:lock|log)\\b", "replacement": "Codeblock" },
+  { "pattern": "(?i)\\bfedritz\\b", "replacement": "Fedirz" },
+
+  { "comment": "4. Non-lexikalische Noise-Eliminierung", "pattern": "(?i)\\b(?:äh|ähm|öhm|ehm|err|uh|um|mmh|hmm|pff|ts|brrr|übrigens|i mean|you know|kind of|sort of)\\b", "replacement": "" },
+
+  { "comment": "5. Interpunktions-Fixing & Nummern-Korrektur", "pattern": "\\s+([.,;:!?])", "replacement": "\\1" },
+  { "pattern": "(?i)\\s*,?\\s*ne\\s*([!?.])", "replacement": "\\1" },
+  { "pattern": "(?:\\$\\s*\\d+|\\$\\d+)+", "replacement": "" },
+  { "pattern": "(?i)zwanzig vierundzwanzig", "replacement": "2024" },
+
+  { "comment": "6. Whitespace-Management", "pattern": "\\s{2,}", "replacement": " " },
+  { "pattern": "^\\s+|\\s+$", "replacement": "" },
+
+  { "comment": "7. Trailing Space Logik (Garantiert ein Leerzeichen am Ende)", "pattern": "([^ ])$", "replacement": "\\1 " }
+]

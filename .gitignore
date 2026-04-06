@@ -1,0 +1,27 @@
+# Echte Konfiguration (enthält Passwort-Hashes und lokale Pfade)
+config.yaml
+
+# Secrets & Zertifikate
+*.key
+*.crt
+.env
+
+# Datenbank
+bunker_memory.db
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+logs/
+*.log
+
+# FAISS Vektoren (werden lokal neu gebaut)
+data/vectors/
+
+# IDE
+.vscode/
+.idea/

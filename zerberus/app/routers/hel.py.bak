@@ -1,0 +1,646 @@
+"""
+Hel Router – Admin-Dashboard und Konfiguration.
+"""
+import logging
+import json
+import secrets
+import os
+import tempfile
+from pathlib import Path
+from fastapi import APIRouter, Request, HTTPException, Depends, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, JSONResponse
+import httpx
+
+from zerberus.core.config import get_settings
+from zerberus.core.database import get_all_sessions, get_session_messages, get_latest_metrics, get_metrics_summary, get_message_costs
+from zerberus.core.config import get_settings, Settings
+from zerberus.core.cleaner import clean_transcript
+from zerberus.core.dialect import detect_dialect_marker, apply_dialect
+from zerberus.core.llm import LLMService
+
+logger = logging.getLogger(__name__)
+
+security = HTTPBasic()
+
+def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    """Prüft Admin-Credentials über HTTP Basic Auth."""
+    correct_username = os.getenv("ADMIN_USER", "admin")
+    correct_password = os.getenv("ADMIN_PASSWORD", "admin")
+    if correct_username == "admin" and correct_password == "admin":
+        print("⚠️  WARNUNG: Admin-Zugang mit Standard-Credentials (admin/admin) aktiv! Bitte in .env ändern.")
+    is_correct_username = secrets.compare_digest(credentials.username, correct_username)
+    is_correct_password = secrets.compare_digest(credentials.password, correct_password)
+    if not (is_correct_username and is_correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+
+
+# ========== DEBUG‑ENDKNOTEN ==========
+@router.get("/debug/trace/{session_id}")
+async def debug_trace(session_id: str, request: Request):
+    """Zeigt detaillierte Trace‑Info für eine Session."""
+    from zerberus.core.database import get_session_messages
+    from zerberus.core.config import get_settings
+    import json as jsonlib
+
+    messages = await get_session_messages(session_id)
+    if not messages:
+        raise HTTPException(404, "Session nicht gefunden")
+
+    # Zusätzlich: letzte LLM‑Prompt aus dem Cost‑Table? (nicht direkt)
+    # Wir holen die letzte Assistant‑Nachricht und deren Metadaten
+    last_assistant = None
+    for m in reversed(messages):
+        if m["role"] == "assistant":
+            last_assistant = m
+            break
+
+    # Aktive Konfiguration (aus get_settings und config.json)
+    settings = get_settings()
+    config_json = {}
+    config_json_path = Path("config.json")
+    if config_json_path.exists():
+        with open(config_json_path, "r") as f:
+            config_json = jsonlib.load(f)
+
+    return {
+        "session_id": session_id,
+        "message_count": len(messages),
+        "last_assistant": last_assistant,
+        "config": {
+            "from_yaml": {
+                "cloud_model": settings.legacy.models.cloud_model,
+                "temperature": settings.legacy.settings.ai_temperature,
+                "threshold": settings.legacy.settings.threshold_length,
+            },
+            "from_json": config_json.get("llm", {}),
+        },
+        "active_modules": ["emotional", "nudge", "preparer", "rag"],  # später dynamisch
+    }
+
+@router.get("/debug/state")
+async def debug_state():
+    """Zeigt System‑Zustand: FAISS‑Status, Sessions, Config‑Hash, Modul‑Health."""
+    from zerberus.core.database import _async_session_maker
+    from sqlalchemy import text
+    import hashlib
+
+    # FAISS‑Status prüfen
+    faiss_ok = False
+    try:
+        import faiss
+        # Prüfe, ob Index geladen (später)
+        faiss_ok = True
+    except ImportError:
+        faiss_ok = False
+
+    # Session‑Anzahl
+    session_count = 0
+    async with _async_session_maker() as session:
+        result = await session.execute(text("SELECT COUNT(DISTINCT session_id) FROM interactions"))
+        session_count = result.scalar() or 0
+
+    # Config‑Hash
+    config_hash = None
+    config_path = Path("config.json")
+    if config_path.exists():
+        with open(config_path, "rb") as f:
+            config_hash = hashlib.sha256(f.read()).hexdigest()[:8]
+
+    return {
+        "faiss_available": faiss_ok,
+        "active_sessions": session_count,
+        "config_hash": config_hash,
+        "modules": {
+            "emotional": {"enabled": True, "last_ok": None},
+            "nudge": {"enabled": True, "last_ok": None},
+            "preparer": {"enabled": True, "last_ok": None},
+            "rag": {"enabled": True, "last_ok": None},
+        }
+    }
+
+
+router = APIRouter(prefix="/hel", tags=["Hel"], dependencies=[Depends(verify_admin)])
+
+# Konfigurationsdateien im Projekt-Root
+WHISPER_CLEANER_PATH = Path("whisper_cleaner.json")
+DIALECT_PATH = Path("dialect.json")
+CONFIG_PATH = Path("config.json")
+SYSTEM_PROMPT_PATH = Path("system_prompt.json")
+
+# HTML-Template mit HTML-Entities für Emojis
+ADMIN_HTML = """<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>&#9889; Hel – Zerberus Admin</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+        .tabs { display: flex; gap: 5px; margin: 20px 0; flex-wrap: wrap; }
+        .tab-btn {
+            background: #333;
+            border: none;
+            color: #ccc;
+            padding: 12px 24px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: 0.2s;
+        }
+        .tab-btn.active { background: #ff6b6b; color: #1a1a1a; font-weight: bold; }
+        .tab-content { display: none; background: #2d2d2d; border-radius: 15px; padding: 25px; }
+        .tab-content.active { display: block; }
+        .card { background: #3d3d3d; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+        label { display: block; margin: 15px 0 5px; color: #ffa5a5; }
+        select, textarea, input {
+            width: 100%;
+            padding: 12px;
+            background: #3d3d3d;
+            border: 1px solid #555;
+            color: white;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+        button {
+            background: #ff6b6b;
+            color: black;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 30px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 10px;
+            font-size: 16px;
+        }
+        button:hover { background: #ff5252; }
+        .balance {
+            background: #252525;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 1.2em;
+            margin: 10px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #3d3d3d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #555; }
+        th { background: #4d4d4d; }
+        .session-item {
+            background: #3d3d3d;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+        }
+        .session-item:hover { background: #4d4d4d; }
+        #chart-container { height: 300px; margin-top: 20px; }
+        .slider-row { display: flex; align-items: center; gap: 15px; }
+        .slider-row input { flex: 1; }
+        .value-display { min-width: 50px; text-align: center; background: #252525; padding: 8px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>&#9889; Hel – Admin-Konsole</h1>
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('llm')">LLM & Guthaben</button>
+            <button class="tab-btn" onclick="switchTab('cleaner')">Whisper-Cleaner</button>
+            <button class="tab-btn" onclick="switchTab('dialect')">Dialekte</button>
+            <button class="tab-btn" onclick="switchTab('system')">System-Prompt</button>
+            <button class="tab-btn" onclick="switchTab('metrics')">Metriken</button>
+        </div>
+
+        <!-- Tab LLM -->
+        <div id="tab-llm" class="tab-content active">
+            <div class="card">
+                <h2>OpenRouter Modell & Guthaben</h2>
+                <label>Modell auswählen:</label>
+                <select id="modelSelect" onchange="changeModel()"></select>
+                <div class="balance" id="balanceDisplay">Guthaben wird geladen...</div>
+            </div>
+            <div class="card">
+                <h2>LLM-Parameter</h2>
+                <label>Temperatur (0–2):</label>
+                <div class="slider-row">
+                    <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7">
+                    <span class="value-display" id="tempValue">0.7</span>
+                </div>
+                <label>Threshold (Wörter für Cloud):</label>
+                <div class="slider-row">
+                    <input type="range" id="threshold" min="1" max="100" step="1" value="10">
+                    <span class="value-display" id="threshValue">10</span>
+                </div>
+                <button onclick="saveLLMConfig()">Einstellungen speichern</button>
+                <div id="llmStatus"></div>
+            </div>
+        </div>
+
+        <!-- Tab Cleaner -->
+        <div id="tab-cleaner" class="tab-content">
+            <div class="card">
+                <h2>Whisper-Cleaner JSON bearbeiten</h2>
+                <textarea id="cleanerEditor" rows="20" style="font-family: monospace;"></textarea>
+                <button onclick="saveCleaner()">Speichern</button>
+                <div id="cleanerStatus"></div>
+            </div>
+        </div>
+
+        <!-- Tab Dialekt -->
+        <div id="tab-dialect" class="tab-content">
+            <div class="card">
+                <h2>Dialekt-JSON bearbeiten</h2>
+                <textarea id="dialectEditor" rows="20" style="font-family: monospace;"></textarea>
+                <button onclick="saveDialect()">Speichern</button>
+                <div id="dialectStatus"></div>
+            </div>
+        </div>
+
+        <!-- Tab System-Prompt -->
+        <div id="tab-system" class="tab-content">
+            <div class="card">
+                <h2>System-Prompt (für alle Chats)</h2>
+                <textarea id="systemPromptEditor" rows="8" style="width:100%; font-family: monospace;"></textarea>
+                <button onclick="saveSystemPrompt()">Speichern</button>
+                <div id="systemPromptStatus"></div>
+            </div>
+        </div>
+
+        <!-- Tab Metriken -->
+        <div id="tab-metrics" class="tab-content">
+            <div class="card">
+                <h2>Letzte Nachrichten</h2>
+                <table id="messagesTable">
+                    <thead><tr><th>Zeit</th><th>Rolle</th><th>Inhalt</th><th>Wörter</th><th>Sentiment</th><th>Kosten (USD)</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="card">
+                <h2>Sentiment-Verlauf</h2>
+                <div id="chart-container"><canvas id="sentimentChart"></canvas></div>
+            </div>
+            <div class="card">
+                <h2>Gespeicherte Sessions</h2>
+                <div id="sessionList"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentModel = '';
+        let chart;
+
+        function switchTab(name) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector(`.tab-btn[onclick*="${name}"]`).classList.add('active');
+            document.getElementById(`tab-${name}`).classList.add('active');
+            if (name === 'metrics') loadMetrics();
+            if (name === 'system') loadSystemPrompt();
+        }
+
+        async function loadModelsAndBalance() {
+            try {
+                const [modelsRes, balanceRes] = await Promise.all([
+                    fetch('/hel/admin/models'),
+                    fetch('/hel/admin/balance')
+                ]);
+                const models = await modelsRes.json();
+                const balance = await balanceRes.json();
+                const select = document.getElementById('modelSelect');
+                select.innerHTML = '';
+                models.forEach(m => {
+                    const option = document.createElement('option');
+                    option.value = m.id;
+                    option.textContent = `${m.name} (${m.pricing?.prompt?.toFixed(6) ?? '?'} $/1k)`;
+                    select.appendChild(option);
+                });
+                const configRes = await fetch('/hel/admin/config');
+                const config = await configRes.json();
+                currentModel = config.llm?.cloud_model || '';
+                if (currentModel && select.querySelector(`option[value="${currentModel}"]`)) {
+                    select.value = currentModel;
+                }
+                document.getElementById('balanceDisplay').innerText =
+                    `Guthaben: ${balance.data?.credits ?? '?'} USD`;
+
+                // Temperatur und Threshold aus config laden
+                const tempSlider = document.getElementById('temperature');
+                const threshSlider = document.getElementById('threshold');
+                tempSlider.value = config.llm?.temperature ?? 0.7;
+                threshSlider.value = config.llm?.threshold ?? 10;
+                document.getElementById('tempValue').innerText = tempSlider.value;
+                document.getElementById('threshValue').innerText = threshSlider.value;
+                tempSlider.oninput = () => document.getElementById('tempValue').innerText = tempSlider.value;
+                threshSlider.oninput = () => document.getElementById('threshValue').innerText = threshSlider.value;
+            } catch (e) {
+                document.getElementById('balanceDisplay').innerText = 'Fehler beim Laden';
+            }
+        }
+
+        async function changeModel() {
+            const model = document.getElementById('modelSelect').value;
+            await fetch('/hel/admin/config', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ llm: { cloud_model: model } })
+            });
+            alert('Modell gespeichert');
+        }
+
+        async function saveLLMConfig() {
+            const temp = parseFloat(document.getElementById('temperature').value);
+            const thresh = parseInt(document.getElementById('threshold').value);
+            const config = { llm: { temperature: temp, threshold: thresh } };
+            const res = await fetch('/hel/admin/config', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(config)
+            });
+            if (res.ok) document.getElementById('llmStatus').innerText = '✅ Einstellungen gespeichert';
+            else document.getElementById('llmStatus').innerText = '❌ Fehler';
+        }
+
+        async function loadCleaner() {
+            const res = await fetch('/hel/admin/whisper_cleaner');
+            const data = await res.json();
+            document.getElementById('cleanerEditor').value = JSON.stringify(data, null, 2);
+        }
+        async function saveCleaner() {
+            const raw = document.getElementById('cleanerEditor').value;
+            try { JSON.parse(raw); } catch (e) { alert('Ungültiges JSON'); return; }
+            const res = await fetch('/hel/admin/whisper_cleaner', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: raw
+            });
+            if (res.ok) document.getElementById('cleanerStatus').innerText = '✅ Gespeichert';
+            else document.getElementById('cleanerStatus').innerText = '❌ Fehler';
+        }
+
+        async function loadDialect() {
+            const res = await fetch('/hel/admin/dialect');
+            const data = await res.json();
+            document.getElementById('dialectEditor').value = JSON.stringify(data, null, 2);
+        }
+        async function saveDialect() {
+            const raw = document.getElementById('dialectEditor').value;
+            try { JSON.parse(raw); } catch (e) { alert('Ungültiges JSON'); return; }
+            const res = await fetch('/hel/admin/dialect', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: raw
+            });
+            if (res.ok) document.getElementById('dialectStatus').innerText = '✅ Gespeichert';
+            else document.getElementById('dialectStatus').innerText = '❌ Fehler';
+        }
+
+        async function loadSystemPrompt() {
+            const res = await fetch('/hel/admin/system_prompt');
+            const data = await res.json();
+            document.getElementById('systemPromptEditor').value = data.prompt || '';
+        }
+        async function saveSystemPrompt() {
+            const prompt = document.getElementById('systemPromptEditor').value;
+            const res = await fetch('/hel/admin/system_prompt', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ prompt: prompt })
+            });
+            const result = await res.json();
+            document.getElementById('systemPromptStatus').innerText = result.status === 'ok' ? '✅ Gespeichert' : '❌ Fehler';
+        }
+
+        async function deleteSession(sessionId) {
+            if (!confirm('Chat wirklich löschen?')) return;
+            const res = await fetch(`/hel/admin/session/${sessionId}`, { method: 'DELETE' });
+            if (res.ok) {
+                loadMetrics();
+                document.getElementById('systemPromptStatus').innerText = '✅ Session gelöscht';
+            } else {
+                document.getElementById('systemPromptStatus').innerText = '❌ Fehler beim Löschen';
+            }
+        }
+
+        async function loadMetrics() {
+            const res = await fetch('/hel/metrics/latest_with_costs?limit=20');
+            const data = await res.json();
+            const tbody = document.querySelector('#messagesTable tbody');
+            tbody.innerHTML = '';
+            const chartData = { labels: [], sentiments: [] };
+            data.forEach((msg, i) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${new Date(msg.timestamp).toLocaleString()}</td>
+                                  <td>${msg.role}</td>
+                                  <td>${msg.content.substring(0,50)}...</td>
+                                  <td>${msg.word_count ?? ''}</td>
+                                  <td>${msg.vader_compound ?? ''}</td>
+                                  <td>${msg.cost !== null ? msg.cost.toFixed(6) : ''}</td>`;
+                tbody.appendChild(tr);
+                if (msg.vader_compound !== null) {
+                    chartData.labels.push(i);
+                    chartData.sentiments.push(msg.vader_compound);
+                }
+            });
+            if (window.chart) window.chart.destroy();
+            const ctx = document.getElementById('sentimentChart').getContext('2d');
+            window.chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartData.labels,
+                    datasets: [{
+                        label: 'Sentiment',
+                        data: chartData.sentiments,
+                        borderColor: '#ff6b6b',
+                        backgroundColor: 'rgba(255,107,107,0.1)'
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+
+            const sessionsRes = await fetch('/hel/admin/sessions');
+            const sessions = await sessionsRes.json();
+            const sessionDiv = document.getElementById('sessionList');
+            sessionDiv.innerHTML = sessions.map(s => `
+                <div class="session-item" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="cursor: pointer;" onclick="exportSession('${s.session_id}')">${s.first_message || 'Neuer Chat'}</span>
+                    <span style="display: flex; gap: 10px;">
+                        <button onclick="exportSession('${s.session_id}')" style="background: #666; padding: 5px 10px;">&#128196;</button>
+                        <button onclick="deleteSession('${s.session_id}')" style="background: #ff6b6b; padding: 5px 10px;">&#128465;</button>
+                    </span>
+                    <span class="session-date">${new Date(s.created_at).toLocaleString()}</span>
+                </div>
+            `).join('');
+        }
+
+        async function exportSession(sessionId) {
+            window.location.href = `/hel/admin/export/session/${sessionId}`;
+        }
+
+        loadModelsAndBalance();
+        loadCleaner();
+        loadDialect();
+    </script>
+</body>
+</html>
+"""
+
+def load_json_or_empty(path):
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {} if path == DIALECT_PATH else []
+
+@router.get("/", response_class=HTMLResponse)
+async def hel_interface():
+    return ADMIN_HTML
+
+# Admin-Endpunkte
+@router.get("/admin/models")
+async def get_models():
+    async with httpx.AsyncClient() as client:
+        resp = await client.get("https://openrouter.ai/api/v1/models")
+        return resp.json()
+
+@router.get("/admin/balance")
+async def get_balance():
+    settings = get_settings()
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://openrouter.ai/api/v1/auth/key",
+            headers={"Authorization": f"Bearer {api_key}"}
+        )
+        return resp.json()
+
+@router.get("/admin/whisper_cleaner")
+async def get_whisper_cleaner():
+    return JSONResponse(content=load_json_or_empty(WHISPER_CLEANER_PATH))
+
+@router.post("/admin/whisper_cleaner")
+async def post_whisper_cleaner(request: Request):
+    data = await request.json()
+    temp_fd, temp_path = tempfile.mkstemp(dir=WHISPER_CLEANER_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, WHISPER_CLEANER_PATH)
+    except Exception as e:
+        os.unlink(temp_path)
+        raise e
+    return {"status": "ok"}
+
+@router.get("/admin/dialect")
+async def get_dialect():
+    return JSONResponse(content=load_json_or_empty(DIALECT_PATH))
+
+@router.post("/admin/dialect")
+async def post_dialect(request: Request):
+    data = await request.json()
+    temp_fd, temp_path = tempfile.mkstemp(dir=DIALECT_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, DIALECT_PATH)
+    except Exception as e:
+        os.unlink(temp_path)
+        raise e
+    return {"status": "ok"}
+
+@router.get("/admin/config")
+async def get_config():
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, "r") as f:
+            return JSONResponse(content=json.load(f))
+    return JSONResponse(content={})
+
+@router.post("/admin/config")
+async def post_config(request: Request):
+    data = await request.json()
+    current = {}
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, "r") as f:
+            current = json.load(f)
+    if "llm" in data:
+        current["llm"] = {**current.get("llm", {}), **data["llm"]}
+    temp_fd, temp_path = tempfile.mkstemp(dir=CONFIG_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            json.dump(current, f, indent=2)
+        os.replace(temp_path, CONFIG_PATH)
+    except Exception as e:
+        os.unlink(temp_path)
+        raise e
+    return {"status": "ok"}
+
+@router.get("/admin/sessions")
+async def get_sessions():
+    sessions = await get_all_sessions(limit=50)
+    return sessions
+
+@router.get("/admin/export/session/{session_id}")
+async def export_session(session_id: str):
+    messages = await get_session_messages(session_id)
+    if not messages:
+        raise HTTPException(404, "Session nicht gefunden")
+    return messages
+
+@router.delete("/admin/session/{session_id}")
+async def delete_session_admin(session_id: str):
+    from zerberus.app.routers.archive import delete_session_endpoint as archive_delete
+    return await archive_delete(session_id)
+
+@router.get("/admin/system_prompt")
+async def get_system_prompt():
+    with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+@router.post("/admin/system_prompt")
+async def post_system_prompt(request: Request):
+    data = await request.json()
+    temp_fd, temp_path = tempfile.mkstemp(dir=SYSTEM_PROMPT_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, SYSTEM_PROMPT_PATH)
+    except Exception as e:
+        os.unlink(temp_path)
+        raise e
+    return {"status": "ok"}
+
+@router.get("/metrics/latest_with_costs")
+async def metrics_latest_with_costs(limit: int = 20, session_id: str = None):
+    messages = await get_latest_metrics(limit, session_id)
+    ids = [m['id'] for m in messages if m.get('role') == 'assistant']
+    costs = await get_message_costs(ids)
+    for m in messages:
+        m['cost'] = costs.get(m['id'], None)
+    return messages
+
+@router.get("/metrics/summary")
+async def metrics_summary(session_id: str = None):
+    return await get_metrics_summary(session_id)

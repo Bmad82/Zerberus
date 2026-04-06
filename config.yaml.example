@@ -1,0 +1,231 @@
+# ============================================================
+# Zerberus / Nala – Beispiel-Konfiguration
+# Kopiere diese Datei als "config.yaml" und fülle sie aus.
+# ACHTUNG: config.yaml NICHT ins Git einchecken (steht in .gitignore)
+# ============================================================
+
+# Laufzeitumgebung: "production" oder "development"
+environment: production
+
+# Log-Level: DEBUG, INFO, WARNING, ERROR
+log_level: INFO
+
+# Port auf dem der Server läuft
+port: 5000
+
+# ============================================================
+# Datenbank – SQLite, normalerweise nicht ändern nötig
+# ============================================================
+database:
+  url: sqlite+aiosqlite:///./bunker_memory.db
+  echo: false
+  pool_size: 5
+  max_overflow: 10
+  module_table_prefix: module_
+
+# ============================================================
+# EventBus – Nachrichtenbus zwischen Modulen
+# "memory" = in-memory (Standard); "redis" für Produktionsbetrieb
+# ============================================================
+event_bus:
+  type: memory
+  redis_url: null
+
+# ============================================================
+# Quiet Hours – System außerhalb dieser Zeiten sperren
+# enabled: false = immer erreichbar
+# ============================================================
+quiet_hours:
+  enabled: false
+  start: '22:00'
+  end: 06:00
+  timezone: Europe/Berlin
+  exclude_paths:
+    - /admin
+    - /nala
+    - /static
+    - /docs
+
+# ============================================================
+# Rate Limiting – Anfragen pro Minute begrenzen
+# ============================================================
+rate_limiting:
+  enabled: true
+  default: 100/minute
+  limits:
+    /v1/chat: 50/minute
+    /nala/voice: 30/minute
+
+# ============================================================
+# Haupteinstellungen: Modell, URLs, Temperatur
+# - cloud_model: OpenRouter-Modell-ID (z.B. meta-llama/llama-3.3-70b-instruct)
+# - whisper_url: Adresse des lokal laufenden Whisper-Servers
+# - cloud_api_url: OpenRouter-API-Endpunkt (normalerweise nicht ändern)
+# - YOUR_TAILSCALE_DOMAIN ersetzen durch deine Tailscale-Domain, z.B. mein-pc.tail12345.ts.net
+# ============================================================
+legacy:
+  models:
+    cloud_model: meta-llama/llama-3.3-70b-instruct
+    local_model: mistral-nemo
+  urls:
+    whisper_url: http://YOUR_TAILSCALE_DOMAIN:8002/v1/audio/transcriptions
+    cloud_api_url: https://openrouter.ai/api/v1/chat/completions
+    local_url: ''
+  settings:
+    threshold_length: 0
+    ai_temperature: 0.7
+  pacemaker:
+    active: true
+    interval_seconds: 240
+    keep_alive_minutes: 25
+
+# ============================================================
+# Dialekte – vordefinierte Antwort-Muster für Dialekte/Stile
+# Marker-Emoji am Nachrichtenanfang aktiviert den Dialekt
+# ============================================================
+dialects:
+  berlin:
+    marker: 🐻🐻
+    patterns:
+      - trigger: wat
+        response: Wat willste denn?
+      - trigger: jut
+        response: Jut jemacht, wa!
+      - trigger: icke
+        response: Icke bin Zerberus, wat willste wissen?
+  schwaebisch:
+    marker: 🥨🥨
+    patterns:
+      - trigger: dia
+        response: Dia isch guad!
+      - trigger: moin
+        response: Griaß Gott!
+  emojis:
+    marker: ✨✨
+    patterns:
+      - trigger: gut
+        response: ✨ Wunderbar! 🎉
+      - trigger: fehler
+        response: ❌ Hoppla! 🔧
+
+# ============================================================
+# Whisper-Cleaner – automatische Korrekturen von Transkriptionsfehlern
+# Füllwörter ("ähm", "äh") werden entfernt, Tippfehler korrigiert
+# ============================================================
+whisper_cleaner:
+  corrections:
+    - old: ähm
+      new: ''
+    - old: äh
+      new: ''
+    - old: wispa
+      new: Whisper
+    - old: zerberus
+      new: Zerberus
+    - old: nala
+      new: Nala
+  strip_trailing:
+    - .
+    - ','
+    - '!'
+    - '?'
+
+# ============================================================
+# Module – einzelne Funktionen aktivieren oder deaktivieren
+# enabled: true  → Modul wird beim Start geladen
+# enabled: false → Modul wird ignoriert, nicht anfassen
+# ============================================================
+modules:
+
+  # Docker-Sandbox für sicheres Ausführen von Code
+  # Voraussetzung: Virtualisierung im BIOS aktiviert (Intel VT-x / AMD-V)
+  sandbox:
+    enabled: true
+
+  # Kalender-Vorbereitung (aktuell deaktiviert – echte Kalender-URL fehlt)
+  preparer:
+    enabled: false
+    calendar_url: http://localhost:8080/calendar
+    preparation_advance_minutes: 15
+
+  # Stimmungsanalyse (VADER-Sentiment)
+  emotional:
+    enabled: true
+    sentiment_threshold: -0.5
+    mood_boost_suggestions:
+      - Möchtest du eine Pause machen? ☕
+      - Soll ich den Dialekt wechseln? 🎭
+      - 'Musik-Tipp: Entspann dich mit Lofi! 🎵'
+
+  # Nudge – proaktive Vorschläge wenn Score-Schwellwert überschritten
+  nudge:
+    enabled: true
+    threshold: 0.8
+    hysteresis: 0.1
+    cooldown_minutes: 30
+
+  # RAG – semantisches Gedächtnis (FAISS-Vektorsuche)
+  rag:
+    enabled: true
+    vector_db_path: ./data/vectors
+    embedding_model: all-MiniLM-L6-v2
+    chunk_size: 512
+    index_type: flat
+
+  # MQTT – IoT-Sensor-Integration (aktuell deaktiviert)
+  mqtt:
+    enabled: false
+    broker: localhost
+    port: 1883
+    topics:
+      subscribe:
+        - zerberus/sensors/#
+      publish:
+        - zerberus/commands
+
+  # Telegram-Bot (aktuell deaktiviert)
+  # bot_token: BotFather-Token von https://t.me/BotFather
+  telegram:
+    enabled: false
+    bot_token: YOUR_TOKEN_HERE
+    webhook_url: https://yourdomain.com/telegram/webhook
+    allowed_users: []
+
+  # WhatsApp via Twilio (aktuell deaktiviert)
+  # account_sid und auth_token: aus deinem Twilio-Dashboard
+  whatsapp:
+    enabled: false
+    account_sid: YOUR_TOKEN_HERE
+    auth_token: YOUR_TOKEN_HERE
+    phone_number: whatsapp:+14155238886
+
+# ============================================================
+# JWT-Authentifizierung – Token-Geheimnis für Login-Sessions
+# token_secret: Langer zufälliger String – NIEMALS teilen oder ins Git einchecken!
+# Generieren: python -c "import secrets; print(secrets.token_hex(32))"
+# ============================================================
+auth:
+  token_secret: "YOUR_SECRET_KEY_HERE"
+  token_expire_minutes: 480  # 8 Stunden
+
+# ============================================================
+# Nutzerprofile – Login-Accounts für Nala
+# password_hash: leer lassen → kein Passwort nötig
+#                oder mit bcrypt-Hash füllen (via start.bat / Python-Skript)
+# permission_level: admin | user | guest
+# ============================================================
+profiles:
+  chris:
+    display_name: Chris
+    password_hash: ''
+    system_prompt_file: system_prompt_chris.json
+    theme_color: '#ec407a'
+    permission_level: admin
+    allowed_model: null
+  user2:
+    display_name: Jojo
+    password_hash: ''
+    system_prompt_file: system_prompt_user2.json
+    theme_color: '#7b1fa2'
+    permission_level: user
+    allowed_model: null

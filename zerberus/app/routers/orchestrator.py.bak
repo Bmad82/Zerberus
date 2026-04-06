@@ -1,0 +1,48 @@
+"""
+Orchestrator Router – Rosa (Hauptsteuerung).
+"""
+import logging
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+
+from zerberus.core.config import get_settings, Settings
+from zerberus.core.cleaner import clean_transcript
+from zerberus.core.dialect import detect_dialect_marker, apply_dialect
+from zerberus.core.llm import LLMService
+from zerberus.core.event_bus import get_event_bus, Event
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/orchestrator", tags=["Orchestrator"])
+
+class OrchestratorRequest(BaseModel):
+    message: str
+    context: dict = {}
+
+class OrchestratorResponse(BaseModel):
+    response: str
+    modules_involved: list = []
+
+@router.post("/process", response_model=OrchestratorResponse)
+async def process_message(
+    req: OrchestratorRequest,
+    settings: Settings = Depends(get_settings)
+):
+    logger.info(f"🎭 Orchestrator processing: {req.message[:50]}...")
+    
+    modules_used = []
+    response = f"Orchestrator erhielt: {req.message}"
+    
+    bus = get_event_bus()
+    await bus.publish(Event(
+        type="orchestrator_process",
+        data={"message": req.message[:100], "modules": modules_used}
+    ))
+    
+    return OrchestratorResponse(
+        response=response,
+        modules_involved=modules_used
+    )
+
+@router.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "orchestrator"}

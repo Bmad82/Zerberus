@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.env
+
+# Datenbank & persistente Daten
+*.db
+*.db-journal
+data/
+logs/
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
+# Sonstige große/unwichtige
+*.log
+*.pid
+*.seed
+*.sqlite3
+*.sqlite

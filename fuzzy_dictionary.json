@@ -1,0 +1,10 @@
+{
+  "terms": [
+    "Zerberus", "Nala", "Whisper", "Ollama", "OpenRouter",
+    "FastAPI", "Pacemaker", "Orchestrator", "EventBus",
+    "Hel", "FAISS", "SQLite", "Uvicorn", "Tailscale",
+    "Kintsugi", "Sycophancy", "config.yaml"
+  ],
+  "cutoff": 0.82,
+  "min_word_length": 4
+}

@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(venv/Scripts/python -c \"import faiss; print\\(''faiss ok''\\)\")",
+      "Bash(venv/Scripts/python -c \"from sentence_transformers import SentenceTransformer; print\\(''sentence_transformers ok''\\)\")",
+      "Bash(venv/Scripts/pip show:*)",
+      "Bash(venv/Scripts/pip install:*)",
+      "Bash(venv/Scripts/python -c \"from sentence_transformers import SentenceTransformer; print\\(''OK''\\)\")",
+      "Bash(venv/Scripts/python -c \":*)",
+      "Bash(find C:/Users/chris/Python/Rosa/Nala_Rosa/Zerberus/zerberus -name \"orchestrator.cpython*.pyc\" -delete)",
+      "Bash(PYTHONIOENCODING=utf-8 venv/Scripts/python -c \":*)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /F /PID 331236)",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(tasklist)",
+      "Bash(taskkill /F /PID 331236 2)",
+      "Bash(1 sleep:*)",
+      "Bash(cmd //c \"taskkill //F //PID 331236\" 2)",
+      "Bash(grep \"5000\" echo \"---\" tasklist)",
+      "Bash(kill -9 331236)",
+      "Bash(venv/Scripts/python -c \"import os, signal; os.kill\\(331236, 9\\)\")",
+      "Bash(python -c \"import subprocess; subprocess.run\\([''taskkill'', ''-f'', ''-pid'', ''331236'']\\)\")",
+      "Bash(venv/Scripts/python -c \"from zerberus.core.logging import setup_logging; setup_logging\\(''INFO''\\)\")",
+      "Bash(curl -s -X POST http://localhost:5000/v1/chat/completions -H \"Content-Type: application/json\" -H \"X-Session-ID: patch39-test\" -d '{\"\"\"\"messages\"\"\"\": [{\"\"\"\"role\"\"\"\": \"\"\"\"user\"\"\"\", \"\"\"\"content\"\"\"\": \"\"\"\"Hallo Rosa, was kannst du?\"\"\"\"}]}' echo \"\" echo \"--- relevant logs ---\" cat /tmp/p39.log)",
+      "Bash(find C:UserschrisPythonRosaNala_RosaZerberuszerberusmodules -type f -name *.py)",
+      "Bash(find C:UserschrisPythonRosaNala_RosaZerberus -maxdepth 1 -type f \\\\\\(-name *.md -o -name *.txt -o -name *.json \\\\\\))",
+      "Bash(venvScriptspython.exe -c \"from PIL import Image; print\\(''Pillow OK''\\)\")",
+      "Bash(\"venv/Scripts/python.exe\" -c \"from PIL import Image; print\\(''Pillow OK''\\)\")",
+      "Bash(\"venv/Scripts/python.exe\" -c \":*)"
+    ]
+  }
+}

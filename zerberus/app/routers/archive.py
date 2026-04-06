@@ -1,0 +1,48 @@
+"""
+Archiv-Router – Zugriff auf gespeicherte Chats (Session-basiert).
+"""
+import logging
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from typing import List
+
+from zerberus.core.database import get_all_sessions, get_session_messages, delete_session
+from zerberus.core.config import get_settings, Settings
+from zerberus.core.cleaner import clean_transcript
+from zerberus.core.dialect import detect_dialect_marker, apply_dialect
+from zerberus.core.llm import LLMService
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/archive", tags=["Archive"])
+
+class SessionInfo(BaseModel):
+    session_id: str
+    first_message: str
+    created_at: str | None
+    last_message_at: str | None
+
+class MessageInfo(BaseModel):
+    role: str
+    content: str
+    timestamp: str
+    sentiment: float | None
+
+@router.get("/sessions", response_model=List[SessionInfo])
+async def list_sessions(limit: int = 50):
+    """Listet alle verfügbaren Chat-Sessions auf."""
+    sessions = await get_all_sessions(limit)
+    return sessions
+
+@router.get("/session/{session_id}", response_model=List[MessageInfo])
+async def get_session(session_id: str):
+    """Liefert alle Nachrichten einer bestimmten Session."""
+    messages = await get_session_messages(session_id)
+    if not messages:
+        raise HTTPException(status_code=404, detail="Session nicht gefunden")
+    return messages
+
+@router.delete("/session/{session_id}")
+async def delete_session_endpoint(session_id: str):
+    """Löscht eine Session und alle zugehörigen Nachrichten."""
+    await delete_session(session_id)
+    return {"status": "deleted"}

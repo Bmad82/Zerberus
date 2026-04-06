@@ -1,0 +1,469 @@
+"""
+Nala Router – The Palace (Frontend + Voice + Archiv-Seitenleiste).
+"""
+import logging
+import json
+from pathlib import Path
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Request
+from fastapi.responses import HTMLResponse
+import httpx
+
+from zerberus.core.config import get_settings
+from zerberus.core.llm import LLMService
+from zerberus.core.config import get_settings, Settings
+from zerberus.core.dialect import detect_dialect_marker, apply_dialect
+from zerberus.core.cleaner import clean_transcript
+from zerberus.core.event_bus import get_event_bus, Event
+from zerberus.core.database import store_interaction
+from zerberus.app.routers.legacy import load_system_prompt
+from zerberus.app.pacemaker import update_interaction
+from zerberus.core.database import store_interaction, save_cost
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/nala", tags=["Nala"])
+
+# ----------------------------------------------------------------------
+# Modernes Nala HTML mit Senden-Button, Mikrofon, Hamburger-Menü und Archiv-Seitenleiste
+# ----------------------------------------------------------------------
+NALA_HTML = """<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>Nala – Der Palast</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+            background: #fce4ec;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 0;
+        }
+        .app-container {
+            width: 100%;
+            max-width: 500px;
+            height: 100vh;
+            background: white;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }
+        .header {
+            background: #ec407a;
+            color: white;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+        .hamburger {
+            font-size: 1.8em;
+            cursor: pointer;
+            width: 40px;
+            text-align: center;
+        }
+        .title {
+            flex: 1;
+            text-align: center;
+        }
+        .placeholder {
+            width: 40px;
+        }
+        .sidebar {
+            position: fixed;
+            top: 0;
+            left: -300px;
+            width: 280px;
+            height: 100vh;
+            background: #2d2d2d;
+            color: white;
+            transition: left 0.3s ease;
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 20px;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.3);
+        }
+        .sidebar.open {
+            left: 0;
+        }
+        .sidebar .close-btn {
+            font-size: 2em;
+            cursor: pointer;
+            text-align: right;
+            margin-bottom: 20px;
+        }
+        .sidebar h3 {
+            margin: 20px 0 10px;
+            color: #ec407a;
+        }
+        .session-list {
+            list-style: none;
+        }
+        .session-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #3d3d3d;
+            border-radius: 10px;
+            cursor: pointer;
+            word-wrap: break-word;
+        }
+        .session-item:hover {
+            background: #4d4d4d;
+        }
+        .session-date {
+            font-size: 0.8em;
+            color: #aaa;
+        }
+        .overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+        .overlay.show {
+            display: block;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: #f8f8f8;
+        }
+        .message {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 20px;
+            word-wrap: break-word;
+            animation: fadeIn 0.3s;
+        }
+        .user-message {
+            align-self: flex-end;
+            background: #ec407a;
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+        .bot-message {
+            align-self: flex-start;
+            background: white;
+            color: #333;
+            border-bottom-left-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .input-area {
+            display: flex;
+            padding: 15px;
+            background: white;
+            border-top: 1px solid #f0f0f0;
+            gap: 10px;
+            align-items: center;
+        }
+        #text-input {
+            flex: 1;
+            padding: 12px 18px;
+            border: 2px solid #f0f0f0;
+            border-radius: 30px;
+            font-size: 16px;
+            outline: none;
+            transition: border 0.2s;
+        }
+        #text-input:focus {
+            border-color: #ec407a;
+        }
+        .send-btn, .mic-btn {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border: none;
+            color: white;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: transform 0.2s, background 0.2s;
+            box-shadow: 0 3px 8px rgba(0,0,0,0.2);
+        }
+        .send-btn {
+            background: #ec407a;
+        }
+        .mic-btn {
+            background: #9c27b0;
+        }
+        .mic-btn.recording {
+            background: #f44336;
+            animation: pulse 1.5s infinite;
+        }
+        .send-btn:active, .mic-btn:active { transform: scale(0.95); }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(244,67,54,0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(244,67,54,0); }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .mic-error {
+            color: red;
+            font-size: 0.8em;
+            margin-top: 5px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <div class="header">
+            <div class="hamburger" onclick="toggleSidebar()">☰</div>
+            <div class="title">👑 Nala</div>
+            <div class="placeholder"></div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar">
+            <div class="close-btn" onclick="toggleSidebar()">✖</div>
+            <h3>📋 Letzte Chats</h3>
+            <ul class="session-list" id="session-list">
+                <li class="session-item">Lade...</li>
+            </ul>
+            <h3>📌 Angepinnt</h3>
+            <ul class="session-list" id="pinned-list">
+                <!-- später -->
+            </ul>
+        </div>
+        <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
+
+        <!-- Chat-Nachrichten -->
+        <div class="chat-messages" id="chatMessages"></div>
+
+        <!-- Eingabebereich -->
+        <div class="input-area">
+            <input type="text" id="text-input" placeholder="Schreib mir...">
+            <button class="send-btn" id="sendBtn" onclick="sendTextMessage()">➤</button>
+            <button class="mic-btn" id="micBtn" onclick="toggleRecording()">🎤</button>
+        </div>
+        <div id="mic-error" class="mic-error"></div>
+    </div>
+
+    <script>
+        let sessionId = localStorage.getItem('sessionId');
+        if (!sessionId) {
+            sessionId = crypto.randomUUID();
+            localStorage.setItem('sessionId', sessionId);
+        }
+
+        let mediaRecorder, audioChunks = [], isRecording = false;
+        const messagesDiv = document.getElementById('chatMessages');
+        const textInput = document.getElementById('text-input');
+        const micErrorDiv = document.getElementById('mic-error');
+        const sessionList = document.getElementById('session-list');
+
+        async function loadSessions() {
+            try {
+                const response = await fetch('/archive/sessions');
+                const sessions = await response.json();
+                sessionList.innerHTML = '';
+                if (sessions.length === 0) {
+                    sessionList.innerHTML = '<li class="session-item">Keine Chats</li>';
+                } else {
+                    sessions.forEach(s => {
+                        const li = document.createElement('li');
+                        li.className = 'session-item';
+                        li.innerHTML = `<div>${s.first_message || 'Neuer Chat'}</div>
+                                        <div class="session-date">${new Date(s.created_at).toLocaleString()}</div>`;
+                        li.onclick = () => loadSession(s.session_id);
+                        sessionList.appendChild(li);
+                    });
+                }
+            } catch (e) {
+                sessionList.innerHTML = '<li class="session-item">Fehler beim Laden</li>';
+            }
+        }
+
+        async function loadSession(sid) {
+            try {
+                const response = await fetch(`/archive/session/${sid}`);
+                const messages = await response.json();
+                sessionId = sid;
+                localStorage.setItem('sessionId', sid);
+                messagesDiv.innerHTML = '';
+                messages.forEach(m => {
+                    addMessage(m.content, m.role === 'user' ? 'user' : 'bot');
+                });
+                toggleSidebar();
+            } catch (e) {
+                alert('Fehler beim Laden des Chats');
+            }
+        }
+
+        async function sendTextMessage() {
+            const text = textInput.value.trim();
+            if (!text) return;
+            sendMessage(text);
+        }
+
+        async function sendMessage(text) {
+            addMessage(text, 'user');
+            textInput.value = '';
+
+            try {
+                const response = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Session-ID': sessionId
+                    },
+                    body: JSON.stringify({ messages: [{ role: 'user', content: text }] })
+                });
+                const data = await response.json();
+                const reply = data.choices?.[0]?.message?.content || 'Keine Antwort';
+                addMessage(reply, 'bot');
+                loadSessions();
+            } catch (error) {
+                addMessage('❌ Fehler: ' + error.message, 'bot');
+            }
+        }
+
+        async function toggleRecording() {
+            if (!isRecording) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+                    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                    mediaRecorder.onstop = async () => {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        const formData = new FormData();
+                        formData.append('file', audioBlob, 'recording.webm');
+                        try {
+                            const response = await fetch('/v1/audio/transcriptions', {
+                                method: 'POST',
+                                body: formData
+                            });
+                            const data = await response.json();
+                            const transcript = data.text || '';
+                            await sendMessage(transcript);
+                        } catch (e) {
+                            addMessage('❌ Fehler bei Spracherkennung', 'bot');
+                        }
+                    };
+                    mediaRecorder.start();
+                    isRecording = true;
+                    document.getElementById('micBtn').classList.add('recording');
+                    micErrorDiv.innerText = '';
+                } catch (error) {
+                    micErrorDiv.innerText = '❌ Mikrofon nicht erlaubt. Bitte erlaube den Zugriff in den Browser-Einstellungen.';
+                }
+            } else {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                isRecording = false;
+                document.getElementById('micBtn').classList.remove('recording');
+            }
+        }
+
+        function addMessage(text, sender) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${sender === 'user' ? 'user-message' : 'bot-message'}`;
+            msgDiv.textContent = text;
+            messagesDiv.appendChild(msgDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+            document.getElementById('overlay').classList.toggle('show');
+        }
+
+        textInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendTextMessage();
+        });
+
+        loadSessions();
+        addMessage('👋 Hallo, ich bin Nala. Wie kann ich dir helfen?', 'bot');
+    </script>
+</body>
+</html>
+"""
+
+# ---------- Whisper Cleaner (robuste Version) ----------
+
+
+
+async def nala_interface():
+    return NALA_HTML
+
+@router.post("/voice")
+async def voice_endpoint(
+    request: Request,
+    file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings)
+):
+    """Verarbeitet Audio (Whisper + LLM)"""
+    try:
+        # 1. Audio transkribieren
+        audio_data = await file.read()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                settings.legacy.urls.whisper_url,
+                files={"file": (file.filename, audio_data, file.content_type)},
+                data={"model": "whisper-1"}
+            )
+            resp.raise_for_status()
+            whisper_result = resp.json()
+
+        raw_transcript = whisper_result.get("text", "")
+        cleaned_transcript = clean_transcript(raw_transcript)
+        logger.info(f"🎤 Transkript: '{raw_transcript}' -> '{cleaned_transcript}'")
+        await store_interaction("whisper_input", raw_transcript, integrity=0.9)
+
+        # 2. Session-ID und System-Prompt
+        session_id = request.headers.get("X-Session-ID")
+        sys_prompt = load_system_prompt()
+        messages = []
+        if sys_prompt:
+            messages.append({"role": "system", "content": sys_prompt})
+        messages.append({"role": "user", "content": cleaned_transcript})
+
+        # 3. LLM-Aufruf
+        llm_service = LLMService()
+        answer, model, prompt_tokens, completion_tokens, cost = await llm_service.call(messages, session_id)
+
+        # 4. Interaktion speichern
+        await store_interaction("user", cleaned_transcript, session_id=session_id)
+        await store_interaction("assistant", answer, session_id=session_id)
+        await save_cost(session_id, model, prompt_tokens, completion_tokens, cost)
+
+        # 5. Event und Pacemaker
+        bus = get_event_bus()
+        await bus.publish(Event(
+            type="voice_input",
+            data={"transcript": cleaned_transcript, "response": answer}
+        ))
+        update_interaction()
+
+        return {
+            "transcript": cleaned_transcript,
+            "response": answer,
+            "sentiment": "neutral"
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Voice processing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "nala"}

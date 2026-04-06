@@ -1,0 +1,178 @@
+[
+  {
+    "_comment": "HALLUZINATIONEN - Whisper halluciniert diese in Stille-Pausen (trainiert auf Untertitel-Daten)"
+  },
+  {
+    "pattern": "(?i)untertitelung des zdf \\d{4}\\.",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)untertitel im auftrag des zdf\\.?",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)copyright wdr\\.?",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)untertitel von stephanie geiges\\.?",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)translated by amara\\.org\\.?",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\b(SWR|NDR|ARD|ZDF|WDR)\\s+\\d{4}\\b",
+    "replacement": ""
+  },
+  {
+    "_comment": "YOUTUBE/PODCAST FLOSKELN - typische Outro-Sätze die halluziniert werden"
+  },
+  {
+    "pattern": "(?i)das war's für heute\\. vielen dank fürs zuschauen\\. und bis zum nächsten mal\\.",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)vielen dank fürs zuschauen und bis zum nächsten mal\\.",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\b(vielen dank fürs zuschauen|danke fürs zuschauen|thanks for watching)\\b",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\b(wir sehen uns( beim nächsten mal)?|tschüss?|ciao|bye|bis dann|bis später|auf wiedersehen)\\b",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\b(hallo ihr|hallo und herzlich willkommen|willkommen zum podcast)\\b",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\bthank you\\b",
+    "replacement": ""
+  },
+  {
+    "_comment": "MARKENNAMEN - phonetische Fehlhörer von Whisper bei Tech-Begriffen"
+  },
+  {
+    "pattern": "(?i)\\b(wi[sz]{1,2}p[ae][rh]?|wi[sz]{2}bar|wesper|whispa|vi[sz]{1,2}p[ae][rh]?|vi[sz]{2}bar|vispa)\\b",
+    "replacement": "Whisper"
+  },
+  {
+    "pattern": "(?i)\\b(dieb[\\s\\-]*sieg|diep?[\\s\\-]*sie[ck])\\b",
+    "replacement": "DeepSeek"
+  },
+  {
+    "pattern": "(?i)\\bo[h]?[-\\s]?lama\\b",
+    "replacement": "Ollama"
+  },
+  {
+    "pattern": "(?i)\\bcerberus\\b",
+    "replacement": "Zerberus"
+  },
+  {
+    "pattern": "(?i)\\bzerberus\\b",
+    "replacement": "Zerberus"
+  },
+  {
+    "pattern": "(?i)\\b[Jj]ason\\b",
+    "replacement": "JSON"
+  },
+  {
+    "pattern": "(?i)\\bkot(b(lock|log))\\b",
+    "replacement": "Codeblock"
+  },
+  {
+    "pattern": "(?i)\\bFedritz\\b",
+    "replacement": "Frédéric"
+  },
+  {
+    "_comment": "WIEDERHOLUNGEN - Whisper-typische Wort- und Phrasendopplungen"
+  },
+  {
+    "pattern": "(?i)\\b(\\w{2,})\\s+\\1\\b",
+    "replacement": "$1"
+  },
+  {
+    "pattern": "(?i)\\b(das ist das|das war das|das ist es)\\b",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)(?:[,.]?\\s*ja[,.]?\\s*){2,}",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)(?:,?\\s*und so weiter\\s*){2,}$",
+    "replacement": ""
+  },
+  {
+    "_comment": "HESITATIONSLAUTE - echte non-lexikalische Laute, sicher zu entfernen"
+  },
+  {
+    "pattern": "(?i)\\bähm?\\b",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\bäh\\b",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\b(hmm|mmh|hmmm|mhm)\\b",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\b(pff|ts|brrr|ehm|öhm|err)\\b",
+    "replacement": ""
+  },
+  {
+    "_comment": "DEUTSCHE FÜLLWÖRTER - NUR klare Diskursmarker, KEINE Modalpartikeln! halt/oder/sehr/ganz/ne bleiben drin!"
+  },
+  {
+    "pattern": "(?i)\\b(eigentlich|irgendwie|quasi|übrigens|prinzipiell|im endeffekt)\\b",
+    "replacement": ""
+  },
+  {
+    "_comment": "ENGLISCHE FÜLLWÖRTER - nur eindeutige Füller, like/well/right/okay/yeah/no entfernt (zu viele False Positives)"
+  },
+  {
+    "pattern": "(?i)\\b(uh|um|i mean|you know|kind of|sort of)\\b",
+    "replacement": ""
+  },
+  {
+    "_comment": "UNVERSTÄNDLICH - Whisper-spezifische Artefakt-Tags"
+  },
+  {
+    "pattern": "(?i)\\$\\$(unverständlich|inaudible)\\$\\$",
+    "replacement": ""
+  },
+  {
+    "_comment": "CLEANUP - Immer am Ende der Pipeline ausführen!"
+  },
+  {
+    "pattern": ",\\s*,",
+    "replacement": ",",
+    "_comment": "Verwaiste/doppelte Kommas nach Füllwort-Entfernung"
+  },
+  {
+    "pattern": "\\s+([.,;:!?])",
+    "replacement": "$1"
+  },
+  {
+    "pattern": "^\\s*,\\s*",
+    "replacement": ""
+  },
+  {
+    "pattern": "\\s{2,}",
+    "replacement": " "
+  },
+  {
+    "pattern": "^\\s+|\\s+$",
+    "replacement": ""
+  },
+  {
+    "pattern": "\\s*$",
+    "replacement": " "
+  }
+]

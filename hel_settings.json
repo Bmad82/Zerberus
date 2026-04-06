@@ -1,0 +1,23 @@
+{
+  "cloud_model": "nousresearch/hermes-3-llama-3.1-405b",
+  "local_model": "mistral-nemo",
+  "temperature": 0.7,
+  "threshold": 10,
+  "fillers": [
+    "ähm",
+    "äh",
+    "mhm"
+  ],
+  "max_repetitions": 3,
+  "dialects": {
+    "berlin": {
+      "marker": "🐻🐻",
+      "patterns": [
+        {
+          "trigger": "wat",
+          "response": "Wat willste denn?"
+        }
+      ]
+    }
+  }
+}
