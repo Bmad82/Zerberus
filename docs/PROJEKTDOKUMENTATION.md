@@ -1,7 +1,7 @@
 # Zerberus Pro 4.0 – Projektdokumentation
 
-**Stand:** 2026-04-10
-**Version:** 4.0 (Patch 65 – Multimodaler Input/Output + RAG-Fix)
+**Stand:** 2026-04-18
+**Version:** 4.0 (Patch 97 – R-04 Query Expansion für Aggregat-Queries)
 **Status:** Aktiv in Entwicklung
 
 ---
@@ -2661,5 +2661,53 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 **Lessons:**
 - Pytest-Reports sind self-contained-HTML mit eigenem CSS — niemals via `<iframe>` oder `innerHTML` einbetten, immer in neuem Tab öffnen, sonst kollidieren die Styles mit Hel.
 - Path-Traversal-Schutz mit „nur fixe Datei verlinken" ist die einfachste Lösung. Wenn später beliebige Reports verlinkt werden sollen, muss der Endpoint einen Pfad-Param mit `Path.resolve().is_relative_to(_REPORT_DIR)`-Check bekommen.
+
+### Patch 97 – R-04: Query Expansion für Aggregat-Queries (2026-04-18)
+
+**Ziel:** Backlog-Item R-04 aus Patch 87 abarbeiten. Vor dem eigentlichen FAISS-Retrieval erzeugt ein kurzer LLM-Call 2–3 synonyme Formulierungen, die zusammen mit der Original-Query durch die Pipeline laufen. Für Aggregat-Queries wie Q11 („Nenn alle Momente wo…") soll damit der Kandidaten-Pool breiter werden.
+
+**Block A – Query-Expansion-Modul:**
+- Neues Modul [query_expander.py](zerberus/modules/rag/query_expander.py): `expand_query(query, config)` ist async, nutzt `httpx.AsyncClient` mit 3 s Timeout gegen `settings.legacy.urls.cloud_api_url` (OpenRouter).
+- System-Prompt: *„Du bist ein Suchassistent. Gegeben eine Suchanfrage, erzeuge 2-3 alternative Formulierungen und Stichworte die dasselbe Thema betreffen. Antworte NUR mit einer JSON-Liste von Strings, kein anderer Text."*
+- `_parse_expansions()`: sucht die erste `[...]`-Struktur in der Antwort per Regex und `json.loads()`, toleriert Markdown-Wrapper wie ```` ```json ... ``` ````.
+- Modell: `config["query_expansion_model"]` oder Fallback `settings.legacy.models.cloud_model` (per Default `null` → cloud_model).
+- Fail-Safe: `asyncio.TimeoutError`, `httpx.HTTPError`, Parse-Error, generisches `Exception` — jeweils Warning-Log + `return [original]`. Kein Crash, kein RAG-Ausfall.
+- Dedupe: Original + Expansionen case-insensitive per Set, Reihenfolge erhalten.
+
+**Block B – Integration in die RAG-Pipeline:**
+- `/rag/search` (router.py) und `_rag_search` (orchestrator.py) folgen demselben Muster:
+  1. `expand_query()` aufrufen → Liste von Queries
+  2. Pro Query: `_encode()` + `_search_index(vec, per_query_k, min_words, q, rerank_enabled=False, ...)` — **Rerank pro Sub-Query deaktiviert**.
+  3. `per_query_k = top_k * rerank_multiplier` — jede Sub-Query über-fetched, damit der finale Pool genügend Vielfalt hat.
+  4. Dedupe über Text-Prefix-Key (erste 200 Zeichen) in einem `set`.
+  5. **Finaler Rerank einmal über den kombinierten Pool mit der ORIGINAL-Query** — so bleibt die Relevanz-Bewertung an der User-Absicht verankert statt an den Expansionen.
+- Diagnose-Log `[EXPAND-97]` auf WARNING-Level: Original, Expansionen, per-query-k, Post-dedupe-Größe. Zusätzlich Info-Log im query_expander für die erzeugten Varianten.
+
+**Block C – Orchestrator/Legacy-Durchgriff:**
+- legacy.py importiert `_rag_search` direkt aus orchestrator.py — die Query-Expansion greift dort ohne weitere Änderungen.
+- Skip-Logik (`CONVERSATION`-Intent, kurze Msgs) bleibt unverändert: Expansion greift nur wenn RAG überhaupt läuft.
+- Config: `config.yaml` + `config.yaml.example` um `query_expansion_enabled: true` und `query_expansion_model: null` ergänzt.
+
+**Block D – Eval-Lauf:**
+- `python rag_eval.py` gegen den (nach Neustart) laufenden Server.
+- Expansion feuerte bei allen 11 Fragen, typisch 3–5 Varianten. Beispiele:
+  - Q4 „Perseiden-Nacht" → *Perseiden-Meteoritenschauer*, *Nacht der Sternschnuppen*, *Astrofotografie nach dem Perseiden-Ereignis*
+  - Q10 „verkaufsoffener Sonntag in Ulm" → *Verkaufsoffene Sonntage in Ulm*, *Einkaufssonntage in Ulm*, *Öffnungszeiten von Geschäften am Sonntag in Ulm*
+  - Q11 „Nenn alle Momente wo Annes Verhalten als unkontrollierbarer Impuls…" → 5 synonyme Umschreibungen
+- Ergebnis: **9–10 JA / 1–2 TEILWEISE / 0 NEIN** — im Rahmen der Patch-89-Baseline, keine Regressions.
+- **Q11 bleibt TEILWEISE** wie erwartet. Grund: der Index hat nur 12 Chunks, die Dedupe über den expandierten Pool erschöpft ihn komplett (`Post-dedup: 12`). Der Cross-Encoder wählt trotzdem den Glossar-Chunk als Top-1, weil er — isoliert betrachtet — am besten zu „Impuls / Kontrollwahn"-Begriffen passt. Für eine echte Aggregat-Antwort muss das LLM mehrere Chunks *zusammen* interpretieren → **Backlog-Item R-07 (Multi-Chunk-Aggregation)** als nächster Hebel dokumentiert.
+
+**Betroffene Dateien:**
+- `zerberus/modules/rag/query_expander.py` (neu)
+- `zerberus/modules/rag/router.py` (`/rag/search` erweitert)
+- `zerberus/app/routers/orchestrator.py` (`_rag_search` erweitert)
+- `config.yaml`, `config.yaml.example` (neue Keys)
+- `rag_eval_delta_patch97.md` (Eval-Report)
+- `HYPERVISOR.md`, `README.md`, `backlog_nach_patch83.md`, `docs/PROJEKTDOKUMENTATION.md`
+
+**Lessons:**
+- `--reload` auf Windows hängt regelmäßig bei langlaufenden Requests — bei jedem Patch mit neuen Imports (neue Datei, neues Paket) manueller Neustart einplanen. Test per `[EXPAND-97]`-Log bzw. einfacher „kommt der Log an"-Check.
+- Query Expansion ist nur so stark wie der Index breit ist. Bei 12 Chunks ist sie nutzlos für Aggregat-Queries — bei 100+ Chunks wird sie zum echten Retrieval-Boost. Fürs Protokoll: die Infrastruktur steht jetzt, der Effekt skaliert mit Dokumenten-Volumen.
+- Wichtige Design-Entscheidung: **pro Sub-Query FAISS ohne Rerank, dann finaler Rerank mit Original-Query auf den Merged-Pool.** Alternative (Rerank pro Sub-Query und Merge der Rerank-Scores) hätte 5× CrossEncoder-Calls gekostet und das Scoring inkonsistent gemacht.
 
 *Stand: 2026-04-18, Patch 96.*

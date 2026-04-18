@@ -271,21 +271,53 @@ async def semantic_search(
     if not query:
         raise HTTPException(400, "query darf nicht leer sein.")
 
-    vec = await asyncio.to_thread(_encode, query)
     min_words = int(mod_cfg.get("min_chunk_words", 0))
     rerank_enabled = bool(mod_cfg.get("rerank_enabled", False))
     rerank_model = str(mod_cfg.get("rerank_model", ""))
     rerank_multiplier = int(mod_cfg.get("rerank_multiplier", 4))
-    results = await asyncio.to_thread(
-        _search_index,
-        vec,
-        req.top_k,
-        min_words,
-        query,
-        rerank_enabled,
-        rerank_model,
-        rerank_multiplier,
-    )
+    expand_enabled = bool(mod_cfg.get("query_expansion_enabled", False))
+
+    # Patch 97: Query Expansion — same logic as orchestrator._rag_search,
+    # aber hier in der öffentlichen Such-API, damit `rag_eval.py` den
+    # gesamten Produktions-Pfad misst.
+    if expand_enabled:
+        from zerberus.modules.rag.query_expander import expand_query
+        queries = await expand_query(query, mod_cfg)
+    else:
+        queries = [query]
+
+    per_query_k = req.top_k * (rerank_multiplier if rerank_enabled else 1)
+    all_candidates: list[dict] = []
+    seen: set[str] = set()
+    for q in queries:
+        vec = await asyncio.to_thread(_encode, q)
+        sub_hits = await asyncio.to_thread(
+            _search_index,
+            vec,
+            per_query_k,
+            min_words,
+            q,
+            False,          # rerank OFF per sub-query, once at end
+            "",
+            rerank_multiplier,
+        )
+        for h in sub_hits:
+            key = (h.get("text", "") or "")[:200]
+            if key and key not in seen:
+                seen.add(key)
+                all_candidates.append(h)
+
+    if expand_enabled:
+        logger.warning(
+            f"[EXPAND-97] Original: {query!r}, Expanded: {queries}, "
+            f"per-query-k={per_query_k}, Post-dedup: {len(all_candidates)}"
+        )
+
+    if rerank_enabled and rerank_model and all_candidates:
+        from zerberus.modules.rag.reranker import rerank as _rerank
+        results = await asyncio.to_thread(_rerank, query, all_candidates, rerank_model, req.top_k)
+    else:
+        results = all_candidates[:req.top_k]
 
     bus = get_event_bus()
     await bus.publish(Event(type="rag_search", data={"query": query[:100], "results": len(results)}))

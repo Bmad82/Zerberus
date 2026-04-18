@@ -1,8 +1,15 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 96 (2026-04-18)*
+*Letzte Aktualisierung: Patch 97 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 97** – R-04: Query Expansion für Aggregat-Queries (2026-04-18)
+- Block A: Neues Modul [query_expander.py](zerberus/modules/rag/query_expander.py) — `expand_query(query, config)` macht einen kurzen OpenRouter-Call (System-Prompt: "erzeuge 2-3 alternative Formulierungen als JSON-Liste"), 3 s Timeout, Fail-Safe auf Original-Query bei Timeout / HTTP-Fehler / Parse-Fehler. Modell aus `modules.rag.query_expansion_model` oder Fallback auf `legacy.models.cloud_model`.
+- Block B: Integration in `/rag/search` (router.py) UND `_rag_search` (orchestrator.py). Pro Variante FAISS-Call mit `rerank_enabled=False`, Dedup per Text-Prefix-Key (200 Zeichen), **finaler Rerank einmal über den kombinierten Pool mit der ORIGINAL-Query** (Relevanz-Bewertung an der echten User-Absicht verankert). `per_query_k = top_k * rerank_multiplier` — jede Sub-Query über-fetched. Diagnose-Logs `[EXPAND-97]` auf WARNING-Level zeigen Original / Expansionen / Pool-Größe.
+- Block C: legacy.py bedient sich via Import bei `_rag_search` — automatisch gedeckt. Config: `query_expansion_enabled: true`, `query_expansion_model: null` in `config.yaml` + `.example`.
+- Block D: Eval-Lauf nach Server-Restart — 11 Fragen. **Ergebnis: 9-10 JA / 1-2 TEILWEISE / 0 NEIN** (wie Patch 89). Expansion feuerte bei allen 11 Fragen (3-5 Varianten je Frage, siehe Logs). **Q11 bleibt TEILWEISE wie erwartet** — der Index hat nur 12 Chunks, Dedupe schöpft ihn komplett aus → Expansion kann den Pool nicht vergrößern, Rerank wählt trotzdem Glossar. Bestätigt: Retrieval ist ausgereizt, nächster Hebel ist **R-07 Multi-Chunk-Aggregation** auf LLM-Seite (neu im Backlog).
+- Server-Reload-Lesson reproduziert: `--reload` erkannte die Änderungen nicht (Worker-Prozess hing), manueller Kill + Neustart nötig (analog Patch 95).
+
 **Patch 96** – Testreport-Viewer in Hel (H-F04) (2026-04-18)
 - Block A: Zwei neue Endpoints am Ende von [hel.py](zerberus/app/routers/hel.py): `GET /hel/tests/report` liefert `zerberus/tests/report/full_report.html` als `HTMLResponse` (404+JSON falls nicht vorhanden), `GET /hel/tests/reports` listet alle `*.html`-Dateien mit `mtime`+`size`. `_REPORT_DIR` per `Path(__file__).resolve().parents[2] / "tests" / "report"` — robust gegen aktuelles Working-Dir. Auth via `verify_admin`-Router-Dependency.
 - Block B: Neue Akkordeon-Sektion `🧪 Testreports` direkt nach Metriken (vor LLM & Guthaben), gleicher `.hel-section`/`toggleSection`-Pattern wie alle anderen Sektionen. Card mit Erklärungstext, Button „Letzten Report öffnen" (öffnet `/hel/tests/report` in neuem Tab via `window.open`), darunter Tabelle aller Reports (Datei, Stand-Datum, Größe, Link). JS-Funktion `loadReportsList()` läuft im DOMContentLoaded-Handler, neben `loadProfilesList` aus Patch 95.
@@ -218,7 +225,7 @@
 
 ## Offene Items (Backlog)
 1. Manuell getippter Text → DB-Speicherung verifizieren
-2. [Patch 89] RAG-Qualität nach R-03-Fix: **10/11 JA, 1/11 TEILWEISE, 0 NEIN**. Q4 + Q10 geheilt. Offen: **Q11** (Aggregat-Query „Nenn alle Momente wo…") — Reranker liefert Glossar-Definition, konkrete Szenen bleiben über mehrere Chunks verteilt. **Nächster Kandidat: R-04 (Query-Expansion) oder LLM-seitige Multi-Chunk-Aggregation**, nicht mehr Retrieval-Qualität. R-02 (Embedding-Upgrade) nach hinten verschoben — Reranker kompensiert MiniLM-Schwäche ausreichend. Reports: `rag_eval_delta_patch89.md`.
+2. [Patch 97] RAG-Qualität nach R-04: **9-10/11 JA, 1-2/11 TEILWEISE, 0 NEIN** (wie Patch 89). Query Expansion ist als Infrastruktur vorhanden und loggt Varianten transparent. **Q11 bleibt offen** — Index hat nur 12 Chunks, Dedupe erschöpft ihn, Rerank wählt trotzdem Glossar. Retrieval-Hebel ist ausgereizt. Nächster Kandidat: **R-07 Multi-Chunk-Aggregation** (LLM-seitig: Top-8+ in Kontext, System-Prompt-Hint „alle Treffer aufzählen"). R-02 (Embedding-Upgrade) weiter niedrig priorisiert. Reports: `rag_eval_delta_patch97.md`, `rag_eval_delta_patch89.md`.
 3. ~~Alembic-Setup (Dauerläufer)~~ ✅ Patch 92 — `alembic.ini` + Baseline-Revision `7feab49e6afe`. **Manueller Aufruf** per `alembic upgrade head` (kein Auto-Upgrade beim Start).
 4. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
 5. [IDEE] Metriken: Interaktive Auswertung (Zeiträume, LLM-Auswertung, D3/Canvas-Zoom, Mobile-first) — **Grundlage implementiert in Patch 91** (Chart.js, Zeitraum-Chips, 5 Metriken, Pinch-Zoom). ~~Per-User-Filter-UI~~ ✅ Patch 95 (Dropdown vor Zeitraum-Chips, kombiniert mit Range-Filter). Offen: LLM-Auswertung („Wie haben sich meine Formulierungen in den letzten 30 Tagen verändert?").

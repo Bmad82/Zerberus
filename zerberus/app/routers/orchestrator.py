@@ -194,6 +194,12 @@ async def _rag_search(query: str, settings: Settings) -> list[dict]:
     """
     Sucht im RAG-Index nach relevanten Einträgen.
     Gibt gefilterte Treffer (L2 < Threshold) zurück, oder [] bei Fehler/kein Index.
+
+    Patch 97 (R-04): Wenn `query_expansion_enabled`, wird die Query vorab
+    durch einen LLM-Call in 2-3 synonyme Varianten erweitert. Jede Variante
+    läuft separat durch FAISS, die Kandidaten werden dedupliziert und
+    zusammen durch den Reranker gejagt (mit der ORIGINAL-Query — so bleibt
+    die Relevanz-Bewertung an der tatsächlichen User-Absicht verankert).
     """
     if not _RAG_IMPORT_OK or not RAG_AVAILABLE:
         return []
@@ -204,31 +210,59 @@ async def _rag_search(query: str, settings: Settings) -> list[dict]:
 
     try:
         await rag_ensure_init(settings)
-        vec = await asyncio.to_thread(rag_encode, query)
         min_words = int(rag_cfg.get("min_chunk_words", 0))
         rerank_enabled = bool(rag_cfg.get("rerank_enabled", False))
         rerank_model = str(rag_cfg.get("rerank_model", ""))
         rerank_multiplier = int(rag_cfg.get("rerank_multiplier", 4))
-        hits = await asyncio.to_thread(
-            rag_search,
-            vec,
-            _RAG_TOP_K,
-            min_words,
-            query,
-            rerank_enabled,
-            rerank_model,
-            rerank_multiplier,
-        )
-        # Patch 85: Debug-Log für gefilterte Treffer
-        # Patch 89: L2-Threshold greift nur wenn kein Rerank aktiv war —
-        # sonst macht die L2-Distanz als Relevanzmaß weniger Sinn
-        # (Reranker kann Chunks mit höherem L2 auf Rang 1 heben).
-        if rerank_enabled and hits:
-            filtered = hits  # Reranker hat schon sortiert/ausgewählt
+        expand_enabled = bool(rag_cfg.get("query_expansion_enabled", False))
+
+        # Patch 97: Query Expansion (Fail-Safe: bei Fehler nur Original-Query)
+        if expand_enabled:
+            from zerberus.modules.rag.query_expander import expand_query
+            queries = await expand_query(query, rag_cfg)
         else:
-            filtered = [h for h in hits if h.get("l2_distance", 999) < _RAG_L2_THRESHOLD]
-            if hits and not filtered:
-                logger.warning(f"[DEBUG-85] RAG: {len(hits)} Treffer gefunden, aber ALLE über L2-Threshold {_RAG_L2_THRESHOLD}! Nächster: {hits[0].get('l2_distance', 'N/A'):.3f}")
+            queries = [query]
+
+        # Per Sub-Query: raw FAISS-Hits (ohne inline-Rerank). Wir reranken
+        # am Ende einmal über alle uniquen Kandidaten mit der Original-Query.
+        per_query_k = _RAG_TOP_K * (rerank_multiplier if rerank_enabled else 1)
+        all_candidates: list[dict] = []
+        seen: set[str] = set()
+        for q in queries:
+            vec = await asyncio.to_thread(rag_encode, q)
+            sub_hits = await asyncio.to_thread(
+                rag_search,
+                vec,
+                per_query_k,
+                min_words,
+                q,
+                False,          # rerank_enabled=False — wir reranken am Ende kombiniert
+                "",
+                rerank_multiplier,
+            )
+            for h in sub_hits:
+                key = (h.get("text", "") or "")[:200]
+                if key and key not in seen:
+                    seen.add(key)
+                    all_candidates.append(h)
+
+        if expand_enabled:
+            logger.warning(
+                f"[EXPAND-97] Original: {query!r}, Expanded: {queries}, "
+                f"per-query-k={per_query_k}, Post-dedup: {len(all_candidates)}"
+            )
+
+        # Finaler Rerank über den dedupe'ten Pool mit der ORIGINAL-Query
+        if rerank_enabled and rerank_model and all_candidates:
+            from zerberus.modules.rag.reranker import rerank as _rerank
+            hits = await asyncio.to_thread(
+                _rerank, query, all_candidates, rerank_model, _RAG_TOP_K
+            )
+            filtered = hits
+        else:
+            filtered = [h for h in all_candidates if h.get("l2_distance", 999) < _RAG_L2_THRESHOLD][:_RAG_TOP_K]
+            if all_candidates and not filtered:
+                logger.warning(f"[DEBUG-85] RAG: {len(all_candidates)} Treffer gefunden, aber ALLE über L2-Threshold {_RAG_L2_THRESHOLD}! Nächster: {all_candidates[0].get('l2_distance', 'N/A'):.3f}")
         return filtered
     except Exception as e:
         logger.warning(f"RAG-Suche fehlgeschlagen (graceful fallback): {e}")

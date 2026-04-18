@@ -84,8 +84,15 @@ Nach Patch 89 deutlich weniger dringend: Der Cross-Encoder-Reranker kompensiert 
 ~~`BAAI/bge-reranker-v2-m3` über die Top-N des FAISS-Retrievals.~~
 Implementiert als eigenständiges Modul `zerberus/modules/rag/reranker.py` mit Lazy-Load-Guard und Fail-Safe-Fallback. FAISS over-fetch `top_k * 4`, Rerank sortiert neu. **Eval-Delta: 4/11 JA → 10/11 JA.** Q4 (Perseiden 0.942) und Q10 (Ulm 0.929) beide auf Rang 1. Details: `rag_eval_delta_patch89.md`.
 
-**R-04 — Query-Expansion via LLM vor RAG** ⭐ NÄCHSTER KANDIDAT (für Aggregat-Queries)
-Kurzer LLM-Call vor `_search_index`, der synonyme Formulierungen / Stichworte erzeugt. Nach Patch 89 ist Q11 („Nenn alle Momente wo…") das einzige verbleibende TEILWEISE — Aggregat-Query, die mehrere Chunks gleichzeitig gewichtet braucht. Query-Expansion könnte hier jeweils einen Rerank-Call pro expandierte Sub-Query triggern, dann die Hits mergen. Alternative: LLM-seitige Multi-Chunk-Aggregation im Orchestrator (Top-N gleichzeitig in den Kontext, kein zweiter Retrieval-Pass).
+**R-04 — Query-Expansion via LLM vor RAG** ✅ ERLEDIGT in Patch 97
+~~Kurzer LLM-Call vor `_search_index`, der synonyme Formulierungen / Stichworte erzeugt.~~
+Neues Modul `zerberus/modules/rag/query_expander.py`: `expand_query()` ruft OpenRouter (günstiges Modell aus `cloud_model` oder `query_expansion_model`-Override) mit 3 s Timeout an, parst JSON-Liste, Fail-Safe bei Fehler → Original-Query. Integration in `/rag/search` (router.py) UND `_rag_search` (orchestrator.py, legacy.py bedient sich dort): Pro Variante FAISS-Call (`rerank_enabled=False`), Dedupe per Text-Prefix, finaler Rerank mit ORIGINAL-Query. Config: `query_expansion_enabled: true`, `query_expansion_model: null`. Diagnose-Logs `[EXPAND-97]` auf WARNING-Level. **Eval-Delta: Q11 bleibt TEILWEISE** — Index hat nur 12 Chunks, die Dedupe schöpft ihn schon aus → Expansion kann den Pool nicht vergrößern. Retrieval ist ausgereizt. Details: `rag_eval_delta_patch97.md`.
+
+**R-07 — Multi-Chunk-Aggregation (Aggregat-Queries)** ⭐ NÄCHSTER KANDIDAT für Q11
+Patch 97 hat gezeigt: Query Expansion hilft bei kleinem Index nichts, wenn der Reranker nach der Expansion trotzdem *einen* Top-Chunk wählt. Für Aggregat-Queries („Nenn alle Momente wo …") muss der Orchestrator **mehrere** Chunks gleichzeitig in den LLM-Kontext packen und das LLM explizit bitten, alle Treffer aufzuzählen. Mögliche Umsetzung:
+- Query-Typ-Erkennung (Aggregat vs. Single-Fact) — Regex oder LLM-Klassifikation
+- Bei Aggregat: `top_k` auf 8+ anheben, kein Rerank-Cut, alle Chunks als `[Gedächtnis 1..N]` im Prompt
+- System-Prompt-Zusatz: „Bei Aggregat-Fragen alle relevanten Stellen listen, nicht nur die beste."
 
 **R-05 — Sektion-Typ als Metadata-Feld**
 Akt/Prolog/Epilog/Glossar beim Chunking mitspeichern. Definitionsfragen ("Was steht im Glossar zu…") können dann auf `section_type=glossar` gefiltert werden. Nach Patch 89 nur noch Bonus-Optimierung — Glossar-Queries (Q3, Q6) funktionieren durch den Reranker bereits zuverlässig.

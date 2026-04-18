@@ -195,6 +195,14 @@ modules:
     rerank_enabled: true
     rerank_model: BAAI/bge-reranker-v2-m3
     rerank_multiplier: 4
+    # Patch 97 (R-04): Query Expansion vor dem FAISS-Retrieval. Ein kurzer
+    # LLM-Call erzeugt 2-3 synonyme Formulierungen (Timeout 3 s). Alle
+    # Varianten werden gesucht, die Kandidaten dedupliziert und zusammen
+    # durch den Reranker gejagt, der mit der ORIGINAL-Query scored.
+    # Fail-Safe: Timeout oder LLM-Fehler → nur Original-Query.
+    # query_expansion_model: null → nutzt legacy.models.cloud_model
+    query_expansion_enabled: true
+    query_expansion_model: null
 
   # MQTT – IoT-Sensor-Integration (aktuell deaktiviert)
   mqtt:
