@@ -183,6 +183,13 @@ ADMIN_HTML = """<!DOCTYPE html>
                 if (fs) document.documentElement.style.setProperty('--hel-font-size-base', fs);
             } catch (_) {}
         })();
+        // Patch 99 (H-F01): aktiven Tab früh setzen, vermeidet FOUC
+        window.__hel_active_tab = (function () {
+            try {
+                var t = localStorage.getItem('hel_active_tab');
+                return t || 'metrics';
+            } catch (_) { return 'metrics'; }
+        })();
     </script>
     <style>
         :root { --hel-font-size-base: 15px; }
@@ -197,27 +204,54 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
         .container { max-width: 1400px; margin: 0 auto; }
         h1 { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
-        /* Patch 85: Akkordeon-Layout */
+        /* Patch 99 (H-F01): Sticky Tab-Leiste ersetzt Akkordeon.
+           Die .hel-section-header bleiben im HTML für Rückwärtskompatibilität,
+           werden aber per CSS versteckt. .hel-section-body verliert seine
+           collapsed/max-height-Mechanik — die gesamte .hel-section wird per
+           data-tab + display:none/block getoggelt. */
         .hel-section { margin-bottom: 4px; }
-        .hel-section-header {
+        .hel-section[data-tab]:not(.active) { display: none; }
+        .hel-section-header { display: none !important; }
+        .hel-section-body { background: #2d2d2d; border-radius: 12px; padding: 20px; overflow: visible; }
+        .hel-section-body.collapsed { max-height: none !important; padding: 20px; }
+
+        .hel-tab-nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
             display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 0 16px;
-            height: 44px;
-            background: #2d2d2d;
+            gap: 4px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            white-space: nowrap;
+            background: #1a1a1a;
             border-bottom: 2px solid #c8941f;
+            margin: 0 -20px 14px -20px;
+            padding: 6px 14px 0 14px;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+            -webkit-overflow-scrolling: touch;
+        }
+        .hel-tab-nav::-webkit-scrollbar { display: none; }
+        .hel-tab {
+            flex: 0 0 auto;
+            min-height: 44px;
+            padding: 8px 16px;
+            background: transparent;
+            color: #c8ccd0;
+            border: none;
+            border-bottom: 3px solid transparent;
+            font-size: 15px;
+            font-weight: 600;
             cursor: pointer;
-            font-size: 16px;
-            font-weight: bold;
-            color: #e0e0e0;
             user-select: none;
             -webkit-tap-highlight-color: transparent;
         }
-        .hel-section-header:active { background: #3d3d3d; }
-        .section-arrow { display: inline-block; width: 18px; text-align: center; color: #ffd700; transition: transform 0.2s; }
-        .hel-section-body { background: #2d2d2d; border-radius: 0 0 12px 12px; padding: 20px; overflow: hidden; transition: max-height 0.3s ease-out; }
-        .hel-section-body.collapsed { max-height: 0 !important; padding: 0 20px; }
+        .hel-tab:hover, .hel-tab:active { color: #ffd700; }
+        .hel-tab.active {
+            color: #ffd700;
+            border-bottom-color: #ffd700;
+        }
         .card { background: #3d3d3d; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
         label { display: block; margin: 15px 0 5px; color: #ffa5a5; }
         select, textarea, input {
@@ -493,10 +527,23 @@ ADMIN_HTML = """<!DOCTYPE html>
             <button type="button" class="font-preset-btn" data-size="17px" onclick="setFontSize('17px')">17</button>
             <button type="button" class="font-preset-btn" data-size="19px" onclick="setFontSize('19px')">19</button>
         </div>
-        <!-- Patch 85: Akkordeon-Layout — Metriken offen, Rest eingeklappt -->
+        <!-- Patch 99 (H-F01): Sticky Tab-Leiste - ersetzt Akkordeon -->
+        <nav class="hel-tab-nav" id="helTabNav" role="tablist" aria-label="Hel-Sektionen">
+            <button type="button" class="hel-tab active" data-tab="metrics" onclick="activateTab('metrics')">&#128202; Metriken</button>
+            <button type="button" class="hel-tab" data-tab="llm" onclick="activateTab('llm')">&#129302; LLM</button>
+            <button type="button" class="hel-tab" data-tab="system" onclick="activateTab('system')">&#128172; Prompt</button>
+            <button type="button" class="hel-tab" data-tab="gedaechtnis" onclick="activateTab('gedaechtnis')">&#128218; RAG</button>
+            <button type="button" class="hel-tab" data-tab="cleaner" onclick="activateTab('cleaner')">&#128295; Cleaner</button>
+            <button type="button" class="hel-tab" data-tab="usermgmt" onclick="activateTab('usermgmt')">&#128101; User</button>
+            <button type="button" class="hel-tab" data-tab="tests" onclick="activateTab('tests')">&#129514; Tests</button>
+            <button type="button" class="hel-tab" data-tab="dialect" onclick="activateTab('dialect')">&#128483;&#65039; Dialekte</button>
+            <button type="button" class="hel-tab" data-tab="sysctl" onclick="activateTab('sysctl')">&#128147; Sysctl</button>
+            <button type="button" class="hel-tab" data-tab="provider" onclick="activateTab('provider')">&#10060; Provider</button>
+            <button type="button" class="hel-tab" data-tab="nav" onclick="activateTab('nav')">&#128279; Links</button>
+        </nav>
 
         <!-- Metriken (offen) -->
-        <div class="hel-section" id="section-metrics">
+        <div class="hel-section active" data-tab="metrics" id="section-metrics">
           <div class="hel-section-header" onclick="toggleSection('metrics')">
             <span class="section-arrow">&#9660;</span> &#128202; Metriken
           </div>
@@ -551,7 +598,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- Patch 96: Testreports (H-F04) -->
-        <div class="hel-section" id="section-tests">
+        <div class="hel-section" data-tab="tests" id="section-tests">
           <div class="hel-section-header" onclick="toggleSection('tests')">
             <span class="section-arrow">&#9660;</span> &#129514; Testreports
           </div>
@@ -571,7 +618,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- LLM & Guthaben -->
-        <div class="hel-section" id="section-llm">
+        <div class="hel-section" data-tab="llm" id="section-llm">
           <div class="hel-section-header" onclick="toggleSection('llm')">
             <span class="section-arrow">&#9654;</span> LLM &amp; Guthaben
           </div>
@@ -609,7 +656,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- Whisper-Cleaner -->
-        <div class="hel-section" id="section-cleaner">
+        <div class="hel-section" data-tab="cleaner" id="section-cleaner">
           <div class="hel-section-header" onclick="toggleSection('cleaner')">
             <span class="section-arrow">&#9654;</span> Whisper-Cleaner
           </div>
@@ -636,7 +683,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- Dialekte -->
-        <div class="hel-section" id="section-dialect">
+        <div class="hel-section" data-tab="dialect" id="section-dialect">
           <div class="hel-section-header" onclick="toggleSection('dialect')">
             <span class="section-arrow">&#9654;</span> Dialekte
           </div>
@@ -651,7 +698,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- System-Prompt -->
-        <div class="hel-section" id="section-system">
+        <div class="hel-section" data-tab="system" id="section-system">
           <div class="hel-section-header" onclick="toggleSection('system')">
             <span class="section-arrow">&#9654;</span> System-Prompt
           </div>
@@ -677,7 +724,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- Ged&#228;chtnis / RAG -->
-        <div class="hel-section" id="section-gedaechtnis">
+        <div class="hel-section" data-tab="gedaechtnis" id="section-gedaechtnis">
           <div class="hel-section-header" onclick="toggleSection('gedaechtnis')">
             <span class="section-arrow">&#9654;</span> &#129504; Ged&#228;chtnis / RAG
           </div>
@@ -706,7 +753,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- Systemsteuerung -->
-        <div class="hel-section" id="section-sysctl">
+        <div class="hel-section" data-tab="sysctl" id="section-sysctl">
           <div class="hel-section-header" onclick="toggleSection('sysctl')">
             <span class="section-arrow">&#9654;</span> &#128147; Systemsteuerung
           </div>
@@ -724,7 +771,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- Provider -->
-        <div class="hel-section" id="section-provider">
+        <div class="hel-section" data-tab="provider" id="section-provider">
           <div class="hel-section-header" onclick="toggleSection('provider')">
             <span class="section-arrow">&#9654;</span> &#10060; Provider-Blacklist
           </div>
@@ -748,7 +795,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- User-Verwaltung -->
-        <div class="hel-section" id="section-usermgmt">
+        <div class="hel-section" data-tab="usermgmt" id="section-usermgmt">
           <div class="hel-section-header" onclick="toggleSection('usermgmt')">
             <span class="section-arrow">&#9654;</span> &#128274; User-Verwaltung
           </div>
@@ -777,7 +824,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- Navigation -->
-        <div class="hel-section" id="section-nav">
+        <div class="hel-section" data-tab="nav" id="section-nav">
           <div class="hel-section-header" onclick="toggleSection('nav')">
             <span class="section-arrow">&#9654;</span> &#128279; Navigation
           </div>
@@ -851,29 +898,35 @@ ADMIN_HTML = """<!DOCTYPE html>
         let _chartHistory = [];
         let _prevBalance = (() => { try { const v = localStorage.getItem('hel_prevBalance'); return v !== null ? parseFloat(v) : null; } catch(_) { return null; } })();
 
-        // Patch 85: Akkordeon toggle
-        function toggleSection(id) {
-            const body = document.getElementById('body-' + id);
-            const arrow = document.querySelector('#section-' + id + ' .section-arrow');
-            const isCollapsed = body.classList.contains('collapsed');
-            if (isCollapsed) {
-                body.classList.remove('collapsed');
-                body.style.maxHeight = body.scrollHeight + 'px';
-                body.style.padding = '20px';
-                arrow.innerHTML = '&#9660;';
-                // Lazy-load Daten beim ersten Öffnen
+        // Patch 99 (H-F01): Sticky Tab-Navigation — ersetzt Akkordeon.
+        // Jede .hel-section trägt data-tab; genau eine ist .active (display:block),
+        // alle anderen sind via CSS versteckt. Lazy-Loads analog altem toggleSection.
+        const _HEL_LAZY_LOADED = new Set();
+        function activateTab(id) {
+            document.querySelectorAll('.hel-section[data-tab]').forEach(s => {
+                s.classList.toggle('active', s.dataset.tab === id);
+            });
+            document.querySelectorAll('.hel-tab').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.tab === id);
+            });
+            try { localStorage.setItem('hel_active_tab', id); } catch (_) {}
+            // Lazy-Load genau einmal pro Sektion
+            if (!_HEL_LAZY_LOADED.has(id)) {
+                _HEL_LAZY_LOADED.add(id);
                 if (id === 'metrics') loadMetrics();
                 if (id === 'system') { loadSystemPrompt(); loadProfiles(); }
                 if (id === 'gedaechtnis') loadRagStatus();
                 if (id === 'sysctl') loadPacemakerConfig();
                 if (id === 'provider') loadProviderBlacklist();
-            } else {
-                body.classList.add('collapsed');
-                body.style.maxHeight = '0';
-                body.style.padding = '0 20px';
-                arrow.innerHTML = '&#9654;';
+            }
+            // Aktiven Tab in die Mitte scrollen, falls Overflow
+            const activeBtn = document.querySelector('.hel-tab.active');
+            if (activeBtn && activeBtn.scrollIntoView) {
+                activeBtn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
             }
         }
+        // Rückwärtskompat-Alias, falls Altcode noch toggleSection aufruft.
+        function toggleSection(id) { activateTab(id); }
 
         async function loadModelsAndBalance() {
             const balanceEl = document.getElementById('balanceDisplay');
@@ -1474,6 +1527,9 @@ ADMIN_HTML = """<!DOCTYPE html>
             renderMetricToggles();
             loadProfilesList();
             loadReportsList();
+            // Patch 99: aktiven Tab setzen (aus localStorage oder Default 'metrics')
+            try { activateTab(window.__hel_active_tab || 'metrics'); }
+            catch (e) { console.warn('[P99] activateTab', e); }
         });
 
         async function exportSession(sessionId) {

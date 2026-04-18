@@ -1,7 +1,7 @@
 # Zerberus Pro 4.0 – Projektdokumentation
 
 **Stand:** 2026-04-18
-**Version:** 4.0 (Patch 98 – Wiederholen & Bearbeiten an Chat-Bubbles)
+**Version:** 4.0 (Patch 99 – Hel Sticky Tab-Leiste)
 **Status:** Aktiv in Entwicklung
 
 ---
@@ -2741,5 +2741,46 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 **Lessons:**
 - Server-Reload-Lesson erneut: `--reload` auf Windows sah die Änderung an der HTML-Stringliteral in `nala.py` auch nach `touch` nicht — manueller Kill + Neustart nötig. Zum dritten Mal in dieser Session (Patch 95, 97, 98) — gehört in `lessons.md` als harter Punkt.
 - Design-Entscheidung „kein Fork": Ein Chat-Fork würde bedeuten, dass die weiter-obigen Nachrichten und alles danach als „abgezweigte Version" weiterleben — schwierig im aktuellen linearen Message-Array. Der Kosten-Nutzen-Vergleich (kleine UX-Verbesserung vs. Datenmodell-Umbau) hat klar gegen Fork gesprochen. Falls später doch: neue Tabelle `session_branches` mit Parent-ID wäre der Einstieg.
+
+### Patch 99 – Hel Sticky Tab-Leiste (H-F01) (2026-04-18)
+
+**Ziel:** Das Akkordeon-Layout (seit Patch 85) wird bei elf Sektionen unübersichtlich. Backlog-Item H-F01 fordert eine Sticky-Tab-Leiste, die immer am oberen Rand klebt und per Tap zwischen den Sektionen wechselt. Diese Patch löst das.
+
+**Block A – Tab-Leiste HTML & CSS:**
+- Neues `<nav class="hel-tab-nav">` direkt unter `<h1>` (nach der Schriftgrößen-Wahl). Rolle `tablist`, Aria-Label.
+- 11 Tabs (`role` wird per HTML5 `<nav>` + `<button type="button">` geliefert): 📊 Metriken, 🤖 LLM, 💬 Prompt, 📚 RAG, 🔧 Cleaner, 👥 User, 🧪 Tests, 🗣 Dialekte, 💗 Sysctl, ❌ Provider, 🔗 Links.
+- CSS: `position: sticky; top: 0; z-index: 100` — bleibt am oberen Rand beim Scrollen. `overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap` — horizontal scrollbar auf Mobile. Scrollbar per `scrollbar-width: none; -ms-overflow-style: none; ::-webkit-scrollbar { display: none }` versteckt. `min-height: 44px; padding: 8px 16px` pro Tab (Touch-Targets). Aktiver Tab: `color: #ffd700` + 3 px Unterstrich in derselben Farbe. `:active`-Fallback für Touch.
+- Hintergrund `#1a1a1a` (matcht Body), Bottom-Border `2px solid #c8941f` (matcht den alten Akkordeon-Header-Look).
+
+**Block B – Tab-Wechsel JavaScript:**
+- Jede `.hel-section` bekommt `data-tab="metrics" | "llm" | …` (Section-IDs bleiben unverändert für Test-Kompat).
+- CSS-Regel `.hel-section[data-tab]:not(.active) { display: none; }` — nur die aktive Sektion ist sichtbar.
+- Neue Funktion `activateTab(id)`:
+  1. Toggelt die `.active`-Klasse auf `.hel-section[data-tab=id]` und `.hel-tab[data-tab=id]`.
+  2. Persistiert `localStorage('hel_active_tab')`.
+  3. Lazy-Load genau einmal pro Sektion (Set `_HEL_LAZY_LOADED`): `loadMetrics()`, `loadSystemPrompt()+loadProfiles()`, `loadRagStatus()`, `loadPacemakerConfig()`, `loadProviderBlacklist()`.
+  4. Scrollt den aktiven Tab per `scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' })` ins Sichtfeld, falls die Tab-Leiste scrollbar ist.
+- `toggleSection(id)` bleibt als Alias (`function toggleSection(id) { activateTab(id); }`) — falls irgendwo noch Altcode darauf referenziert.
+- Early-Load-IIFE im `<head>` (neben dem Patch-90-FOUC-Fix für `hel_font_size`) liest `hel_active_tab` in `window.__hel_active_tab`, DOMContentLoaded-Handler ruft `activateTab(window.__hel_active_tab || 'metrics')` auf.
+
+**Block C – Migration bestehender Sektionen:**
+- **Akkordeon-Wrapper bleiben erhalten** aus Rückwärtskompat-Gründen — `<div class="hel-section-header">` wird per CSS `display: none !important` versteckt statt aus dem HTML entfernt. Der Vorteil: alte `toggleSection`-Onclicks im HTML feuern nicht, aber der Code ist minimal-invasiv.
+- `.hel-section-body.collapsed` wird via CSS-Override (`max-height: none !important; padding: 20px`) neutralisiert — der alte Akkordeon-Mechanismus ist tot, die Body-Div dient nur noch als optischer Container.
+- Metriken-Sektion erhält im HTML direkt `class="hel-section active"` als Default (matched den ersten Tab-Button mit `class="hel-tab active"`). Das verhindert eine FOUC-Lücke zwischen Render und DOMContentLoaded.
+
+**Block D – Tests & Verifikation:**
+- `grep -c data-tab=` im gerenderten HTML: 11 (eine pro Sektion, + 11 im Tab-Nav = 22 plus die IIFE-Referenzen). 23 neue Marker gesamt (`Patch 99`, `activateTab`, `hel-tab-nav`).
+- Full-Test-Suite post-Restart: **32 passed in 49.93 s**, keine Regressions.
+- `test_metrics_section_present` greift `#metricsCanvas` ODER `#section-metrics` — beide bleiben vorhanden, also ✓.
+- `test_time_chips_visible` greift `.time-chip` im Metriken-Tab — Metriken ist Default-Active, also ✓.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/hel.py` (CSS + Nav-HTML + `activateTab()`/`toggleSection()` + DOMContentLoaded-Hook + `data-tab`-Attribute)
+- `HYPERVISOR.md`, `README.md`, `backlog_nach_patch83.md`, `lessons.md`, `docs/PROJEKTDOKUMENTATION.md`
+
+**Lessons:**
+- **Zombie-Uvicorn-Worker durch wiederholtes `--reload` + manuelle Kills:** In dieser Session lief irgendwann ein Baum aus 3 parallelen uvicorn-Masters plus ihren Workers, weil frühere `--reload`-Hänger nicht sauber aufgeräumt waren. Port 5000 wurde vom ältesten Prozess gehalten, die neuen Prozesse starteten aber ohne zu merken, dass der Port belegt war (SSL-Setup schluckt die Fehlermeldung). **Symptom: neue Code-Änderungen erscheinen nicht im gerenderten HTML, obwohl eine neue uvicorn-Instanz läuft.** Diagnose: `Get-WmiObject Win32_Process -Filter "Name='python.exe'"` listet alle Uvicorn-PIDs, dann `taskkill //PID <pid> //F` für jeden einzelnen plus Worker-Kinder. Vor jedem Server-Start: diese Liste prüfen.
+- Minimal-invasive Migration (Akkordeon → Tabs) durch CSS-Versteck statt HTML-Umbau spart viel Diff-Größe und senkt das Regressionsrisiko. Die bestehenden `.hel-section-header`-`onclick`-Handler bleiben harmlos (Elemente sind `display: none`), die Tests greifen weiter an den stabilen IDs, und der Rollback ist ein CSS-Zwei-Zeiler.
+- `scrollIntoView({ inline: 'center' })` auf dem aktiven Tab ist ein nettes UX-Detail für Mobile, das beim Tab-Wechsel den neu gewählten Tab in die Mitte der Leiste scrollt — ohne diese Zeile müssten Nutzer zwischen Tab-Wechsel und Sektion hin- und her-scrollen.
 
 *Stand: 2026-04-18, Patch 96.*

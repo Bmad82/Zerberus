@@ -48,8 +48,9 @@ Defensive `@media (orientation: landscape) and (max-height: 500px)`-Regeln in Na
 
 ## ✨ Features — Hel
 
-**H-F01 — Sticky Tab-Leiste (Karteikarten)**
-Tabs oben, immer sichtbar, per Wischgeste wechselbar.
+**H-F01 — Sticky Tab-Leiste (Karteikarten)** ✅ ERLEDIGT in Patch 99
+~~Tabs oben, immer sichtbar, per Wischgeste wechselbar.~~
+`position: sticky; top: 0; z-index: 100`-Nav direkt unter `<h1>`. 11 Tabs (📊 Metriken, 🤖 LLM, 💬 Prompt, 📚 RAG, 🔧 Cleaner, 👥 User, 🧪 Tests, 🗣 Dialekte, 💗 Sysctl, ❌ Provider, 🔗 Links). Horizontal scrollbar auf Mobile (`-webkit-overflow-scrolling: touch`, Scrollbar via `scrollbar-width: none` versteckt), 44 px Touch-Targets, Gold-Unterstrich am aktiven Tab. `activateTab()` ersetzt `toggleSection()`, Lazy-Load genau einmal pro Sektion via `_HEL_LAZY_LOADED`-Set, `localStorage('hel_active_tab')` persistiert die Auswahl, Early-Load-IIFE im `<head>` verhindert FOUC. Bestehende `#section-*`-IDs bleiben für Tests kompatibel.
 
 **H-F02 — Dialekt-JSON + WhisperCleaner: UX statt Rohtext** ✅ ERLEDIGT in Patch 90 (WhisperCleaner-Teil)
 ~~Scrollbare Liste statt JSON-Editor. Strukturiertes Formular.~~

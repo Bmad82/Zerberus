@@ -1,8 +1,16 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 98 (2026-04-18)*
+*Letzte Aktualisierung: Patch 99 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 99** – Hel Sticky Tab-Leiste (H-F01) (2026-04-18)
+- Block A: Neue `.hel-tab-nav` (`position: sticky; top:0; z-index:100`) direkt unter `<h1>` mit 11 Tabs (📊 Metriken, 🤖 LLM, 💬 Prompt, 📚 RAG, 🔧 Cleaner, 👥 User, 🧪 Tests, 🗣 Dialekte, 💗 Sysctl, ❌ Provider, 🔗 Links). Horizontal scrollbar auf Mobile (`overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none`), 44 px Touch-Targets, Unterstrich-Highlight in `#ffd700` für aktiven Tab.
+- Block B: Neue `activateTab(id)`-Funktion ersetzt das alte `toggleSection` (als Alias belassen für Altcode). Versteckt/zeigt Sections via `data-tab`-Attribut + `.active`-Klasse. Lazy-Loads (loadMetrics / loadSystemPrompt / loadRagStatus / loadPacemakerConfig / loadProviderBlacklist) laufen genau einmal pro Sektion (`_HEL_LAZY_LOADED`-Set). Aktiver Tab in `localStorage('hel_active_tab')` persistiert. Early-Load-IIFE im `<head>` vermeidet FOUC + Default auf 'metrics'.
+- Block C: Jede `.hel-section` bekam `data-tab="..."`-Attribut; `.hel-section-header`-Zeilen bleiben im HTML (Rückwärtskompat für `toggleSection`-Altcode) aber sind per CSS `display: none !important`. `.hel-section-body.collapsed`-Regel neutralisiert (`max-height: none !important`) — Tabs verwalten die Sichtbarkeit auf Section-Ebene, nicht mehr auf Body-Ebene.
+- Block D: Full-Test-Suite post-Restart: **32 passed in 49.93 s** — bestehende Selektoren (`#metricsCanvas`, `#section-metrics`, `.time-chip`) funktionieren unverändert weiter, weil Metriken der Default-Tab ist und alle Sektion-IDs bestehen bleiben. 11 `data-tab`-Attribute im gerenderten HTML verifiziert.
+- Server-Reload-Lesson zum dritten Mal in dieser Session: zombie-Worker aus früheren `--reload`-Versuchen blockierten Port 5000 → mehrere uvicorn-Prozess-Trees parallel, neue Prozesse banden keinen Port mehr. Clean via `Get-WmiObject Win32_Process`-Scan + `taskkill` aller Python-Uvicorn-PIDs, dann frischer Start. **`lessons.md` um harten Punkt dazu ergänzt.**
+- Backlog-Item 10 (H-F01) ✓ erledigt. Backlog komplett abgearbeitet bis auf R-07 (Multi-Chunk-Aggregation, siehe Q11).
+
 **Patch 98** – Wiederholen & Bearbeiten an Chat-Bubbles (N-F03/N-F04) (2026-04-18)
 - Block A: Neuer 🔄-Button (`.bubble-action-btn`) in der `msg-toolbar` nur an User-Bubbles — `retryMessage(text, btn)` ruft `sendMessage(text)` erneut auf. Kein Fork / kein History-Rewrite; frühere Nachrichten werden einfach als neue Message ans Ende gehängt. Kurzer Gold-Flash (CSS-Klasse `.copy-ok` 800 ms) als visuelles Feedback.
 - Block B: Neuer ✏️-Button ebenfalls nur an User-Bubbles — `editMessage(text, btn)` kopiert den Text in die Textarea, fokussiert sie, triggert das bestehende Auto-Expand (96–140 px) und setzt den Cursor ans Ende. Kein Auto-Senden — der User editiert und drückt Enter selbst.
@@ -240,7 +248,7 @@
 7. ~~[BACKLOG] `rag_eval.py` hardcoded auf `http://127.0.0.1:5000`~~ ✅ Patch 90 — HTTPS-Default + `_SSL_CTX` + `RAG_EVAL_URL`-Env-Override.
 8. [N-F02/N-F03/N-F04] Nala Bubble-Tooling (Wiederholen / Bearbeiten / Lade-Indikator-Upgrade) — siehe `backlog_nach_patch83.md`. Nicht akut.
 9. ~~[H-F03] Hel: mehr Metriken-Auswahl~~ ✅ Patch 91 — 5 Metriken im Chart (BERT, TTR, Entropy, Hapax, Ø Wortlänge), Toggle-Pills.
-10. [H-F01] Hel: Sticky Tab-Leiste (statt Akkordeon Wisch-Tabs) — Konzept offen.
+10. ~~[H-F01] Hel: Sticky Tab-Leiste (statt Akkordeon Wisch-Tabs)~~ ✅ Patch 99 — `position: sticky`-Nav mit 11 Tabs, 44 px Touch-Targets, aktiver Tab via localStorage persistiert, Lazy-Load pro Tab, horizontal scrollbar auf Mobile.
 11. ~~[H-F04] Loki & Fenrir Test-Reports ins Hel-Dashboard integrieren~~ ✅ Patch 96 — Akkordeon „🧪 Testreports" mit Button + Tabelle, Endpoints `/hel/tests/report` (HTML) + `/hel/tests/reports` (Liste).
 
 ## Architektur-Warnungen
