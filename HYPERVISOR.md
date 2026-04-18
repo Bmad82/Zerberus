@@ -3,6 +3,12 @@
 *Letzte Aktualisierung: Patch 93 (2026-04-18)*
 
 ## Aktueller Patch
+**Hotfix Git-Hygiene** – Push-fähig machen (2026-04-18)
+- `GitHubDesktopSetup-x64.exe` (181 MB) aus gesamter Git-History entfernt via `git filter-repo` — hatte GitHub's 100 MB Limit blockiert.
+- `.gitignore` erweitert um: `*.bak`, `backup_p*/`, `*.exe`, `.cache/`, `*.bin/safetensors/onnx`, `Ratatoskr/`, `alembic/versions/__pycache__/`, OS/IDE-Dateien.
+- 9 `.bak`-Dateien + `backup_p69/` aus Git-Tracking entfernt (lokal erhalten). Keine Secrets im Repo.
+- Erstes erfolgreiches Push zu `https://github.com/Bmad82/Zerberus.git` (neuer Branch `main`).
+
 **Patch 93** – Loki & Fenrir: Playwright E2E + Chaos-Tests (2026-04-18)
 - Block A: Playwright 1.58 + Chromium installiert, `zerberus/tests/` Package mit `conftest.py` (Shared Fixtures: `nala_page`, `logged_in_loki`, `logged_in_fenrir`, `hel_page`). Test-Profile `loki`/`fenrir` in `config.yaml` angelegt (bcrypt-Hashes), Self-Service-Logins verifiziert (`POST /nala/profile/login` → 200).
 - Block B: `test_loki.py` — 4 Test-Klassen (TestLogin, TestChat, TestNavigation, TestHel) plus `TestMetricsAPI` der die Patch-91-`{meta,results}`-Envelope-Struktur prüft. Mobile-Viewport als Default (390×844).
