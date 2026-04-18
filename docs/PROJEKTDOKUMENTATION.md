@@ -1,7 +1,7 @@
 # Zerberus Pro 4.0 – Projektdokumentation
 
 **Stand:** 2026-04-18
-**Version:** 4.0 (Patch 97 – R-04 Query Expansion für Aggregat-Queries)
+**Version:** 4.0 (Patch 98 – Wiederholen & Bearbeiten an Chat-Bubbles)
 **Status:** Aktiv in Entwicklung
 
 ---
@@ -2709,5 +2709,37 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 - `--reload` auf Windows hängt regelmäßig bei langlaufenden Requests — bei jedem Patch mit neuen Imports (neue Datei, neues Paket) manueller Neustart einplanen. Test per `[EXPAND-97]`-Log bzw. einfacher „kommt der Log an"-Check.
 - Query Expansion ist nur so stark wie der Index breit ist. Bei 12 Chunks ist sie nutzlos für Aggregat-Queries — bei 100+ Chunks wird sie zum echten Retrieval-Boost. Fürs Protokoll: die Infrastruktur steht jetzt, der Effekt skaliert mit Dokumenten-Volumen.
 - Wichtige Design-Entscheidung: **pro Sub-Query FAISS ohne Rerank, dann finaler Rerank mit Original-Query auf den Merged-Pool.** Alternative (Rerank pro Sub-Query und Merge der Rerank-Scores) hätte 5× CrossEncoder-Calls gekostet und das Scoring inkonsistent gemacht.
+
+### Patch 98 – Wiederholen & Bearbeiten an Chat-Bubbles (N-F03/N-F04) (2026-04-18)
+
+**Ziel:** Zwei seit Patch 83 im Backlog liegende N-F03/N-F04-Features — Wiederholen-Button und Bearbeiten-Button — an der bestehenden Bubble-Toolbar ergänzen. Bewusst **minimal-invasiv** umgesetzt, kein Fork / kein History-Rewrite / kein Inline-Editing.
+
+**Block A – Wiederholen-Button (N-F03):**
+- Neuer 🔄-Button (`.bubble-action-btn`) in der bereits existierenden `msg-toolbar` ([nala.py:~1524](zerberus/app/routers/nala.py)) — **nur an User-Bubbles** angehängt.
+- `retryMessage(text, btn)` in JS: triggert `sendMessage(text)` mit dem ursprünglichen Text, Gold-Flash auf dem Button (800 ms `.copy-ok`-Klasse) als visuelles Feedback.
+- Klick auf die **letzte** User-Nachricht = echtes Retry. Klick auf eine **frühere** Nachricht = neue Message am Ende des Chats (identisches UX-Verhalten; ein Fork wäre zu komplex für den Scope dieses Patches).
+
+**Block B – Bearbeiten-Button (N-F04):**
+- Neuer ✏️-Button, ebenfalls nur an User-Bubbles.
+- `editMessage(text, btn)` setzt den Text in `#text-input`, fokussiert die Textarea, triggert das bestehende Auto-Expand (`scrollHeight` → `min(max(sh,96),140)`), setzt den Cursor ans Ende.
+- **NICHT automatisch senden** — der User editiert und drückt selbst Enter. Kein Inline-Editing, kein Fork.
+
+**Block C – Styling & Touch:**
+- Bestehende `.copy-btn`-Klasse um `.bubble-action-btn` erweitert (gemeinsamer Selektor für Farbe, Hover/Active, Padding).
+- Neue `@media (hover: none) and (pointer: coarse)`-Regel: Touch-Targets auf 44 px (Mobile), Toolbar leicht opak (0.55) für Dauer-Sichtbarkeit — bis Patch 97 war die Toolbar nur bei Hover sichtbar, was auf Touch-Geräten per `:active` nur kurzzeitig ging.
+- LLM-Bubbles behalten weiterhin nur 📋 + Timestamp (Retry/Edit wären dort semantisch sinnlos).
+
+**Block D – Tests:**
+- Komplette Loki+Fenrir-Suite post-Restart: **32 passed in 50 s** — keine Regressions.
+- Markers im gerenderten Nala-HTML: `bubble-action-btn`, `retryMessage`, `editMessage` — 7 Treffer wie erwartet (Klasse in CSS, 2 Buttons, 2 Funktionen, 2 Onclick-Handler).
+- Die bestehenden `.copy-btn`-Selektoren in den Tests greifen weiterhin — der Shared-Selector-Ansatz hat die Testbasis nicht bewegt.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/nala.py` (CSS + `addMessage()` + 2 neue JS-Funktionen)
+- `HYPERVISOR.md`, `README.md`, `backlog_nach_patch83.md`, `docs/PROJEKTDOKUMENTATION.md`
+
+**Lessons:**
+- Server-Reload-Lesson erneut: `--reload` auf Windows sah die Änderung an der HTML-Stringliteral in `nala.py` auch nach `touch` nicht — manueller Kill + Neustart nötig. Zum dritten Mal in dieser Session (Patch 95, 97, 98) — gehört in `lessons.md` als harter Punkt.
+- Design-Entscheidung „kein Fork": Ein Chat-Fork würde bedeuten, dass die weiter-obigen Nachrichten und alles danach als „abgezweigte Version" weiterleben — schwierig im aktuellen linearen Message-Array. Der Kosten-Nutzen-Vergleich (kleine UX-Verbesserung vs. Datenmodell-Umbau) hat klar gegen Fork gesprochen. Falls später doch: neue Tabelle `session_branches` mit Parent-ID wäre der Einstieg.
 
 *Stand: 2026-04-18, Patch 96.*

@@ -28,11 +28,13 @@ Sicherstellen dass LLM-Outputs nicht in Metrikberechnung einfließen. Explizit k
 **N-F02 — Lade-Indikator: drehendes Rad + „Denke nach…"**
 Sichtbar während LLM arbeitet. (Patch 76 hat Typing-Bubble, das hier wäre ein Upgrade)
 
-**N-F03 — Wiederholen-Button an jeder Chat-Bubble**
-Letzte Nachricht = neu senden. Weiter oben = Fork (alter Verlauf bleibt).
+**N-F03 — Wiederholen-Button an jeder Chat-Bubble** ✅ ERLEDIGT in Patch 98
+~~Letzte Nachricht = neu senden. Weiter oben = Fork (alter Verlauf bleibt).~~
+🔄-Button in der `.msg-toolbar` nur an User-Bubbles. `retryMessage(text)` ruft `sendMessage(text)` erneut auf. Frühere Nachrichten werden als neue Message ans Ende gehängt — **kein Fork, kein History-Rewrite** (bewusst vereinfacht).
 
-**N-F04 — Bearbeiten-Button an jeder Chat-Bubble**
-Letzte = direkte Änderung. Weiter oben = Fork.
+**N-F04 — Bearbeiten-Button an jeder Chat-Bubble** ✅ ERLEDIGT in Patch 98
+~~Letzte = direkte Änderung. Weiter oben = Fork.~~
+✏️-Button nur an User-Bubbles. `editMessage(text)` kopiert den Text in die Textarea, fokussiert sie, triggert Auto-Expand, setzt Cursor ans Ende. NICHT automatisch gesendet — der User editiert und drückt selbst Enter. **Kein Inline-Editing, kein Fork** (bewusst vereinfacht).
 
 **N-F09b — Schriftgröße Hel** ✅ ERLEDIGT in Patch 90
 ~~Nala-Teil in Patch 86 erledigt (4 Presets via `--font-size-base`). Pendant für Hel-UI fehlt noch.~~

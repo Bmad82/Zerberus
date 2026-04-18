@@ -1,8 +1,15 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 97 (2026-04-18)*
+*Letzte Aktualisierung: Patch 98 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 98** – Wiederholen & Bearbeiten an Chat-Bubbles (N-F03/N-F04) (2026-04-18)
+- Block A: Neuer 🔄-Button (`.bubble-action-btn`) in der `msg-toolbar` nur an User-Bubbles — `retryMessage(text, btn)` ruft `sendMessage(text)` erneut auf. Kein Fork / kein History-Rewrite; frühere Nachrichten werden einfach als neue Message ans Ende gehängt. Kurzer Gold-Flash (CSS-Klasse `.copy-ok` 800 ms) als visuelles Feedback.
+- Block B: Neuer ✏️-Button ebenfalls nur an User-Bubbles — `editMessage(text, btn)` kopiert den Text in die Textarea, fokussiert sie, triggert das bestehende Auto-Expand (96–140 px) und setzt den Cursor ans Ende. Kein Auto-Senden — der User editiert und drückt Enter selbst.
+- Block C: CSS-Sweep auf die bestehende `.copy-btn`-Klasse erweitert auf `.copy-btn, .bubble-action-btn` (28 px Standard, 44 px Touch-Target via `@media (hover: none) and (pointer: coarse)`, leicht opake Toolbar bei Touch-Geräten für Dauer-Sichtbarkeit). LLM-Bubbles behalten weiterhin nur 📋 + Timestamp.
+- Block D: Full-Test-Suite post-Restart: **32 passed in 50 s** — keine Regressions an den bestehenden Bubble-Selektoren. Markers im HTML (`bubble-action-btn`, `retryMessage`, `editMessage`): 7 Treffer wie geplant.
+- Backlog N-F03 + N-F04 ✓ erledigt.
+
 **Patch 97** – R-04: Query Expansion für Aggregat-Queries (2026-04-18)
 - Block A: Neues Modul [query_expander.py](zerberus/modules/rag/query_expander.py) — `expand_query(query, config)` macht einen kurzen OpenRouter-Call (System-Prompt: "erzeuge 2-3 alternative Formulierungen als JSON-Liste"), 3 s Timeout, Fail-Safe auf Original-Query bei Timeout / HTTP-Fehler / Parse-Fehler. Modell aus `modules.rag.query_expansion_model` oder Fallback auf `legacy.models.cloud_model`.
 - Block B: Integration in `/rag/search` (router.py) UND `_rag_search` (orchestrator.py). Pro Variante FAISS-Call mit `rerank_enabled=False`, Dedup per Text-Prefix-Key (200 Zeichen), **finaler Rerank einmal über den kombinierten Pool mit der ORIGINAL-Query** (Relevanz-Bewertung an der echten User-Absicht verankert). `per_query_k = top_k * rerank_multiplier` — jede Sub-Query über-fetched. Diagnose-Logs `[EXPAND-97]` auf WARNING-Level zeigen Original / Expansionen / Pool-Größe.

@@ -612,7 +612,7 @@ NALA_HTML = """<!DOCTYPE html>
             min-height: 18px;
         }
         .msg-wrapper:hover .msg-toolbar { opacity: 1; }
-        .copy-btn {
+        .copy-btn, .bubble-action-btn {
             background: none;
             border: none;
             cursor: pointer;
@@ -620,9 +620,17 @@ NALA_HTML = """<!DOCTYPE html>
             font-size: 0.95em;
             padding: 0 1px;
             line-height: 1;
+            min-width: 28px;
+            min-height: 28px;
         }
-        .copy-btn:hover, .copy-btn:active { color: var(--color-gold); }
+        .copy-btn:hover, .copy-btn:active,
+        .bubble-action-btn:hover, .bubble-action-btn:active { color: var(--color-gold); }
         .copy-ok { color: #4caf50 !important; }
+        /* Patch 98: Touch-Geräte dauerhaft sichtbar (kein hover) */
+        @media (hover: none) and (pointer: coarse) {
+            .msg-toolbar { opacity: 0.55; }
+            .copy-btn, .bubble-action-btn { min-width: 44px; min-height: 44px; font-size: 1.05em; }
+        }
 
         /* ── Export-Dropdown (Patch 65) ── */
         .msg-wrapper {
@@ -1511,6 +1519,7 @@ NALA_HTML = """<!DOCTYPE html>
         wrapper.appendChild(msgDiv);
 
         // Patch 67: Toolbar mit Timestamp + Kopieren-Button
+        // Patch 98: Wiederholen + Bearbeiten nur an User-Bubbles
         const toolbar = document.createElement('div');
         toolbar.className = 'msg-toolbar';
         const timeSpan = document.createElement('span');
@@ -1522,6 +1531,20 @@ NALA_HTML = """<!DOCTYPE html>
         copyBtn.onclick = () => copyBubble(text, copyBtn);
         toolbar.appendChild(timeSpan);
         toolbar.appendChild(copyBtn);
+        if (sender === 'user') {
+            const retryBtn = document.createElement('button');
+            retryBtn.className = 'bubble-action-btn';
+            retryBtn.title = 'Wiederholen';
+            retryBtn.textContent = '🔄';
+            retryBtn.onclick = () => retryMessage(text, retryBtn);
+            toolbar.appendChild(retryBtn);
+            const editBtn = document.createElement('button');
+            editBtn.className = 'bubble-action-btn';
+            editBtn.title = 'Bearbeiten';
+            editBtn.textContent = '✏️';
+            editBtn.onclick = () => editMessage(text, editBtn);
+            toolbar.appendChild(editBtn);
+        }
         wrapper.appendChild(toolbar);
 
         if (sender === 'bot') {
@@ -1574,6 +1597,32 @@ NALA_HTML = """<!DOCTYPE html>
         btn.textContent = '✓';
         btn.classList.add('copy-ok');
         setTimeout(() => { btn.textContent = orig; btn.classList.remove('copy-ok'); }, 1500);
+    }
+
+    // Patch 98 (N-F03): Wiederholen an User-Bubbles — sendet exakt denselben Text
+    // erneut. Kein Fork / kein History-Rewrite; frühere Nachrichten werden einfach
+    // als neue Message ans Ende gehängt.
+    function retryMessage(text, btn) {
+        if (btn) {
+            btn.classList.add('copy-ok');
+            setTimeout(() => btn.classList.remove('copy-ok'), 800);
+        }
+        sendMessage(text);
+    }
+
+    // Patch 98 (N-F04): Bearbeiten — Text in Textarea kopieren, Fokus + Auto-Expand.
+    // NICHT senden; der User editiert und drückt selbst Enter.
+    function editMessage(text, btn) {
+        if (btn) {
+            btn.classList.add('copy-ok');
+            setTimeout(() => btn.classList.remove('copy-ok'), 800);
+        }
+        textInput.value = text;
+        textInput.focus();
+        textInput.style.height = 'auto';
+        textInput.style.height = Math.min(Math.max(textInput.scrollHeight, 96), 140) + 'px';
+        const end = textInput.value.length;
+        textInput.setSelectionRange(end, end);
     }
 
     // ── Export-Funktion (Patch 65) ──
