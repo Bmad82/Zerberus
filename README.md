@@ -359,8 +359,10 @@ pytest zerberus/tests/test_loki.py -v
 pytest zerberus/tests/test_fenrir.py -v
 ```
 
-Reports landen in `zerberus/tests/report/`.
+Reports landen in `zerberus/tests/report/`. Patch 94 hat den Erstlauf gegen den
+live Server gefahren — **32 passed, 0 skipped** in 47 s, kein 500er auf den 14
+Chaos-Payloads.
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 93*
+*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 94*

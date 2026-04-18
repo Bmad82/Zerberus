@@ -1,8 +1,13 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 93 (2026-04-18)*
+*Letzte Aktualisierung: Patch 94 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 94** – Loki & Fenrir Erstlauf + Test-Bugfix (2026-04-18)
+- Block A: Erstlauf der Patch-93-Suite gegen den live Server (`https://127.0.0.1:5000`) — `pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-contained-html`. Ergebnis Erstlauf: **31 passed, 1 skipped** in 49 s. Alle 14 Chaos-Payloads (XSS, SQLi, Log4Shell, Prompt-Injection, Emoji-Bombe, RTL, Nullbyte, Path-Traversal, …) ohne 500er. Bogus-Dates auf `/hel/metrics/history` korrekt abgefangen. **Keine App-Bugs gefunden.**
+- Block B: Ein Test-Bug behoben — `TestNavigation::test_hamburger_menu_opens` skippte stillschweigend, weil der Selector nur `<button>` matchte; in nala.py:885 ist der Hamburger ein `<div class="hamburger">`. Locator um `.hamburger` erweitert ([test_loki.py:81](zerberus/tests/test_loki.py:81)). Re-Run: **32 passed, 0 skipped** in 47 s.
+- Block C: HTML-Report `zerberus/tests/report/full_report.html` (78 KB, self-contained) verifiziert. Log liegt in `zerberus/tests/report/test_run_patch94.log`.
+
 **Hotfix Git-Hygiene** – Push-fähig machen (2026-04-18)
 - `GitHubDesktopSetup-x64.exe` (181 MB) aus gesamter Git-History entfernt via `git filter-repo` — hatte GitHub's 100 MB Limit blockiert.
 - `.gitignore` erweitert um: `*.bak`, `backup_p*/`, `*.exe`, `.cache/`, `*.bin/safetensors/onnx`, `Ratatoskr/`, `alembic/versions/__pycache__/`, OS/IDE-Dateien.

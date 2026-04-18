@@ -2555,3 +2555,42 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 - Beide Logins (loki/fenrir) per `POST /nala/profile/login` → HTTP 200
 
 *Stand: 2026-04-18, Patch 93.*
+
+### Patch 94 – Loki & Fenrir Erstlauf + Test-Bugfix (2026-04-18)
+
+**Ziel:** Patch 93 hat die Tests installiert, aber nie gegen den live Server ausgeführt. Patch 94 ist der Erstlauf — vollständige Diagnose, Fixes für Failures, Re-Run bis grün.
+
+**Block A – Erstlauf:**
+- Vorbedingung: Server läuft (`https://127.0.0.1:5000`), `pytest-html` installiert.
+- Kommando:
+  ```bash
+  pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-contained-html \
+    > zerberus/tests/report/test_run_patch94.log 2>&1
+  ```
+- Ergebnis Erstlauf: **31 passed, 1 skipped** in 49 s.
+- Alle 14 Chaos-Payloads (XSS `<script>`, SQLi `'; DROP TABLE`, Log4Shell `${jndi:ldap://}`, Prompt-Injection, Emoji-Bombe, arabisch/RTL, Nullbytes, Path-Traversal, HTTP-Smuggling, …) ohne 500er, ohne Crash, ohne Reflection.
+- `TestChaosHel::test_metrics_history_bogus_dates` mit Müll-Dates (`'9999-99-99'`, `"'; DROP--"`, leer) → kein 5xx, Envelope sauber.
+- **Keine App-Bugs gefunden** — Patch-91-Envelope-Struktur, Patch-92-`profile_key`-Filter und Auth-Layer alle robust.
+
+**Block B – Test-Bugfix:**
+- Eine Test-Funktion skippte stillschweigend: `TestNavigation::test_hamburger_menu_opens`.
+- Ursache: Locator suchte `button:has-text('☰')` oder `.hamburger-btn`, aber das tatsächliche Element in [nala.py:885](zerberus/app/routers/nala.py:885) ist `<div class="hamburger" onclick="toggleSidebar()">☰</div>` — also weder `<button>` noch `.hamburger-btn`.
+- Fix: Locator um `.hamburger` ergänzt ([test_loki.py:81](zerberus/tests/test_loki.py:81)).
+- Kein App-Eingriff nötig.
+
+**Block C – Re-Run + Report:**
+- Re-Run: **32 passed, 0 skipped** in 47 s.
+- HTML-Report `zerberus/tests/report/full_report.html` (78 KB, self-contained) liegt vor.
+- Logfile: `zerberus/tests/report/test_run_patch94.log`.
+
+**Betroffene Dateien:**
+- `zerberus/tests/test_loki.py` (Locator-Fix)
+- `zerberus/tests/report/full_report.html` (generiert)
+- `zerberus/tests/report/test_run_patch94.log` (generiert)
+- `HYPERVISOR.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`
+
+**Lessons:**
+- Stille `pytest.skip()`-Pfade in Tests verschleiern Selector-Drift. Default-Verhalten: Skip → Failure umstellen, sobald die Selektoren stabilisiert sind. Bis dahin nach Re-Run das Testreport-Summary auf Skips prüfen.
+- Patch-93-Suite läuft **48 s end-to-end** — schnell genug für CI-Trigger nach jedem Patch.
+
+*Stand: 2026-04-18, Patch 94.*

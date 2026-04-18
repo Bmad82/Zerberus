@@ -78,7 +78,7 @@ class TestNavigation:
         """Hamburger-Button öffnet die Sidebar."""
         page = logged_in_loki
         hamburger = page.locator(
-            "button:has-text('\u2630'), .hamburger-btn, #hamburger-btn, [aria-label*='Menü'], [aria-label*='Menu']"
+            ".hamburger, button:has-text('\u2630'), .hamburger-btn, #hamburger-btn, [aria-label*='Menü'], [aria-label*='Menu']"
         ).first
         if hamburger.count() == 0:
             pytest.skip("Kein Hamburger-Button gefunden")
