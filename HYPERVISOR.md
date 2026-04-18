@@ -1,8 +1,14 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 95 (2026-04-18)*
+*Letzte Aktualisierung: Patch 96 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 96** – Testreport-Viewer in Hel (H-F04) (2026-04-18)
+- Block A: Zwei neue Endpoints am Ende von [hel.py](zerberus/app/routers/hel.py): `GET /hel/tests/report` liefert `zerberus/tests/report/full_report.html` als `HTMLResponse` (404+JSON falls nicht vorhanden), `GET /hel/tests/reports` listet alle `*.html`-Dateien mit `mtime`+`size`. `_REPORT_DIR` per `Path(__file__).resolve().parents[2] / "tests" / "report"` — robust gegen aktuelles Working-Dir. Auth via `verify_admin`-Router-Dependency.
+- Block B: Neue Akkordeon-Sektion `🧪 Testreports` direkt nach Metriken (vor LLM & Guthaben), gleicher `.hel-section`/`toggleSection`-Pattern wie alle anderen Sektionen. Card mit Erklärungstext, Button „Letzten Report öffnen" (öffnet `/hel/tests/report` in neuem Tab via `window.open`), darunter Tabelle aller Reports (Datei, Stand-Datum, Größe, Link). JS-Funktion `loadReportsList()` läuft im DOMContentLoaded-Handler, neben `loadProfilesList` aus Patch 95.
+- Block C: API verifiziert (`/hel/tests/report` → HTTP 200, `/hel/tests/reports` → 3 Dateien gelistet). Hel-HTML enthält 6 neue Marker (`section-tests`, `loadReportsList`, `reportsList`). **Test-Suite re-run nach allen drei Patches: 32 passed in 56 s.**
+- Backlog-Item 11 (H-F04) ✓ erledigt.
+
 **Patch 95** – Per-User-Filter im Hel Metriken-Dashboard (2026-04-18)
 - Block A: Neuer Endpoint `GET /hel/metrics/profiles` ([hel.py:2242](zerberus/app/routers/hel.py:2242)) — `SELECT DISTINCT profile_key FROM interactions WHERE profile_key IS NOT NULL`. Auth-Schutz automatisch über `verify_admin`-Router-Dependency. Spaltennot-Check identisch zu `metrics_history` (PRAGMA table_info), gibt `{"profiles": []}` zurück falls Patch-92-Spalte fehlt.
 - Block B: Frontend-Dropdown (`<select id="profileSelect" class="profile-select">`) **vor** den Zeitraum-Chips ([hel.py:489](zerberus/app/routers/hel.py:489)). Default-Option „Alle Profile" + dynamisch aus dem Endpoint befüllt. Eigener CSS-Block `.profile-select` matched die `.time-chip`-Optik (gold-Ring, 36 px, `:active`-Fallback). `loadMetricsChart()` hängt `&profile_key=...` an die URL wenn ausgewählt; `change`-Event ruft `loadMetricsChart(_currentTimeRange)` → kombiniert sich sauber mit Zeitraum-Chips.
@@ -221,7 +227,7 @@
 8. [N-F02/N-F03/N-F04] Nala Bubble-Tooling (Wiederholen / Bearbeiten / Lade-Indikator-Upgrade) — siehe `backlog_nach_patch83.md`. Nicht akut.
 9. ~~[H-F03] Hel: mehr Metriken-Auswahl~~ ✅ Patch 91 — 5 Metriken im Chart (BERT, TTR, Entropy, Hapax, Ø Wortlänge), Toggle-Pills.
 10. [H-F01] Hel: Sticky Tab-Leiste (statt Akkordeon Wisch-Tabs) — Konzept offen.
-11. [H-F04] Loki & Fenrir Test-Reports ins Hel-Dashboard integrieren — neuer Backlog-Eintrag nach Patch 93.
+11. ~~[H-F04] Loki & Fenrir Test-Reports ins Hel-Dashboard integrieren~~ ✅ Patch 96 — Akkordeon „🧪 Testreports" mit Button + Tabelle, Endpoints `/hel/tests/report` (HTML) + `/hel/tests/reports` (Liste).
 
 ## Architektur-Warnungen
 - ~~`interactions`-Tabelle hat keine User-Spalte~~ ✅ Patch 92 behoben: `profile_key` jetzt als indizierte Spalte. Altdaten: 76/4667 migriert (Rest ohne profile_name).

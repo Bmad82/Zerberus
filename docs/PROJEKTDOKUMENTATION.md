@@ -2629,3 +2629,37 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 - Der Reload wird vom OS-Watcher korrekt erkannt (Logzeile `WatchFiles detected changes...`), bricht aber stillschweigend ab wenn der alte Worker nicht beendet werden kann. Kein Warning, kein Error — nur das Ausbleiben des „Application startup complete".
 
 *Stand: 2026-04-18, Patch 95.*
+
+### Patch 96 – Testreport-Viewer in Hel (H-F04) (2026-04-18)
+
+**Ziel:** Patch 93 generiert HTML-Reports nach `zerberus/tests/report/full_report.html`. Bisher musste man ins Dateisystem gucken — Patch 96 macht sie direkt aus dem Hel-Dashboard zugänglich.
+
+**Block A – Backend (Endpoints):**
+- `GET /hel/tests/report` — liefert `full_report.html` als `HTMLResponse` aus `_REPORT_DIR / "full_report.html"`. Falls die Datei nicht existiert: 404 mit JSON `{"error": "Kein Testreport vorhanden. Bitte pytest ausführen."}`.
+- `GET /hel/tests/reports` — liefert eine Liste aller `*.html`-Dateien im Report-Ordner mit `mtime` (Unix-Timestamp) und `size` (Bytes), sortiert nach mtime DESC.
+- `_REPORT_DIR = Path(__file__).resolve().parents[2] / "tests" / "report"` — robust gegen das aktuelle Working-Dir, nutzt die Datei-Position von [hel.py](zerberus/app/routers/hel.py) (`zerberus/app/routers/hel.py` → `parents[2]` = `zerberus/`).
+- Auth via `verify_admin`-Router-Dependency — keine zusätzliche Sicherheitsmaßnahme nötig.
+- `Path`, `HTMLResponse`, `JSONResponse` waren bereits in [hel.py:12-16](zerberus/app/routers/hel.py:12) importiert.
+
+**Block B – Frontend-Akkordeon:**
+- Neue Sektion `<div class="hel-section" id="section-tests">` direkt nach Metriken (vor LLM & Guthaben), Header „🧪 Testreports".
+- `class="hel-section-body collapsed"` — Standard zu, wie die meisten anderen Sektionen außer Metriken.
+- Card-Inhalt: Erklärungs-Paragraph + Button „Letzten Report öffnen" (Klasse `.font-preset-btn` für 44 px Touch-Target + `:active`-Fallback) + `<div id="reportsList">` für die dynamische Tabelle.
+- Button öffnet `/hel/tests/report` in einem neuen Tab via `window.open(..., '_blank')` — kein DOM-Embedding (Self-contained-HTML der pytest-Reports kann globale Styles überschreiben).
+- JS `loadReportsList()` lädt die Reports-Liste beim DOMContentLoaded und rendert eine kompakte Tabelle (Datei, Stand `de-DE`-formatiert, Größe in KB, Link). Nur `full_report.html` ist verlinkbar; ältere Dateien (`loki_report.html`, `fenrir_report.html`) werden gelistet aber nicht verlinkt — kein Path-Param-Endpoint = kein Path-Traversal-Risiko.
+
+**Block C – Verifikation:**
+- `curl /hel/tests/report` → HTTP 200, ~78 KB HTML.
+- `curl /hel/tests/reports` → 3 Reports (`full_report.html`, `fenrir_report.html`, `loki_report.html`) mit korrekten Mtimes.
+- Hel-HTML enthält 6 neue Marker (`section-tests`, `loadReportsList`, `reportsList`).
+- Komplette Test-Suite nach Patch 95+96 re-run: **32 passed in 56 s** — keine Regressionen.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/hel.py` (Endpoints + Akkordeon-HTML + JS)
+- `HYPERVISOR.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`, `backlog_nach_patch83.md`
+
+**Lessons:**
+- Pytest-Reports sind self-contained-HTML mit eigenem CSS — niemals via `<iframe>` oder `innerHTML` einbetten, immer in neuem Tab öffnen, sonst kollidieren die Styles mit Hel.
+- Path-Traversal-Schutz mit „nur fixe Datei verlinken" ist die einfachste Lösung. Wenn später beliebige Reports verlinkt werden sollen, muss der Endpoint einen Pfad-Param mit `Path.resolve().is_relative_to(_REPORT_DIR)`-Check bekommen.
+
+*Stand: 2026-04-18, Patch 96.*

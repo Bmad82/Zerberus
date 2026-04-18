@@ -550,6 +550,26 @@ ADMIN_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
+        <!-- Patch 96: Testreports (H-F04) -->
+        <div class="hel-section" id="section-tests">
+          <div class="hel-section-header" onclick="toggleSection('tests')">
+            <span class="section-arrow">&#9660;</span> &#129514; Testreports
+          </div>
+          <div class="hel-section-body collapsed" id="body-tests">
+            <div class="card">
+                <h2>Playwright-Reports</h2>
+                <p style="color:#c8ccd0; font-size:13px; margin-top:0;">
+                    Loki (E2E) &amp; Fenrir (Chaos) — generiert via
+                    <code>pytest --html=zerberus/tests/report/full_report.html --self-contained-html</code>.
+                </p>
+                <button class="font-preset-btn" onclick="window.open('/hel/tests/report', '_blank')">
+                    Letzten Report &#246;ffnen
+                </button>
+                <div id="reportsList" style="margin-top:14px;"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- LLM & Guthaben -->
         <div class="hel-section" id="section-llm">
           <div class="hel-section-header" onclick="toggleSection('llm')">
@@ -1381,6 +1401,43 @@ ADMIN_HTML = """<!DOCTYPE html>
         // updateChart als Kompatibilitäts-Alias (alte Aufrufe)
         function updateChart() { rebuildChart(); }
 
+        // Patch 96: Testreports-Liste laden (H-F04)
+        async function loadReportsList() {
+            const el = document.getElementById('reportsList');
+            if (!el) return;
+            try {
+                const r = await fetch('/hel/tests/reports');
+                if (!r.ok) { el.textContent = 'Fehler beim Laden (' + r.status + ')'; return; }
+                const data = await r.json();
+                const reports = data.reports || [];
+                if (!reports.length) {
+                    el.textContent = 'Keine Reports vorhanden. Bitte pytest ausführen.';
+                    return;
+                }
+                const rows = reports.map(f => {
+                    const dt = new Date(f.mtime * 1000).toLocaleString('de-DE');
+                    const kb = (f.size / 1024).toFixed(1) + ' KB';
+                    const link = (f.name === 'full_report.html')
+                        ? '<a href="/hel/tests/report" target="_blank" style="color:#f0b429;">öffnen</a>'
+                        : '<span style="color:#888;">(nur full_report verlinkbar)</span>';
+                    return '<tr><td style="padding:4px 8px;">' + f.name + '</td>' +
+                           '<td style="padding:4px 8px; color:#aaa;">' + dt + '</td>' +
+                           '<td style="padding:4px 8px; color:#aaa;">' + kb + '</td>' +
+                           '<td style="padding:4px 8px;">' + link + '</td></tr>';
+                }).join('');
+                el.innerHTML = '<table style="width:100%; font-size:13px; border-collapse:collapse;">' +
+                    '<thead><tr style="border-bottom:1px solid #555;">' +
+                    '<th style="text-align:left; padding:4px 8px;">Datei</th>' +
+                    '<th style="text-align:left; padding:4px 8px;">Stand</th>' +
+                    '<th style="text-align:left; padding:4px 8px;">Größe</th>' +
+                    '<th style="text-align:left; padding:4px 8px;">Aktion</th>' +
+                    '</tr></thead><tbody>' + rows + '</tbody></table>';
+            } catch (e) {
+                console.warn('[P96] loadReportsList', e);
+                el.textContent = 'Fehler beim Laden.';
+            }
+        }
+
         // Patch 95: Per-User-Filter — Profile-Liste laden + Change-Handler
         async function loadProfilesList() {
             const sel = document.getElementById('profileSelect');
@@ -1416,6 +1473,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             });
             renderMetricToggles();
             loadProfilesList();
+            loadReportsList();
         });
 
         async function exportSession(sessionId) {
@@ -2439,3 +2497,49 @@ async def metrics_history(
             },
             "results": results,
         }
+
+
+# ============================================================
+# Patch 96 – Testreport-Viewer (H-F04)
+# ============================================================
+
+# zerberus/app/routers/hel.py.parents[2] == zerberus/  →  zerberus/tests/report
+_REPORT_DIR = Path(__file__).resolve().parents[2] / "tests" / "report"
+
+
+@router.get("/tests/report", response_class=HTMLResponse)
+async def tests_report():
+    """Letzten Playwright-HTML-Report ausliefern (full_report.html)."""
+    p = _REPORT_DIR / "full_report.html"
+    if not p.exists():
+        return JSONResponse(
+            {"error": "Kein Testreport vorhanden. Bitte pytest ausführen."},
+            status_code=404,
+        )
+    try:
+        return HTMLResponse(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"[tests/report] Lesefehler: {e}")
+        return JSONResponse({"error": f"Lesefehler: {e}"}, status_code=500)
+
+
+@router.get("/tests/reports")
+async def tests_reports_list():
+    """Alle .html-Reports im Report-Ordner mit mtime + size."""
+    if not _REPORT_DIR.exists():
+        return {"reports": []}
+    files = sorted(
+        _REPORT_DIR.glob("*.html"),
+        key=lambda x: x.stat().st_mtime,
+        reverse=True,
+    )
+    return {
+        "reports": [
+            {
+                "name": f.name,
+                "mtime": f.stat().st_mtime,
+                "size": f.stat().st_size,
+            }
+            for f in files
+        ]
+    }
