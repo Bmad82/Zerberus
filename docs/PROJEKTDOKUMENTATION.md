@@ -2594,3 +2594,38 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 - Patch-93-Suite läuft **48 s end-to-end** — schnell genug für CI-Trigger nach jedem Patch.
 
 *Stand: 2026-04-18, Patch 94.*
+
+### Patch 95 – Per-User-Filter im Hel Metriken-Dashboard (2026-04-18)
+
+**Ziel:** Patch 91 hat den Metriken-Endpoint bereits um `profile_key` erweitert, Patch 92 die DB-Spalte angelegt. Was fehlte: ein Dropdown in der Hel-UI, mit dem man die Chart-Daten nach Profil filtern kann.
+
+**Block A – Backend (`GET /hel/metrics/profiles`):**
+- Neuer Endpoint in [hel.py:2242](zerberus/app/routers/hel.py:2242), unmittelbar vor `metrics_history`.
+- Query: `SELECT DISTINCT profile_key FROM interactions WHERE profile_key IS NOT NULL AND profile_key != '' ORDER BY profile_key`
+- PRAGMA-Check für `profile_key`-Spalte (Patch-92-ready) — gibt `{"profiles": []}` zurück wenn die Spalte fehlt, statt zu crashen.
+- Auth: automatisch über `verify_admin`-Router-Dependency (`router = APIRouter(prefix="/hel", dependencies=[Depends(verify_admin)])`).
+- Erste Live-Antwort: `{"profiles":["chris"]}` (76 von 4667 Zeilen migriert; loki/fenrir hatten noch keine Chats über die neuen Profile-Keys).
+
+**Block B – Frontend-Dropdown:**
+- `<select id="profileSelect" class="profile-select">` direkt vor `<div class="metric-timerange">` ([hel.py:489](zerberus/app/routers/hel.py:489)).
+- Default-Option „Alle Profile" (Wert `""` = kein Filter).
+- Eigener CSS-Block `.metric-profile-filter` + `.profile-select` matched die `.time-chip`-Optik (gold-Ring 1 px, 36 px Touch-Target, dunkler Background, `:focus`/`:active`-Rand in `#f0b429`).
+- Mobile-first: Container `flex-wrap`, label + select brechen bei schmalen Viewports um.
+- JS-Hook: neue Funktion `loadProfilesList()` lädt die Profile via `fetch('/hel/metrics/profiles')` beim DOMContentLoaded und hängt einen `change`-Listener an, der `loadMetricsChart(_currentTimeRange)` triggert.
+- URL-Erweiterung in `loadMetricsChart()`: liest `document.getElementById('profileSelect').value` und hängt `&profile_key=<value>` an, wenn nicht leer.
+
+**Block C – Verifikation:**
+- `/hel/metrics/profiles` → `{"profiles":["chris"]}`.
+- `/hel/metrics/history?profile_key=chris&limit=1` → `meta.count=1`.
+- `/hel/metrics/history?profile_key=nonexistent` → `meta.count=0` (Filter greift sauber, kein 500er).
+- Hel-HTML: 10 neue Marker (`profileSelect`, `metric-profile-filter`, `loadProfilesList`, `.profile-select`-CSS) im served Markup.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/hel.py` (Endpoint + HTML + CSS + JS)
+- `HYPERVISOR.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`
+
+**Lessons:**
+- `uvicorn --reload` kann hängen, wenn parallel ein langlaufender Request läuft (z.B. Whisper-Voice). Workaround: nicht den ganzen Reloader killen, sondern nur den Worker-Prozess (Reloader spawnt automatisch einen frischen). PIDs unterscheidet `Get-CimInstance Win32_Process`.
+- Der Reload wird vom OS-Watcher korrekt erkannt (Logzeile `WatchFiles detected changes...`), bricht aber stillschweigend ab wenn der alte Worker nicht beendet werden kann. Kein Warning, kein Error — nur das Ausbleiben des „Application startup complete".
+
+*Stand: 2026-04-18, Patch 95.*

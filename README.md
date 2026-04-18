@@ -365,4 +365,4 @@ Chaos-Payloads.
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 94*
+*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 95*

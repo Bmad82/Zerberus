@@ -364,6 +364,24 @@ ADMIN_HTML = """<!DOCTYPE html>
             justify-content: space-between;
         }
         .session-item:hover, .session-item:active { background: #4d4d4d; }
+        /* Patch 95: Per-User-Filter */
+        .metric-profile-filter {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+        .metric-profile-filter label {
+            font-size: 13px; color: #c8ccd0;
+        }
+        .profile-select {
+            width: auto; padding: 6px 14px; border-radius: 16px;
+            border: 1px solid rgba(240,180,41,0.3);
+            background: #2d2d2d; color: #c8ccd0;
+            font-size: 13px; cursor: pointer; min-height: 36px;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .profile-select:focus, .profile-select:active {
+            border-color: #f0b429; outline: none;
+        }
         /* Patch 91: Zeitraum-Chips */
         .metric-timerange { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
         .time-chip {
@@ -485,6 +503,13 @@ ADMIN_HTML = """<!DOCTYPE html>
           <div class="hel-section-body" id="body-metrics">
             <div class="card">
                 <h2>Metrik-Verlauf</h2>
+                <!-- Patch 95: Per-User-Filter -->
+                <div class="metric-profile-filter">
+                  <label for="profileSelect">Profil:</label>
+                  <select id="profileSelect" class="profile-select">
+                    <option value="">Alle Profile</option>
+                  </select>
+                </div>
                 <!-- Patch 91: Zeitraum-Chips -->
                 <div class="metric-timerange">
                   <button class="time-chip active" data-days="7">7 Tage</button>
@@ -1284,6 +1309,10 @@ ADMIN_HTML = """<!DOCTYPE html>
                 const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
                 url += '&from_date=' + from;
             }
+            // Patch 95: Per-User-Filter
+            const pkSel = document.getElementById('profileSelect');
+            const pk = pkSel ? pkSel.value : '';
+            if (pk) url += '&profile_key=' + encodeURIComponent(pk);
 
             const res = await fetch(url);
             if (!res.ok) return;
@@ -1352,6 +1381,25 @@ ADMIN_HTML = """<!DOCTYPE html>
         // updateChart als Kompatibilitäts-Alias (alte Aufrufe)
         function updateChart() { rebuildChart(); }
 
+        // Patch 95: Per-User-Filter — Profile-Liste laden + Change-Handler
+        async function loadProfilesList() {
+            const sel = document.getElementById('profileSelect');
+            if (!sel) return;
+            try {
+                const res = await fetch('/hel/metrics/profiles');
+                if (!res.ok) return;
+                const data = await res.json();
+                for (const p of (data.profiles || [])) {
+                    const opt = document.createElement('option');
+                    opt.value = p; opt.textContent = p;
+                    sel.appendChild(opt);
+                }
+            } catch (e) { console.warn('[P95] loadProfilesList', e); }
+            sel.addEventListener('change', function() {
+                loadMetricsChart(_currentTimeRange);
+            });
+        }
+
         // Zeitraum-Chip-Handler
         document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.time-chip').forEach(function(chip) {
@@ -1367,6 +1415,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                 });
             });
             renderMetricToggles();
+            loadProfilesList();
         });
 
         async function exportSession(sessionId) {
@@ -2238,6 +2287,29 @@ async def post_provider_blacklist(request: Request):
 # ============================================================
 # Metrics History mit BERT-Sentiment (Patch 57)
 # ============================================================
+
+@router.get("/metrics/profiles")
+async def metrics_profiles():
+    """
+    Patch 95: Liefert die distinct profile_keys aus `interactions` für den
+    Per-User-Filter im Hel-Metriken-Dashboard. Leere Liste falls die
+    Patch-92-Spalte noch nicht existiert oder keine Daten vorhanden sind.
+    """
+    from zerberus.core.database import _async_session_maker
+    from sqlalchemy import text
+
+    async with _async_session_maker() as session:
+        col_result = await session.execute(text("PRAGMA table_info(interactions)"))
+        cols = {row[1] for row in col_result.fetchall()}
+        if "profile_key" not in cols:
+            return {"profiles": []}
+        rows = await session.execute(text(
+            "SELECT DISTINCT profile_key FROM interactions "
+            "WHERE profile_key IS NOT NULL AND profile_key != '' "
+            "ORDER BY profile_key"
+        ))
+        return {"profiles": [r[0] for r in rows.fetchall()]}
+
 
 @router.get("/metrics/history")
 async def metrics_history(

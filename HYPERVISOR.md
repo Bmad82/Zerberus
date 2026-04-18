@@ -1,8 +1,14 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 94 (2026-04-18)*
+*Letzte Aktualisierung: Patch 95 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 95** – Per-User-Filter im Hel Metriken-Dashboard (2026-04-18)
+- Block A: Neuer Endpoint `GET /hel/metrics/profiles` ([hel.py:2242](zerberus/app/routers/hel.py:2242)) — `SELECT DISTINCT profile_key FROM interactions WHERE profile_key IS NOT NULL`. Auth-Schutz automatisch über `verify_admin`-Router-Dependency. Spaltennot-Check identisch zu `metrics_history` (PRAGMA table_info), gibt `{"profiles": []}` zurück falls Patch-92-Spalte fehlt.
+- Block B: Frontend-Dropdown (`<select id="profileSelect" class="profile-select">`) **vor** den Zeitraum-Chips ([hel.py:489](zerberus/app/routers/hel.py:489)). Default-Option „Alle Profile" + dynamisch aus dem Endpoint befüllt. Eigener CSS-Block `.profile-select` matched die `.time-chip`-Optik (gold-Ring, 36 px, `:active`-Fallback). `loadMetricsChart()` hängt `&profile_key=...` an die URL wenn ausgewählt; `change`-Event ruft `loadMetricsChart(_currentTimeRange)` → kombiniert sich sauber mit Zeitraum-Chips.
+- Block C: Verifikation: `/hel/metrics/profiles` → `{"profiles":["chris"]}`. `/hel/metrics/history?profile_key=chris&limit=1` → 1 Result. `/hel/metrics/history?profile_key=nonexistent` → 0 Results (Filter aktiv). HTML enthält 10 neue Marker (`profileSelect`, `metric-profile-filter`, `loadProfilesList`).
+- Server-Reload-Lesson: `--reload` blieb hängen, weil parallel ein langlaufender Voice-Request lief; selektives Killen des Worker-Prozesses (Reloader-PID erhalten) löste das ohne kompletten Neustart.
+
 **Patch 94** – Loki & Fenrir Erstlauf + Test-Bugfix (2026-04-18)
 - Block A: Erstlauf der Patch-93-Suite gegen den live Server (`https://127.0.0.1:5000`) — `pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-contained-html`. Ergebnis Erstlauf: **31 passed, 1 skipped** in 49 s. Alle 14 Chaos-Payloads (XSS, SQLi, Log4Shell, Prompt-Injection, Emoji-Bombe, RTL, Nullbyte, Path-Traversal, …) ohne 500er. Bogus-Dates auf `/hel/metrics/history` korrekt abgefangen. **Keine App-Bugs gefunden.**
 - Block B: Ein Test-Bug behoben — `TestNavigation::test_hamburger_menu_opens` skippte stillschweigend, weil der Selector nur `<button>` matchte; in nala.py:885 ist der Hamburger ein `<div class="hamburger">`. Locator um `.hamburger` erweitert ([test_loki.py:81](zerberus/tests/test_loki.py:81)). Re-Run: **32 passed, 0 skipped** in 47 s.
@@ -209,7 +215,7 @@
 2. [Patch 89] RAG-Qualität nach R-03-Fix: **10/11 JA, 1/11 TEILWEISE, 0 NEIN**. Q4 + Q10 geheilt. Offen: **Q11** (Aggregat-Query „Nenn alle Momente wo…") — Reranker liefert Glossar-Definition, konkrete Szenen bleiben über mehrere Chunks verteilt. **Nächster Kandidat: R-04 (Query-Expansion) oder LLM-seitige Multi-Chunk-Aggregation**, nicht mehr Retrieval-Qualität. R-02 (Embedding-Upgrade) nach hinten verschoben — Reranker kompensiert MiniLM-Schwäche ausreichend. Reports: `rag_eval_delta_patch89.md`.
 3. ~~Alembic-Setup (Dauerläufer)~~ ✅ Patch 92 — `alembic.ini` + Baseline-Revision `7feab49e6afe`. **Manueller Aufruf** per `alembic upgrade head` (kein Auto-Upgrade beim Start).
 4. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
-5. [IDEE] Metriken: Interaktive Auswertung (Zeiträume, LLM-Auswertung, D3/Canvas-Zoom, Mobile-first) — **Grundlage implementiert in Patch 91** (Chart.js, Zeitraum-Chips, 5 Metriken, Pinch-Zoom). Offen: Per-User-Filter-UI (Dropdown in Hel), LLM-Auswertung („Wie haben sich meine Formulierungen in den letzten 30 Tagen verändert?").
+5. [IDEE] Metriken: Interaktive Auswertung (Zeiträume, LLM-Auswertung, D3/Canvas-Zoom, Mobile-first) — **Grundlage implementiert in Patch 91** (Chart.js, Zeitraum-Chips, 5 Metriken, Pinch-Zoom). ~~Per-User-Filter-UI~~ ✅ Patch 95 (Dropdown vor Zeitraum-Chips, kombiniert mit Range-Filter). Offen: LLM-Auswertung („Wie haben sich meine Formulierungen in den letzten 30 Tagen verändert?").
 6. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl) — TODO in hel.py eingetragen
 7. ~~[BACKLOG] `rag_eval.py` hardcoded auf `http://127.0.0.1:5000`~~ ✅ Patch 90 — HTTPS-Default + `_SSL_CTX` + `RAG_EVAL_URL`-Env-Override.
 8. [N-F02/N-F03/N-F04] Nala Bubble-Tooling (Wiederholen / Bearbeiten / Lade-Indikator-Upgrade) — siehe `backlog_nach_patch83.md`. Nicht akut.
