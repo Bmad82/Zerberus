@@ -11,6 +11,8 @@ Konfiguration (oben anpassen falls nötig):
   RESULTS    – Pfad zur Ergebnis-Datei
 """
 
+import os
+import ssl
 import sys
 import json
 import urllib.request
@@ -19,11 +21,20 @@ from pathlib import Path
 
 # ── Konfiguration ────────────────────────────────────────────────────────────
 
-BASE_URL   = "http://127.0.0.1:5000"
-API_KEY    = "ca55f7c73d68e45abfdae92dbba67c209cdc0eac5d483275118efd34d2e2b868"          # X-API-Key aus config.yaml → auth.static_api_key
+# Override per Env-Var moeglich: RAG_EVAL_URL=https://andere-host:port
+BASE_URL   = os.environ.get("RAG_EVAL_URL", "https://127.0.0.1:5000")
+API_KEY    = os.environ.get(
+    "RAG_EVAL_API_KEY",
+    "ca55f7c73d68e45abfdae92dbba67c209cdc0eac5d483275118efd34d2e2b868",
+)
 TOP_K      = 5
 QUESTIONS  = Path("rag_eval_questions.txt")
 RESULTS    = Path("rag_eval_results.txt")
+
+# SSL-Context: akzeptiert Self-Signed Certs (Server seit Patch 82 auf HTTPS).
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -56,8 +67,10 @@ def _query_rag(question: str) -> str:
         headers["X-API-Key"] = API_KEY
 
     req = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
+    # Self-signed Cert: Context nur fuer https-URLs uebergeben (urllib ignoriert ihn sonst).
+    ctx = _SSL_CTX if endpoint.lower().startswith("https://") else None
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8", errors="replace")

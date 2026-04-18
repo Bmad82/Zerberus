@@ -18,6 +18,7 @@
 - keypress ist deprecated → keydown verwenden
 - Buttons in Login-Formularen brauchen type="button" sonst lösen sie versehentlich form-submit aus
 - System-Prompt-Wirkung testen: "Ich bin ein Computerprogramm" kam nicht aus dem Code sondern aus dem fehlenden Persona-Prompt — LLM fällt ohne klare Persona in generisches Verhalten zurück (Patch 81)
+- Wenn man Python-Regex-Patterns (z.B. aus `whisper_cleaner.json`) im Browser validieren will: Python-Inline-Flags wie `(?i)` / `(?m)` / `(?s)` werden von JS `RegExp` als ungültige Gruppen abgelehnt. Vor `new RegExp(stripped, flags)` den Prefix mit Regex `/^\(\?([imsx]+)\)/` matchen, ihn rausschneiden und die Buchstaben in den `flags`-String übernehmen. Reicht für Syntax-Smoke-Test; echte Pattern-Semantik (z.B. Backref-Gruppen) wird damit nicht 1:1 abgedeckt (Patch 90)
 
 ## RAG
 - Orchestrator Auto-Indexing deaktiviert lassen — erzeugt sonst unerwünschte "source: orchestrator"-Chunks nach manuellem Clear (Patch 68)
@@ -68,6 +69,7 @@
 - :hover funktioniert auf Touch nicht — immer :active zusätzlich setzen. Genereller :hover → :active Sweep nötig bei jedem UI-Patch. Touch-Geräte kennen kein Hover.
 - Mindest-Touch-Target: 44px — kleinere Buttons werden mobil regelmäßig verfehlt
 - backdrop-filter ohne Fallback bricht auf älteren Mobile-Browsern
+- Landscape ≠ Portrait nur in der Höhe: bei `@media (orientation: landscape) and (max-height: 500px)` greifen extra Regeln (Header schrumpfen, Modals von 88vh auf 90vh+dvh ziehen, Input-Bar kompaktieren). `100dvh` ist gegen Keyboard-Overlap robust, aber Header und Modals fressen sonst die halbe Höhe. Hel mit padded-scroll-Body ist von Haus aus tolerant — `100dvh`-Layouts (Nala) brauchen den Fix (Patch 90).
 
 ## Pipeline / Routing
 - Das Nala-Frontend routet über /v1/chat/completions (legacy.py), NICHT über den Orchestrator. Fixes die nur in orchestrator.py landen wirken nicht auf den Haupt-Chat-Pfad.

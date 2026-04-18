@@ -333,4 +333,4 @@ Sollte `torch` oder `transformers` nicht installiert sein, gibt Nala graceful `n
 letzten 24 Stunden aus und schreibt das BERT-Sentiment in die Datenbank. Die Ergebnisse sind
 im Hel-Dashboard unter „Metriken" sichtbar (Toggle „BERT Sentiment" im Graph).
 
-*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 89*
+*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 90*

@@ -34,11 +34,13 @@ Letzte Nachricht = neu senden. Weiter oben = Fork (alter Verlauf bleibt).
 **N-F04 — Bearbeiten-Button an jeder Chat-Bubble**
 Letzte = direkte Änderung. Weiter oben = Fork.
 
-**N-F09b — Schriftgröße Hel**
-Nala-Teil in Patch 86 erledigt (4 Presets via `--font-size-base`). Pendant für Hel-UI fehlt noch.
+**N-F09b — Schriftgröße Hel** ✅ ERLEDIGT in Patch 90
+~~Nala-Teil in Patch 86 erledigt (4 Presets via `--font-size-base`). Pendant für Hel-UI fehlt noch.~~
+Hel hat jetzt analog 4 Presets (13/15/17/19) via `--hel-font-size-base`, Persistenz `localStorage('hel_font_size')`, Early-Load-IIFE gegen FOUC.
 
-**N-F10 — Display-Rotation prüfen**
-Landscape-Mode testen, CSS-Fix falls nötig.
+**N-F10 — Display-Rotation prüfen** ✅ ERLEDIGT in Patch 90
+~~Landscape-Mode testen, CSS-Fix falls nötig.~~
+Defensive `@media (orientation: landscape) and (max-height: 500px)`-Regeln in Nala UND Hel: Header/Padding/Modal-Höhen reduziert. Nala dank `100dvh` ohnehin Keyboard-tolerant; Hel padded-scroll ist von Haus aus tolerant.
 
 ---
 
@@ -47,8 +49,9 @@ Landscape-Mode testen, CSS-Fix falls nötig.
 **H-F01 — Sticky Tab-Leiste (Karteikarten)**
 Tabs oben, immer sichtbar, per Wischgeste wechselbar.
 
-**H-F02 — Dialekt-JSON + WhisperCleaner: UX statt Rohtext**
-Scrollbare Liste statt JSON-Editor. Strukturiertes Formular.
+**H-F02 — Dialekt-JSON + WhisperCleaner: UX statt Rohtext** ✅ ERLEDIGT in Patch 90 (WhisperCleaner-Teil)
+~~Scrollbare Liste statt JSON-Editor. Strukturiertes Formular.~~
+WhisperCleaner: Karten-Liste mit Pattern/Replacement/Kommentar pro Regel, Sektion-Header für Comment-Only-Einträge, Add/Trash-Buttons, JS-Regex-Validierung blockiert Save bei ungültigem Pattern. **Dialekt-JSON-Teil offen** — gleiche Behandlung sinnvoll, aber bisher nicht umgesetzt.
 
 **H-F03 — Mehr Metriken-Auswahl + feineres Design**
 Konzept noch offen. Chris will explizit erinnert werden.

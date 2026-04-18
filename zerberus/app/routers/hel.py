@@ -171,7 +171,17 @@ ADMIN_HTML = """<!DOCTYPE html>
     <title>&#9889; Hel – Zerberus Admin</title>
     <link rel="icon" href="/static/favicon.ico">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Patch 90 (N-F09b): Schriftgröße früh laden, vermeidet FOUC
+        (function () {
+            try {
+                var fs = localStorage.getItem('hel_font_size');
+                if (fs) document.documentElement.style.setProperty('--hel-font-size-base', fs);
+            } catch (_) {}
+        })();
+    </script>
     <style>
+        :root { --hel-font-size-base: 15px; }
         * { box-sizing: border-box; }
         body {
             font-family: 'Segoe UI', system-ui, sans-serif;
@@ -179,6 +189,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             color: #e0e0e0;
             margin: 0;
             padding: 20px;
+            font-size: var(--hel-font-size-base);
         }
         .container { max-width: 1400px; margin: 0 auto; }
         h1 { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
@@ -212,7 +223,103 @@ ADMIN_HTML = """<!DOCTYPE html>
             border: 1px solid #555;
             color: white;
             border-radius: 8px;
-            font-size: 16px;
+            font-size: var(--hel-font-size-base);
+        }
+        .hel-section-body { font-size: var(--hel-font-size-base); }
+        .hel-section-body table th, .hel-section-body table td { font-size: var(--hel-font-size-base); }
+        .font-preset-bar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin: 0 0 16px 0;
+            flex-wrap: wrap;
+        }
+        .font-preset-bar .label { color:#aaa; font-size:0.85em; margin-right:4px; }
+        .font-preset-btn {
+            min-width: 44px;
+            min-height: 44px;
+            padding: 8px 12px;
+            background: #2d2d2d;
+            color: #e0e0e0;
+            border: 1px solid #555;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-top: 0;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .font-preset-btn:active { background: #3d3d3d; }
+        .font-preset-btn.active { background: #c8941f; color: #1a1a1a; border-color: #ffd700; }
+        /* Patch 90 (H-F02): Whisper-Cleaner Karten */
+        .cleaner-list { max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+        .cleaner-card {
+            background: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 10px;
+        }
+        .cleaner-card.invalid { border-color: #ff6b6b; box-shadow: 0 0 0 1px rgba(255,107,107,0.4); }
+        .cleaner-card-row { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
+        .cleaner-card-grow { flex: 1 1 220px; min-width: 0; }
+        .cleaner-card label {
+            display: block;
+            color: #ffa5a5;
+            font-size: 0.78em;
+            margin: 6px 0 3px;
+        }
+        .cleaner-card input[type="text"] {
+            width: 100%;
+            padding: 9px 11px;
+            background: #1f1f1f;
+            border: 1px solid #555;
+            color: #f0f0f0;
+            border-radius: 6px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.95em;
+        }
+        .cleaner-card.invalid input[name="pattern"] { border-color: #ff6b6b; }
+        .cleaner-error { color: #ff6b6b; font-size: 0.8em; margin-top: 4px; min-height: 1em; }
+        .cleaner-trash {
+            background: #4a1a1a !important;
+            color: #ffb3b3 !important;
+            border: 1px solid #6a2a2a !important;
+            min-width: 44px;
+            min-height: 44px;
+            padding: 8px 12px !important;
+            margin-top: 0 !important;
+            border-radius: 8px !important;
+            font-weight: normal !important;
+        }
+        .cleaner-trash:active { background: #6a2a2a !important; }
+        .cleaner-section {
+            background: #1a1a1a;
+            border-left: 3px solid #c8941f;
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin: 14px 0 8px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .cleaner-section input[type="text"] {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #ffd700;
+            font-weight: bold;
+            font-size: 0.95em;
+            padding: 4px;
+        }
+        .cleaner-section input[type="text"]:focus { background: #252525; outline: 1px solid #555; border-radius: 4px; }
+        /* Patch 90 (N-F10): Landscape mit niedrigem Viewport */
+        @media (orientation: landscape) and (max-height: 500px) {
+            body { padding: 10px; }
+            h1 { font-size: 1.2em; padding-bottom: 6px; margin-top: 0; }
+            .hel-section-header { height: 40px; font-size: 14px; }
+            .hel-section-body { padding: 12px; }
+            .card { padding: 12px; margin-bottom: 12px; }
+            .font-preset-bar { margin: 0 0 10px 0; }
         }
         button {
             background: #ff6b6b;
@@ -278,6 +385,14 @@ ADMIN_HTML = """<!DOCTYPE html>
 <body>
     <div class="container">
         <h1>&#9889; Hel – Admin-Konsole</h1>
+        <!-- Patch 90 (N-F09b): Schriftgr&#246;&#223;en-Wahl -->
+        <div class="font-preset-bar" role="group" aria-label="Schriftgr&#246;&#223;e">
+            <span class="label">Schrift:</span>
+            <button type="button" class="font-preset-btn" data-size="13px" onclick="setFontSize('13px')">13</button>
+            <button type="button" class="font-preset-btn" data-size="15px" onclick="setFontSize('15px')">15</button>
+            <button type="button" class="font-preset-btn" data-size="17px" onclick="setFontSize('17px')">17</button>
+            <button type="button" class="font-preset-btn" data-size="19px" onclick="setFontSize('19px')">19</button>
+        </div>
         <!-- Patch 85: Akkordeon-Layout — Metriken offen, Rest eingeklappt -->
 
         <!-- Metriken (offen) -->
@@ -363,11 +478,15 @@ ADMIN_HTML = """<!DOCTYPE html>
           </div>
           <div class="hel-section-body collapsed" id="body-cleaner" style="max-height:0;padding:0 20px;">
             <div class="card">
-                <h2>Whisper-Cleaner JSON bearbeiten</h2>
-                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">F&#252;llw&#246;rter, Korrekturen, Wiederholungs-Limit (<code>whisper_cleaner.json</code>)</p>
-                <textarea id="cleanerEditor" rows="18" style="font-family: monospace;"></textarea>
-                <button onclick="saveCleaner()">Speichern</button>
-                <div id="cleanerStatus"></div>
+                <h2>Whisper-Cleaner Regeln</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">F&#252;llw&#246;rter, Korrekturen, Halluzinations-Patterns (<code>whisper_cleaner.json</code>). Reihenfolge wird bewahrt; Patterns nutzen Python-Regex-Syntax (z.B. <code>(?i)</code>, <code>\\1</code>).</p>
+                <div id="cleanerList" class="cleaner-list"></div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:14px;">
+                    <button onclick="addCleanerRule()" style="background:#1a3a5c;color:#ffd700;border:1px solid #ffd700;">&#10133; Regel hinzuf&#252;gen</button>
+                    <button onclick="addCleanerComment()" style="background:#333;color:#ccc;border:1px solid #555;">&#10133; Kommentar/Sektion</button>
+                    <button onclick="saveCleaner()" style="margin-left:auto;">&#128190; Speichern</button>
+                </div>
+                <div id="cleanerStatus" style="margin-top:10px; min-height:1.4em;"></div>
             </div>
             <div class="card">
                 <h2>Fuzzy-Dictionary bearbeiten</h2>
@@ -699,21 +818,189 @@ ADMIN_HTML = """<!DOCTYPE html>
             else document.getElementById('llmStatus').innerText = '❌ Fehler';
         }
 
-        async function loadCleaner() {
-            const res = await fetch('/hel/admin/whisper_cleaner');
-            const data = await res.json();
-            document.getElementById('cleanerEditor').value = JSON.stringify(data, null, 2);
+        // ── Patch 90 (H-F02): Whisper-Cleaner als UX-Formular ──
+        let _cleanerEntries = []; // Array of {kind:'rule'|'comment', pattern, replacement, comment}
+
+        function _escapeHtml(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
-        async function saveCleaner() {
-            const raw = document.getElementById('cleanerEditor').value;
-            try { JSON.parse(raw); } catch (e) { alert('Ungültiges JSON'); return; }
-            const res = await fetch('/hel/admin/whisper_cleaner', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: raw
+
+        // Validiert ein Python-Regex grob in JS: strippt fuehrendes (?i)/(?s)/(?m)
+        // und versucht new RegExp(). Echte Python-Spezialitaeten (z.B. \1 in pattern)
+        // werden nicht erkannt — nur grobe Syntax-Pruefung.
+        function _validatePattern(p) {
+            if (!p) return 'Pattern darf nicht leer sein';
+            let stripped = p;
+            let flags = '';
+            const m = stripped.match(/^\(\?([imsx]+)\)/);
+            if (m) {
+                stripped = stripped.slice(m[0].length);
+                if (m[1].indexOf('i') >= 0) flags += 'i';
+                if (m[1].indexOf('s') >= 0) flags += 's';
+                if (m[1].indexOf('m') >= 0) flags += 'm';
+            }
+            try { new RegExp(stripped, flags); return ''; }
+            catch (e) { return 'Ungueltiges Regex: ' + e.message; }
+        }
+
+        function renderCleanerList() {
+            const host = document.getElementById('cleanerList');
+            const parts = _cleanerEntries.map((e, idx) => {
+                if (e.kind === 'comment') {
+                    return `
+                        <div class="cleaner-section" data-idx="${idx}" data-kind="comment">
+                            <span style="color:#c8941f;">&#9776;</span>
+                            <input type="text" name="comment" value="${_escapeHtml(e.comment)}"
+                                   placeholder="Sektion / Kommentar">
+                            <button class="cleaner-trash" onclick="removeCleanerEntry(${idx})" title="Entfernen">&#128465;</button>
+                        </div>`;
+                }
+                const errId = 'err-' + idx;
+                return `
+                    <div class="cleaner-card" data-idx="${idx}" data-kind="rule">
+                        <div class="cleaner-card-row">
+                            <div class="cleaner-card-grow">
+                                <label>Pattern (Python-Regex)</label>
+                                <input type="text" name="pattern" value="${_escapeHtml(e.pattern)}"
+                                       oninput="_revalidateRow(${idx})" autocapitalize="off"
+                                       autocorrect="off" spellcheck="false">
+                                <div class="cleaner-error" id="${errId}"></div>
+                            </div>
+                            <div class="cleaner-card-grow">
+                                <label>Replacement</label>
+                                <input type="text" name="replacement" value="${_escapeHtml(e.replacement)}"
+                                       autocapitalize="off" autocorrect="off" spellcheck="false">
+                            </div>
+                            <button class="cleaner-trash" onclick="removeCleanerEntry(${idx})"
+                                    title="Regel l&#246;schen">&#128465;</button>
+                        </div>
+                        <label style="margin-top:8px;">Kommentar (optional)</label>
+                        <input type="text" name="comment" value="${_escapeHtml(e.comment)}"
+                               placeholder="Kategorie/Notiz">
+                    </div>`;
             });
-            if (res.ok) document.getElementById('cleanerStatus').innerText = '✅ Gespeichert';
-            else document.getElementById('cleanerStatus').innerText = '❌ Fehler';
+            host.innerHTML = parts.join('') ||
+                '<div style="color:#888; padding:12px;">Keine Eintr&#228;ge. &#187;Regel hinzuf&#252;gen&#171; klicken.</div>';
+            // Pattern-Validierung beim ersten Render zeigen
+            _cleanerEntries.forEach((e, idx) => { if (e.kind === 'rule') _revalidateRow(idx); });
+        }
+
+        function _revalidateRow(idx) {
+            const card = document.querySelector('.cleaner-card[data-idx="' + idx + '"]');
+            if (!card) return;
+            const patEl = card.querySelector('input[name="pattern"]');
+            const errEl = card.querySelector('.cleaner-error');
+            const msg = _validatePattern(patEl.value);
+            errEl.textContent = msg;
+            card.classList.toggle('invalid', !!msg);
+        }
+
+        function _collectCleanerFromDom() {
+            const out = [];
+            const errors = [];
+            const cards = document.querySelectorAll('#cleanerList > [data-idx]');
+            cards.forEach((el) => {
+                const idx = parseInt(el.dataset.idx, 10);
+                if (el.dataset.kind === 'comment') {
+                    const c = el.querySelector('input[name="comment"]').value.trim();
+                    if (c) out.push({ _comment: c });
+                } else {
+                    const pat = el.querySelector('input[name="pattern"]').value;
+                    const rep = el.querySelector('input[name="replacement"]').value;
+                    const com = el.querySelector('input[name="comment"]').value.trim();
+                    const err = _validatePattern(pat);
+                    if (err) errors.push('Zeile ' + (idx + 1) + ': ' + err);
+                    const obj = { pattern: pat, replacement: rep };
+                    if (com) obj._comment = com;
+                    out.push(obj);
+                }
+            });
+            return { entries: out, errors };
+        }
+
+        function addCleanerRule() {
+            _cleanerEntries.push({ kind: 'rule', pattern: '', replacement: '', comment: '' });
+            renderCleanerList();
+            // Fokus aufs neue Pattern-Feld
+            const cards = document.querySelectorAll('#cleanerList .cleaner-card');
+            const last = cards[cards.length - 1];
+            if (last) last.querySelector('input[name="pattern"]').focus();
+        }
+        function addCleanerComment() {
+            _cleanerEntries.push({ kind: 'comment', comment: '' });
+            renderCleanerList();
+            const sections = document.querySelectorAll('#cleanerList .cleaner-section');
+            const last = sections[sections.length - 1];
+            if (last) last.querySelector('input[name="comment"]').focus();
+        }
+        function removeCleanerEntry(idx) {
+            const e = _cleanerEntries[idx];
+            if (!e) return;
+            const label = e.kind === 'comment'
+                ? ('Kommentar "' + (e.comment || '') + '"')
+                : ('Regel "' + (e.pattern || '') + '"');
+            if (!confirm(label + ' wirklich entfernen?')) return;
+            _cleanerEntries.splice(idx, 1);
+            renderCleanerList();
+        }
+
+        async function loadCleaner() {
+            try {
+                const res = await fetch('/hel/admin/whisper_cleaner');
+                const data = await res.json();
+                _cleanerEntries = (Array.isArray(data) ? data : []).map((e) => {
+                    if (e && typeof e === 'object' && 'pattern' in e) {
+                        return {
+                            kind: 'rule',
+                            pattern: e.pattern || '',
+                            replacement: e.replacement == null ? '' : String(e.replacement),
+                            comment: e._comment || '',
+                        };
+                    }
+                    return { kind: 'comment', comment: (e && e._comment) || '' };
+                });
+                renderCleanerList();
+            } catch (err) {
+                document.getElementById('cleanerStatus').innerHTML =
+                    '<span style="color:#ff6b6b;">Laden fehlgeschlagen: ' + _escapeHtml(err.message) + '</span>';
+            }
+        }
+
+        async function saveCleaner() {
+            const status = document.getElementById('cleanerStatus');
+            const { entries, errors } = _collectCleanerFromDom();
+            if (errors.length) {
+                status.innerHTML = '<span style="color:#ff6b6b;">&#10007; '
+                    + errors.length + ' ung&#252;ltige Regex-Pattern. Speichern blockiert.</span>';
+                return;
+            }
+            status.innerHTML = '<span style="color:#aaa;">Speichere&#8230;</span>';
+            try {
+                const res = await fetch('/hel/admin/whisper_cleaner', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(entries),
+                });
+                if (res.ok) {
+                    status.innerHTML = '<span style="color:#4ecdc4;">&#10003; Gespeichert ('
+                        + entries.length + ' Eintr&#228;ge)</span>';
+                    // DOM-State zur State-Liste zurueck synchronisieren (Reihenfolge unveraendert)
+                    _cleanerEntries = entries.map((e) => ({
+                        kind: 'pattern' in e ? 'rule' : 'comment',
+                        pattern: e.pattern || '',
+                        replacement: e.replacement == null ? '' : String(e.replacement),
+                        comment: e._comment || '',
+                    }));
+                } else {
+                    const t = await res.text();
+                    status.innerHTML = '<span style="color:#ff6b6b;">&#10007; Fehler: '
+                        + _escapeHtml(t.slice(0, 200)) + '</span>';
+                }
+            } catch (err) {
+                status.innerHTML = '<span style="color:#ff6b6b;">&#10007; ' + _escapeHtml(err.message) + '</span>';
+            }
         }
 
         async function loadFuzzyDict() {
@@ -1070,6 +1357,21 @@ ADMIN_HTML = """<!DOCTYPE html>
             document.getElementById('providerStatus').textContent =
                 data.status === 'ok' ? '\u2705 Gespeichert.' : '\u274C Fehler beim Speichern.';
         }
+
+        // Patch 90 (N-F09b): Schriftgröße-Wahl
+        function setFontSize(px) {
+            document.documentElement.style.setProperty('--hel-font-size-base', px);
+            try { localStorage.setItem('hel_font_size', px); } catch (_) {}
+            markActiveFontPreset();
+        }
+        function markActiveFontPreset() {
+            var current = (getComputedStyle(document.documentElement)
+                .getPropertyValue('--hel-font-size-base') || '').trim();
+            document.querySelectorAll('.font-preset-btn').forEach(function (b) {
+                b.classList.toggle('active', b.dataset.size === current);
+            });
+        }
+        markActiveFontPreset();
 
         loadModelsAndBalance();
         loadCleaner();

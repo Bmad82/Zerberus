@@ -2368,3 +2368,55 @@ C4 – 3 Favoriten-Slots: `saveFav(n)` / `loadFav(n)` in `localStorage('nala_the
 - `zerberus/app/routers/nala.py` (CSS `:root`, `.header`, `.user-message`, Theme-Editor-Modal, alle Theme-JS-Funktionen, `exportChat()`)
 
 *Stand: 2026-04-14, Patch 79.*
+
+---
+
+> ℹ️ **Hinweis:** Die ausführlichen Patch-Einträge 80–89 sind in `HYPERVISOR.md` zusammengefasst (kompakter Stand für die Live-Session). Hier folgt direkt der nächste Volleintrag.
+
+---
+
+### Patch 90 – Aufräum-Sammelpatch: rag_eval HTTPS + Hel-Backlog (2026-04-18)
+
+**Ziel:** Vier kleinere Aufräumarbeiten in einem gemeinsamen Patch — `rag_eval.py` an HTTPS anpassen, Hel bekommt Schriftgrößen-Wahl, Landscape-Defensiv-Fix für beide UIs, WhisperCleaner von Roh-JSON auf Karten-Formular umstellen.
+
+**Block A – `rag_eval.py` HTTPS-Fix (Backlog 7):**
+- `BASE_URL` Default jetzt `https://127.0.0.1:5000` (war `http://`), per `RAG_EVAL_URL`-Env-Var override-bar; `API_KEY` analog per `RAG_EVAL_API_KEY` override-bar.
+- Neuer modul-globaler `_SSL_CTX = ssl.create_default_context()` mit `check_hostname = False` und `verify_mode = ssl.CERT_NONE` für das Self-Signed-Cert.
+- `_query_rag()` reicht den Context nur bei `https://`-URLs an `urllib.request.urlopen(req, timeout=30, context=ctx)` durch — bei reinem HTTP-Override bleibt das Verhalten neutral.
+- Damit entfällt der bisherige Inline-Workaround pro Eval-Lauf.
+
+**Block B – N-F09b: Schriftgrößen-Wahl Hel:**
+- Neue CSS-Variable `--hel-font-size-base: 15px` im `:root`. Body, alle `.hel-section-body`-Inhalte (inkl. `<select>`, `<textarea>`, `<input>`, Tabellen) ziehen `font-size: var(--hel-font-size-base)`.
+- Vier Preset-Buttons (13 / 15 / 17 / 19) als Toolbar unter `<h1>`, jeder min. 44 × 44 px, mit `:active`-State und `.active`-Klasse für den aktiven Wert.
+- Persistenz via `localStorage('hel_font_size')`. Early-Load-IIFE im `<head>` setzt die Var noch vor dem ersten Paint → kein FOUC.
+- JS-Helper `setFontSize(px)` + `markActiveFontPreset()` analog zu Nala (`nala_font_size`).
+
+**Block C – N-F10: Landscape-Mode Defensive:**
+- Diagnose: Nala nutzt `100dvh` für Body / `.app-container` / `.sidebar` (gut — Keyboard-tolerant), hat aber großzügige Header- und Modal-Höhen, die in Low-Height-Landscape (z.B. iPhone 14 quer ≈ 390 px hoch) stören. Hel nutzt kein `100dvh`, sondern padded Scroll-Layout — von Haus aus tolerant.
+- Nala-Fix: `@media (orientation: landscape) and (max-height: 500px)` reduziert Header-Padding/-Schrift, schrumpft Hamburger, kompaktiert Status-Bar, Input-Bar (`min-height: 40px`, `max-height: 96px`), `.fullscreen-inner` auf `90vh` mit `90dvh`-Fallback, Settings-Modal auf `92vh`, Sidebar-Padding reduziert.
+- Hel-Fix: gleiche Media-Query reduziert Body-Padding (10 px), `<h1>`-Größe (1.2em), Section-Header-Höhe (40 px), Card-Padding (12 px) — der Akkordeon-Body-Padding bleibt (wird durch JS inline gesetzt).
+
+**Block D – H-F02: WhisperCleaner UX-Formular:**
+- Bisher: einzelne `<textarea>` mit Roh-JSON. Neu: scrollbare Karten-Liste (`.cleaner-list`, max-height: 60vh).
+- Jeder Eintrag:
+  - **Kommentar/Sektion** (`{ "_comment": ... }` ohne `pattern`) → `.cleaner-section`-Block, gold linksbordered, einziges Textfeld + Trash-Button.
+  - **Regel** (`{ "pattern": ..., "replacement": ..., "_comment"?: ... }`) → `.cleaner-card` mit Pattern (monospace), Replacement, Kommentar (optional), Trash-Button.
+- Buttons: „➕ Regel hinzufügen", „➕ Kommentar/Sektion", „💾 Speichern" (right-aligned).
+- JS-State: `_cleanerEntries[]`, in `loadCleaner()` aus dem JSON normalisiert; `renderCleanerList()` erzeugt das DOM neu nach jeder Mutation; `_collectCleanerFromDom()` rekonstruiert das JSON in Original-Reihenfolge.
+- **Pattern-Validierung:** `_validatePattern()` strippt Python-Inline-Flags `(?i)`/`(?s)`/`(?m)` und versucht ein `new RegExp(stripped, flags)`. Fehlerhafte Patterns markieren ihre Karte mit `.invalid` (rot) und blockieren den Save (Status-Zeile zeigt Anzahl invalid).
+- `removeCleanerEntry()` mit `confirm()`-Prompt; `addCleanerRule()` / `addCleanerComment()` mit Auto-Fokus auf das frisch eingefügte Pattern/Comment-Feld.
+- Mobile: Karten sind volle Breite, Touch-Targets ≥ 44 px, alle Inputs `autocapitalize="off" autocorrect="off" spellcheck="false"`.
+
+**Betroffene Dateien:**
+- `rag_eval.py` (Block A)
+- `zerberus/app/routers/hel.py` (Blöcke B, C, D — CSS-Var, Preset-Bar, Landscape-Media-Query, kompletter Cleaner-Block)
+- `zerberus/app/routers/nala.py` (Block C — Landscape-Media-Query)
+- `HYPERVISOR.md`, `docs/PROJEKTDOKUMENTATION.md`, `README.md`, `backlog_nach_patch83.md` (Pflicht-Updates)
+
+**Verifikation:**
+- `python -c "import ast; ast.parse(open('zerberus/app/routers/hel.py', encoding='utf-8').read())"` → ok
+- `python -c "import ast; ast.parse(open('zerberus/app/routers/nala.py', encoding='utf-8').read())"` → ok
+- `python -c "import ast; ast.parse(open('rag_eval.py', encoding='utf-8').read())"` → ok
+- Manueller Server-Restart empfohlen (Hel-HTML wird beim Modul-Load gebaut).
+
+*Stand: 2026-04-18, Patch 90.*

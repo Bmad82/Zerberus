@@ -1,8 +1,15 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 89 (2026-04-18)*
+*Letzte Aktualisierung: Patch 90 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 90** – Aufräum-Sammelpatch: rag_eval HTTPS + Hel-Backlog (2026-04-18)
+- Block A (Backlog 7): `rag_eval.py` auf HTTPS umgestellt — `BASE_URL` default `https://127.0.0.1:5000`, Self-Signed-Cert via `_SSL_CTX` (Hostname-Check + Verify aus), SSL-Context wird in `_query_rag()` an `urlopen()` durchgereicht. `BASE_URL` und `API_KEY` per Env-Var (`RAG_EVAL_URL`, `RAG_EVAL_API_KEY`) override-bar. Eval läuft jetzt ohne inline-Workaround.
+- Block B (N-F09b): Hel bekommt Schriftgrößen-Wahl analog Nala — neue CSS-Var `--hel-font-size-base` (Default 15 px), 4 Presets (13/15/17/19) als 44 px-Touch-Buttons unter `<h1>`. Persistenz via `localStorage('hel_font_size')`, Early-Load-IIFE im `<head>` verhindert FOUC.
+- Block C (N-F10): Defensiver Landscape-Fix für Nala UND Hel via `@media (orientation: landscape) and (max-height: 500px)` — Header-/Padding-Reduktion, Modals auf `90vh/dvh`, Input-Bar kompakter. Hel kommt durch das padding-basierte Scroll-Layout grundsätzlich klar.
+- Block D (H-F02): WhisperCleaner-UI komplett von Roh-JSON-Textarea auf Karten-Liste umgestellt. Pattern/Replacement/Kommentar pro Regel, Comment-Only-Einträge als Sektions-Header gerendert, Trash-Button mit Confirm, „Regel hinzufügen" + „Kommentar/Sektion". Save-Pfad rekonstruiert das JSON aus dem DOM und blockiert bei ungültigem Regex (Pattern-Validierung mit JS-RegExp inkl. `(?i)`-Strip).
+- Pflicht-Updates: HYPERVISOR/PROJEKTDOKUMENTATION/README/backlog_nach_patch83 fortgeschrieben. Backlog-Item 7 erledigt.
+
 **Patch 89** – R-03 Cross-Encoder-Reranker (RAG zweite Stufe) (2026-04-18)
 - Neues Modul `zerberus/modules/rag/reranker.py`: `rerank()` lädt `BAAI/bge-reranker-v2-m3` lazy, bewertet FAISS-Kandidaten mit voller Token-Attention, Fail-Safe fällt auf FAISS-Order zurück.
 - `_search_index()` (rag/router.py): neue Parameter `query_text`, `rerank_enabled`, `rerank_model`, `rerank_multiplier`. FAISS over-fetched `top_k * 4` Kandidaten, filtert kurze Chunks, Reranker sortiert neu, trim auf `top_k`.
@@ -176,7 +183,9 @@
 4. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
 5. [IDEE] Metriken: Interaktive Auswertung (Zeiträume, LLM-Auswertung, D3/Canvas-Zoom, Mobile-first) — Konzept noch nicht final
 6. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl) — TODO in hel.py eingetragen
-7. [BACKLOG] `rag_eval.py` hardcoded auf `http://127.0.0.1:5000` — Server läuft auf HTTPS. Script muss Schema/SSL-Skip lernen oder per Konfig-Variable umstellbar werden.
+7. ~~[BACKLOG] `rag_eval.py` hardcoded auf `http://127.0.0.1:5000`~~ ✅ Patch 90 — HTTPS-Default + `_SSL_CTX` + `RAG_EVAL_URL`-Env-Override.
+8. [N-F02/N-F03/N-F04] Nala Bubble-Tooling (Wiederholen / Bearbeiten / Lade-Indikator-Upgrade) — siehe `backlog_nach_patch83.md`. Nicht akut.
+9. [H-F01/H-F03] Hel: Sticky Tab-Leiste (statt Akkordeon Wisch-Tabs) und mehr Metriken-Auswahl — Konzepte offen.
 
 ## Architektur-Warnungen
 - `interactions`-Tabelle hat keine User-Spalte — User-Trennung nur per Session-ID (unzuverlässig)

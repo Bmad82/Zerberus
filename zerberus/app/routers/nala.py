@@ -810,6 +810,19 @@ NALA_HTML = """<!DOCTYPE html>
             60%  { opacity: 0.8; }
             100% { transform: translateY(120px) translateX(var(--fall-x)) scale(0.3); opacity: 0; }
         }
+        /* ── Patch 90 (N-F10): Landscape mit niedrigem Viewport (z.B. iPhone 14 quer ~390px hoch) ── */
+        @media (orientation: landscape) and (max-height: 500px) {
+            .header { padding: 8px 12px; font-size: 1.15em; }
+            .hamburger { font-size: 1.4em; width: 34px; }
+            #status-bar { font-size: 0.72em; padding: 2px 12px; min-height: 16px; }
+            .input-area { padding: 6px 12px 6px; }
+            #text-input { min-height: 40px; max-height: 96px; padding: 7px 14px; }
+            .my-prompt-area { min-height: 80px; }
+            .fullscreen-inner { height: 90vh; max-height: 90dvh; padding: 12px; }
+            .settings-modal-inner { max-height: 92vh; }
+            .sidebar { padding: 14px; }
+            .sidebar .close-btn { margin-bottom: 10px; }
+        }
     </style>
     <script>
         /* Patch 77 C3 + Patch 86: Theme + Bubble + Schriftgröße aus localStorage – vor erstem Render */
