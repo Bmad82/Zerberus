@@ -333,4 +333,34 @@ Sollte `torch` oder `transformers` nicht installiert sein, gibt Nala graceful `n
 letzten 24 Stunden aus und schreibt das BERT-Sentiment in die Datenbank. Die Ergebnisse sind
 im Hel-Dashboard unter „Metriken" sichtbar (Toggle „BERT Sentiment" im Graph).
 
-*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 90*
+---
+
+## Testing (Loki & Fenrir — Patch 93)
+
+Zerberus hat zwei Test-Suiten auf Playwright-Basis:
+
+- **Loki** (`zerberus/tests/test_loki.py`) — methodische E2E-Tests: Login, Chat-Input,
+  Navigation, Hel-Dashboard, neuer Patch-91-Metrics-API-Envelope.
+- **Fenrir** (`zerberus/tests/test_fenrir.py`) — Chaos-Agent: Prompt-Injection,
+  XSS, SQL, Viewport-Wechsel, Rapid-Click.
+
+**Voraussetzung:** Server läuft lokal auf `https://127.0.0.1:5000`, `loki` und
+`fenrir` sind in `config.yaml` als Test-Profile angelegt (Patch 93).
+
+```bash
+# Beide Suiten mit HTML-Report
+venv\Scripts\activate
+pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-contained-html
+
+# Nur Loki
+pytest zerberus/tests/test_loki.py -v
+
+# Nur Fenrir (Chaos)
+pytest zerberus/tests/test_fenrir.py -v
+```
+
+Reports landen in `zerberus/tests/report/`.
+
+---
+
+*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 93*

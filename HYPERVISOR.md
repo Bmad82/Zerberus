@@ -1,8 +1,14 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 92 (2026-04-18)*
+*Letzte Aktualisierung: Patch 93 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 93** – Loki & Fenrir: Playwright E2E + Chaos-Tests (2026-04-18)
+- Block A: Playwright 1.58 + Chromium installiert, `zerberus/tests/` Package mit `conftest.py` (Shared Fixtures: `nala_page`, `logged_in_loki`, `logged_in_fenrir`, `hel_page`). Test-Profile `loki`/`fenrir` in `config.yaml` angelegt (bcrypt-Hashes), Self-Service-Logins verifiziert (`POST /nala/profile/login` → 200).
+- Block B: `test_loki.py` — 4 Test-Klassen (TestLogin, TestChat, TestNavigation, TestHel) plus `TestMetricsAPI` der die Patch-91-`{meta,results}`-Envelope-Struktur prüft. Mobile-Viewport als Default (390×844).
+- Block C: `test_fenrir.py` — `CHAOS_PAYLOADS` (15 bösartige Strings: XSS, SQL-Injection, Log4Shell, Prompt-Injection, Emoji-Bomben, RTL-Arabisch, Nullbytes). `TestChaosInput` parametrisiert, `TestChaosNavigation` (Viewport-Switch, Rapid-Click), `TestChaosHel` (Auth-Fehler, Bogus-Dates auf dem neuen Metriken-Endpoint).
+- Run: `pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-contained-html`.
+
 **Patch 92** – DB-Fix: `profile_key` in `interactions` + Alembic-Setup (2026-04-18)
 - Block A: Neue Spalte `profile_key TEXT DEFAULT NULL` in `interactions` per `ALTER TABLE`. Migration idempotent in `database.py::init_db` (PRAGMA-Check). Altdaten: `profile_name → profile_key` für 76/4667 Zeilen kopiert. Index `idx_interactions_profile_key(profile_key, timestamp DESC)` angelegt. `store_interaction()` bekommt optionalen `profile_key`-Parameter (Fallback auf `profile_name`). Alle Call-Sites in `legacy.py`, `orchestrator.py`, `nala.py` schreiben jetzt `profile_key=profile_name or None`.
 - Block B: Alembic 1.12.1 initialisiert — `alembic.ini` mit `sqlite:///bunker_memory.db`, Baseline-Revision `7feab49e6afe_baseline_patch92_profile_key` dokumentiert den IST-Zustand (idempotent: `_has_column`-Check + `CREATE INDEX IF NOT EXISTS`). Head per `alembic stamp head` gesetzt. **Kein Auto-Upgrade beim Serverstart** — kontrolliert per `alembic upgrade head`.
@@ -10,7 +16,7 @@
 - Backup: `bunker_memory_backup_patch92.db` vor der Migration gezogen.
 
 **Patch 91** – Metriken-Dashboard Overhaul (Chart.js + Zeiträume + Metrik-Toggles) (2026-04-18)
-- Block A: `GET /hel/metrics/history` erweitert um `from_date`/`to_date` (ISO, optional inkl. Tagesende), `profile_key` (nur wirksam wenn Patch-92-Spalte existiert — graceful PRAGMA-Check), Default-Limit 50 → 200. Response-Envelope: `{meta: {from,to,count,profile_key,profile_key_supported}, results: [...]}`. Zusätzliche Frontend-Metriken berechnet: `hapax_ratio`, `avg_word_length`, `created_at`-Alias.
+- Block A: `GET /hel/metrics/history` erweitert um `from_date`/`to_date` (ISO, optional inkl. Tagesende), `profile_key` (nur wirksam wenn Patch-92-Spalte existiert), Default-Limit 50 → 200. Response-Envelope: `{meta: {from,to,count,profile_key,profile_key_supported}, results: [...]}`. Zusätzliche Frontend-Metriken berechnet: `hapax_ratio`, `avg_word_length`, `created_at`-Alias.
 - Block B: Chart.js 4.4.7 + `chartjs-plugin-zoom` 2.0.1 + hammer.js 2.0.8 via CDN eingebunden (Pinch-Zoom Touch). Neue UI: 5 Zeitraum-Chips (7/30/90 Tage, Alles, Custom mit Date-Picker), 5 Metrik-Toggle-Pills (BERT Sentiment, Rolling-TTR, Shannon Entropy, Hapax Ratio, Ø Wortlänge) mit Info-Icons (ⓘ) + Alert-Erklärung, Zoom-Reset-Button. Chart dünne Linien (1.5 px), keine Punkte, Tooltips mit dunkler Hel-Optik.
 - Block C: Alter Canvas-`sentimentChart`-Code komplett entfernt. Metriken-Datentabelle in `<details>` eingeklappt, `table-layout: fixed` + `text-overflow: ellipsis` gegen Overflow. Mobile-first: `min-height: 36px` Touch-Targets auf Chips, `:active`-Fallback für Touch.
 
@@ -198,6 +204,7 @@
 8. [N-F02/N-F03/N-F04] Nala Bubble-Tooling (Wiederholen / Bearbeiten / Lade-Indikator-Upgrade) — siehe `backlog_nach_patch83.md`. Nicht akut.
 9. ~~[H-F03] Hel: mehr Metriken-Auswahl~~ ✅ Patch 91 — 5 Metriken im Chart (BERT, TTR, Entropy, Hapax, Ø Wortlänge), Toggle-Pills.
 10. [H-F01] Hel: Sticky Tab-Leiste (statt Akkordeon Wisch-Tabs) — Konzept offen.
+11. [H-F04] Loki & Fenrir Test-Reports ins Hel-Dashboard integrieren — neuer Backlog-Eintrag nach Patch 93.
 
 ## Architektur-Warnungen
 - ~~`interactions`-Tabelle hat keine User-Spalte~~ ✅ Patch 92 behoben: `profile_key` jetzt als indizierte Spalte. Altdaten: 76/4667 migriert (Rest ohne profile_name).

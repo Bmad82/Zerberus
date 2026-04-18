@@ -2453,7 +2453,7 @@ C4 – 3 Favoriten-Slots: `saveFav(n)` / `loadFav(n)` in `localStorage('nala_the
 
 **Betroffene Dateien:**
 - `zerberus/app/routers/hel.py` (alle drei Blöcke)
-- `HYPERVISOR.md`, `lessons.md`, `backlog_nach_patch83.md`, `docs/PROJEKTDOKUMENTATION.md`
+- `HYPERVISOR.md`, `README.md`, `lessons.md`, `backlog_nach_patch83.md`, `docs/PROJEKTDOKUMENTATION.md`
 
 **Verifikation:**
 - `python -c "from zerberus.app.routers import hel; print('ok')"` → ok
@@ -2491,8 +2491,8 @@ C4 – 3 Favoriten-Slots: `saveFav(n)` / `loadFav(n)` in `localStorage('nala_the
 **Betroffene Dateien:**
 - `zerberus/core/database.py` (Model + `init_db` + `store_interaction`)
 - `zerberus/app/routers/legacy.py`, `orchestrator.py`, `nala.py` (Call-Sites)
+- `zerberus/app/routers/hel.py` (Filter-Logik — schon Patch 91)
 - `alembic.ini`, `alembic/env.py`, `alembic/script.py.mako`, `alembic/versions/7feab49e6afe_baseline_patch92_profile_key.py` (neu)
-- `CLAUDE.md`, `HYPERVISOR.md`, `lessons.md`, `.gitignore`, `docs/PROJEKTDOKUMENTATION.md` (Pflicht-Updates)
 - `bunker_memory_backup_patch92.db` (Backup, nicht ins Git)
 
 **Verifikation:**
@@ -2502,3 +2502,56 @@ C4 – 3 Favoriten-Slots: `saveFav(n)` / `loadFav(n)` in `localStorage('nala_the
 - Neuer Chat → Eintrag hat `profile_key` gesetzt (nach Server-Restart)
 
 *Stand: 2026-04-18, Patch 92.*
+
+---
+
+### Patch 93 – Loki & Fenrir: Playwright E2E + Chaos-Tests (2026-04-18)
+
+**Ziel:** Erste echte Testebene für Zerberus — ein methodischer E2E-Tester (Loki) und ein Chaos-Agent (Fenrir) gegen den laufenden Server, mit eigenen Test-Accounts damit reale User-Daten (Chris/Jojo) unberührt bleiben.
+
+**Mythologie:**
+- **Loki** (Trickster): methodisch, prüft erwartete Ergebnisse, reportet sauber.
+- **Fenrir** (Wolf): wild, findet Edge-Cases durch rohe Gewalt — Prompt-Injection, XSS, SQL, Nullbytes, Emoji-Bomben.
+
+**Block A – Infrastruktur:**
+- `pip install playwright pytest-playwright pytest-html`. `playwright install chromium` zieht ~250 MB nach `%USERPROFILE%\AppData\Local\ms-playwright\`.
+- Neue Test-Accounts in `config.yaml`:
+  - `loki` (Passwort `lokitest123`, bcrypt-Hash rounds=12)
+  - `fenrir` (Passwort `fenrirtest123`, bcrypt-Hash rounds=12)
+- Verifiziert per `POST /nala/profile/login` → beide 200.
+- Projektstruktur `zerberus/tests/`:
+  - `__init__.py`
+  - `conftest.py` — Fixtures `browser_context_args` (Self-signed-Cert-Toleranz, Viewport 390×844), `nala_page`, `logged_in_loki`, `logged_in_fenrir`, `hel_page` (Basic Auth aus `.env`). Login-Helper nutzt tatsächliche Selektoren `#login-username`, `#login-password`, `#login-submit`.
+
+**Block B – Loki (E2E):**
+- `zerberus/tests/test_loki.py`:
+  - `TestLogin`: Login-Screen lädt, gültige Credentials öffnen Chat, falsches Passwort blockt, case-insensitive Login (LOKI).
+  - `TestChat`: Textarea schreibbar, leere Nachricht wird nicht gesendet.
+  - `TestNavigation`: Hamburger- und Settings-Buttons öffnen Sidebar/Modal (mit `pytest.skip` wenn Buttons fehlen — defensive).
+  - `TestHel`: Dashboard lädt, Metriken-Sektion präsent, Patch-91-Zeitraum-Chips sichtbar.
+  - `TestMetricsAPI`: Der neue `/hel/metrics/history`-Endpoint liefert das Envelope-Format mit `meta.count`.
+
+**Block C – Fenrir (Chaos):**
+- `zerberus/tests/test_fenrir.py`:
+  - `CHAOS_PAYLOADS`-Liste: 15 bösartige Strings (leer, Whitespace, 5000 a's, XSS, SQL-Injection, Log4Shell `${jndi:...}`, Prompt-Injection, Path-Traversal, Emoji-Bombe, arabisch/RTL, Nullbytes, HTTP-Smuggling).
+  - `TestChaosInput`: parametrisiert jeden Payload in die Textarea, prüft dass die Seite danach noch funktioniert.
+  - `TestChaosNavigation`: Rapid-Viewport-Switch (Portrait ↔ Landscape), Rapid-Click auf alle sichtbaren Buttons (`force=True`, Exceptions stumm geschluckt), Enter-Press ohne Login.
+  - `TestChaosHel`: `/hel/` ohne Auth → 401/403 (nie 500), Metrics-API mit Müll-Dates (`'9999-99-99'`, `"'; DROP--"`, leer) → nie 5xx.
+
+**Betroffene Dateien:**
+- `config.yaml` (Test-Profile loki, fenrir)
+- `zerberus/tests/__init__.py`, `conftest.py`, `test_loki.py`, `test_fenrir.py` (neu)
+- `HYPERVISOR.md`, `README.md`, `lessons.md`, `backlog_nach_patch83.md`, `docs/PROJEKTDOKUMENTATION.md`, `CLAUDE.md`
+
+**Ausführung:**
+```bash
+venv\Scripts\activate
+pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-contained-html
+```
+
+**Verifikation:**
+- `playwright --version` → 1.58.0
+- `pytest zerberus/tests/test_loki.py::TestLogin -v` → alle grün
+- Beide Logins (loki/fenrir) per `POST /nala/profile/login` → HTTP 200
+
+*Stand: 2026-04-18, Patch 93.*

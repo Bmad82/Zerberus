@@ -26,3 +26,7 @@ data/vectors/
 # IDE
 .vscode/
 .idea/
+
+# Testing (Patch 93) — HTML-Reports sind lokal, pytest-Cache
+zerberus/tests/report/
+.pytest_cache/

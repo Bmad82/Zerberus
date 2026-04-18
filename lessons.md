@@ -87,3 +87,10 @@
 - Vor jeder Schema-Änderung an `bunker_memory.db`: manuelles Backup (`cp bunker_memory.db bunker_memory_backup_patch{N}.db`). Die DB ist heilig und darf nicht durch eine fehlerhafte Migration sterben (Patch 92).
 - Alembic-Baseline-Revision NACH manueller Spalten-Migration erstellen + `alembic stamp head` — sonst versucht `alembic upgrade head` beim nächsten Lauf, die Spalte nochmal anzulegen. Idempotente Migrationen (`_has_column`-Check) verzeihen das, aber sauberer ist stamp (Patch 92).
 - Wenn der Server bereits läuft und `init_db` die neue Spalte beim Start hätte anlegen sollen: die laufende Session hat noch das alte Schema. Entweder manuell `ALTER TABLE` + Server-Restart, oder Server-Restart allein (dann greift init_db). Nur Code-Änderung reicht nicht (Patch 92).
+
+## Testing / Playwright
+- Self-signed HTTPS-Certs (Tailscale, lokale Entwicklung): Playwright-Browser-Context braucht `ignore_https_errors: True` — sonst scheitert `page.goto()` mit SSL-Fehler. Setzen via `browser_context_args`-Fixture in `conftest.py` (Patch 93).
+- Locator-Strategie: Echte IDs der App nehmen, keine generischen Fallback-Selektoren erfinden. Nala hat `#login-username`, `#login-password`, `#login-submit`, `#text-input` — vor dem Schreiben der Tests einmal in die Ziel-Datei reingrepen. Spart später Debug-Zeit (Patch 93).
+- Test-Accounts in `config.yaml` statisch anlegen — NICHT zur Laufzeit per Fixture, sonst spült ein Server-Neustart die Hashes weg. bcrypt-Hashes einmalig per Python generieren und persistieren (Patch 93).
+- Chaos-Tests mit `@pytest.mark.parametrize` für Payload-Listen — sauber, Fehlschläge zeigen genau welches Pattern gebrochen hat. `force=True` bei `.click()` in Chaos-Tests, damit andere Overlays nicht blockieren. Exceptions beim Klicken in Schleifen stumm schlucken — Modals dürfen öffnen (Patch 93).
+- `playwright install chromium` zieht ~250 MB nach `%USERPROFILE%\AppData\Local\ms-playwright\` — einmaliger Download, dann offline nutzbar. Version beim Upgrade prüfen (`playwright --version`) (Patch 93).

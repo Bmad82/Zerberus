@@ -57,6 +57,9 @@ WhisperCleaner: Karten-Liste mit Pattern/Replacement/Kommentar pro Regel, Sektio
 ~~Konzept noch offen. Chris will explizit erinnert werden.~~
 Chart.js 4.4.7 ersetzt den manuellen Canvas-Chart. 5 Metriken (BERT, Rolling-TTR, Shannon Entropy, Hapax Ratio, Ø Wortlänge), Toggle-Pills mit Info-Icons. Zeitraum-Chips (7/30/90 Tage, Alles, Custom-Range). Pinch-to-Zoom (Touch), Wheel-Zoom (Desktop), Zoom-Reset. Feineres Design: dünne Linien 1.5 px, keine Punkte, Tooltips im Hel-Dark-Theme. Datentabelle in `<details>` ausgeklappt, `table-layout: fixed`. Backend-API `/hel/metrics/history` bekommt `{meta, results}`-Envelope + Zeitraum-Filter. Offen als Folge-Backlog: Per-User-Filter-UI, LLM-Auswertung.
 
+**H-F04 — Loki & Fenrir Reports in Hel-Dashboard integrieren** ⭐ NEU (Patch 93)
+HTML-Reports unter `zerberus/tests/report/` — würden sich gut als eigene Hel-Sektion machen (letzter Run-Status, grün/rot je Test-Klasse, Link zum Full-Report). Schreibt der Hypervisor als eigenen Patch an.
+
 ---
 
 ## 📝 Reminder

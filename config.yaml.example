@@ -267,3 +267,16 @@ profiles:
     permission_level: user
     allowed_model: null
     temperature: null   # null = globale Einstellung aus legacy.settings.ai_temperature
+  # Patch 93: Test-Accounts für Playwright-Tests (Loki = E2E, Fenrir = Chaos).
+  # Passwörter: lokitest123 / fenrirtest123 (siehe zerberus/tests/conftest.py).
+  # Hash jeweils mit:  bcrypt.hashpw(b"lokitest123", bcrypt.gensalt(rounds=12)).decode()
+  loki:
+    display_name: Loki
+    password_hash: ''   # Hash einsetzen, sonst scheitert der Test-Login
+    permission_level: user
+    allowed_model: null
+  fenrir:
+    display_name: Fenrir
+    password_hash: ''
+    permission_level: user
+    allowed_model: null

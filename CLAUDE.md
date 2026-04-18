@@ -54,6 +54,13 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - Migrationen IMMER idempotent schreiben (`PRAGMA table_info`-Check, `IF NOT EXISTS`)
 - Vor jeder Schema-Änderung: DB-Backup (`cp bunker_memory.db bunker_memory_backup_patch{N}.db`)
 
+## Tests (seit Patch 93)
+
+- Playwright-Tests in `zerberus/tests/` (Loki = E2E, Fenrir = Chaos)
+- Test-Accounts `loki`/`fenrir` sind Pflicht in `config.yaml` (siehe Patch 93)
+- Ausführen: `pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-contained-html`
+- Server muss laufen für die Tests (`https://127.0.0.1:5000`)
+
 ## Weiterführende Doku
 
 - **Fallstricke & Lektionen:** `lessons.md` — Gotchas, gelernte Fehler, Plattform-Eigenheiten
