@@ -124,14 +124,27 @@ async def token_auth_middleware(request: Request, call_next):
     JWT-Auth-Middleware (Patch 54).
     Setzt request.state.profile_name, .permission_level, .allowed_model
     aus dem verifizierten Token-Payload.
+    Patch 61: Setzt zusätzlich request.state.temperature (Per-User Temperatur-Override).
     Schützt alle Pfade außer den explizit ausgenommenen.
     Hel-Dashboard (/hel) ist ausgenommen – hat eigene Basic-Auth.
     """
     path = request.url.path
 
+    # Patch 82: Debug-Logging für Auth-Entscheidungen
+    api_key_header = request.headers.get("X-API-Key", "")
+    settings = get_settings()
+    static_key = getattr(settings.auth, 'static_api_key', '')
+
+    # Patch 59/82: Statischer API-Key als Alternative zu Bearer (für externe Clients wie Dictate)
+    # Prüfung VOR JWT und VOR Pfad-Exclusions, damit Fast Lane immer greift
+    if static_key and api_key_header == static_key:
+        logger.warning(f"[DEBUG-82] Auth: path={path} | X-API-Key=MATCH | method={request.method} → Fast Lane")
+        return await call_next(request)
+
     # Pfade ohne JWT-Anforderung
     for excl in _JWT_EXCLUDED_PREFIXES:
         if path.startswith(excl):
+            logger.debug(f"[DEBUG-82] Auth: path={path} | excluded prefix → pass")
             return await call_next(request)
 
     # Hel-Dashboard: eigene Basic-Auth
@@ -142,9 +155,14 @@ async def token_auth_middleware(request: Request, call_next):
     if path in ("/nala", "/nala/", "/nala/health", "/nala/profile/prompts"):
         return await call_next(request)
 
+    # API-Key vorhanden aber falsch
+    if api_key_header:
+        logger.warning(f"[DEBUG-82] Auth: path={path} | X-API-Key=MISMATCH | method={request.method}")
+
     # Token validieren
     payload = verify_token(request)
     if payload is None:
+        logger.warning(f"[DEBUG-82] Auth: path={path} | X-API-Key={'present' if api_key_header else 'missing'} | JWT=invalid | method={request.method} → 401")
         return JSONResponse(
             status_code=401,
             content={"detail": "Nicht authentifiziert – bitte einloggen"}
@@ -154,5 +172,6 @@ async def token_auth_middleware(request: Request, call_next):
     request.state.profile_name = payload.get("sub")
     request.state.permission_level = payload.get("permission_level", "guest")
     request.state.allowed_model = payload.get("allowed_model")
+    request.state.temperature = payload.get("temperature")  # Patch 61: Per-User Temperatur-Override
 
     return await call_next(request)

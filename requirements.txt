@@ -23,9 +23,13 @@ sentencepiece>=0.1.99
 apscheduler>=3.10.0
 
 # RAG
-sentence-transformers==2.2.2
+sentence-transformers>=2.7.0
 faiss-cpu==1.7.4
 numpy==1.24.3
+
+# RAG-Dokument-Erweiterung (Patch 65): PDF-Support + Export
+pdfplumber>=0.10.0
+reportlab>=4.0.0
 
 # MQTT (optional)
 paho-mqtt==1.6.1
@@ -38,7 +42,12 @@ twilio==8.10.0
 
 # Profil-Authentifizierung
 bcrypt==4.1.2
-PyJWT==2.8.0
+PyJWT==2.12.1
+vaderSentiment==3.3.2
 
-# RAG-Dokument-Upload (Patch 56)
-python-docx==1.1.2
+# RAG-Dokument-Upload (Patch 56, aktualisiert Patch 65)
+python-docx>=1.1.0
+
+# Metric Engine (Patch 59) – spaCy für erweiterte linguistische Metriken
+# Modell einmalig installieren: python -m spacy download de_core_news_sm
+spacy>=3.7.0

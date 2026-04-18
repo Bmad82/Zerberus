@@ -75,6 +75,7 @@ async def run_overnight_sentiment():
                 FROM interactions i
                 JOIN message_metrics mm ON i.id = mm.message_id
                 WHERE i.timestamp >= :since
+                  AND i.role = 'user'
                   AND mm.bert_sentiment_label IS NULL
                 ORDER BY i.timestamp ASC
             """), {"since": since.isoformat()})

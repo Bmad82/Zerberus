@@ -12,6 +12,8 @@ import pathlib
 import asyncio
 import subprocess
 
+import httpx
+
 from zerberus.core.config import get_settings
 from zerberus.core.logging import setup_logging
 from zerberus.core.event_bus import get_event_bus
@@ -25,20 +27,54 @@ logger = logging.getLogger(__name__)
 # Docker-Verfügbarkeit (gesetzt im Lifespan-Manager)
 _DOCKER_OK: bool = False
 
+# ANSI-Farben für Startup-Status
+_GREEN = "\033[32m"
+_RED   = "\033[31m"
+_RESET = "\033[0m"
+
+
+def _log_ok(name: str, detail: str = "") -> None:
+    """Grüne Statuszeile für erfolgreich gestartete Dienste."""
+    msg = f"{_GREEN}  ✅ {name}{_RESET}"
+    if detail:
+        msg += f"  ({detail})"
+    logger.info(msg)
+
+
+def _log_fail(name: str, reason: str = "") -> None:
+    """Rote Statuszeile für fehlgeschlagene Dienste."""
+    msg = f"{_RED}  ❌ {name}{_RESET}"
+    if reason:
+        msg += f"  — {reason}"
+    logger.info(msg)
+
+
+def _log_skip(name: str, reason: str = "") -> None:
+    """Grau/neutral für deaktivierte/nicht konfigurierte Dienste."""
+    msg = f"  ⏭️  {name}"
+    if reason:
+        msg += f"  ({reason})"
+    logger.info(msg)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
-    
+
     logger.info("=" * 60)
     logger.info("🚀 ZERBERUS PRO 4.0 STARTING")
     logger.info("=" * 60)
-    
-    logger.info("📊 Initialisiere Datenbank...")
-    await init_db()
-    await run_all()
 
-    # Docker-Verfügbarkeit prüfen (graceful – kein Hard-Fail bei fehlendem Docker)
+    # --- Datenbank ---
+    try:
+        await init_db()
+        await run_all()
+        _log_ok("Datenbank")
+    except Exception as _db_err:
+        _log_fail("Datenbank", str(_db_err)[:120])
+
+    # --- Docker ---
     global _DOCKER_OK
     try:
         result = subprocess.run(
@@ -50,27 +86,76 @@ async def lifespan(app: FastAPI):
     except Exception:
         _DOCKER_OK = False
     if _DOCKER_OK:
-        logger.info("[SANDBOX] Docker erreichbar")
+        _log_ok("Docker")
     else:
-        logger.warning("[SANDBOX] Docker nicht erreichbar – Sandbox deaktiviert")
+        _log_fail("Docker", "nicht erreichbar – Sandbox deaktiviert")
 
-    logger.info("🔌 Starte Event-Bus...")
+    # --- Whisper ---
+    _whisper_url = settings.legacy.urls.whisper_url if settings.legacy else ""
+    if _whisper_url:
+        try:
+            # Nur Basis-URL prüfen (ohne Pfad), kurzes Timeout
+            from urllib.parse import urlparse as _urlparse
+            _parsed = _urlparse(_whisper_url)
+            _base = f"{_parsed.scheme}://{_parsed.netloc}/"
+            async with httpx.AsyncClient(timeout=3.0) as _client:
+                await _client.get(_base)
+            _log_ok("Whisper")
+        except Exception as _w_err:
+            _log_fail("Whisper", str(_w_err)[:100])
+    else:
+        _log_skip("Whisper", "URL nicht konfiguriert")
+
+    # --- Ollama / Lokales LLM ---
+    _local_url = settings.legacy.urls.local_url if settings.legacy else ""
+    if _local_url:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as _client:
+                await _client.get(_local_url)
+            _log_ok("Ollama")
+        except Exception as _o_err:
+            _log_fail("Ollama", str(_o_err)[:100])
+    else:
+        _log_skip("Ollama", "local_url nicht konfiguriert")
+
+    # --- RAG / FAISS ---
+    _rag_cfg = settings.modules.get("rag", {})
+    if _rag_cfg.get("enabled", False):
+        try:
+            import faiss as _faiss  # noqa: F401
+            from sentence_transformers import SentenceTransformer as _ST  # noqa: F401
+            _index_path = pathlib.Path(_rag_cfg.get("vector_db_path", "./data/vectors")) / "faiss.index"
+            if _index_path.exists():
+                _idx = _faiss.read_index(str(_index_path))
+                _log_ok("RAG/FAISS", f"{_idx.ntotal} Vektoren im Index")
+            else:
+                _log_ok("RAG/FAISS", "Index leer – noch keine Dokumente hochgeladen")
+        except ImportError:
+            _log_fail("RAG/FAISS", "faiss oder sentence-transformers nicht installiert")
+        except Exception as _rag_err:
+            _log_fail("RAG/FAISS", str(_rag_err)[:100])
+    else:
+        _log_skip("RAG/FAISS", "deaktiviert")
+
+    # --- EventBus ---
     bus = get_event_bus()
     bus.start()
-    
+    _log_ok("EventBus")
+
     logger.info("💓 Pacemaker im Standby – wird bei erster Interaktion aktiv")
 
-    # Overnight-Scheduler starten (Patch 57 – BERT-Sentiment täglich 04:30)
+    # --- Overnight-Scheduler (Patch 57 – BERT-Sentiment täglich 04:30) ---
     _scheduler = None
     try:
         from zerberus.modules.sentiment.overnight import create_scheduler
         _scheduler = create_scheduler()
         if _scheduler:
             _scheduler.start()
-            logger.info("⏰ Overnight-Scheduler gestartet (BERT-Sentiment täglich 04:30 Europe/Berlin)")
+            _log_ok("Overnight-Scheduler", "BERT-Sentiment täglich 04:30 Europe/Berlin")
     except Exception as _sched_err:
-        logger.warning(f"⚠️ Overnight-Scheduler konnte nicht gestartet werden: {_sched_err}")
+        _log_fail("Overnight-Scheduler", str(_sched_err)[:100])
 
+    # --- Module dynamisch laden ---
     logger.info("📦 Lade Module...")
     modules_path = pathlib.Path(__file__).parent / "modules"
     for module_info in pkgutil.iter_modules([str(modules_path)]):
@@ -87,7 +172,7 @@ async def lifespan(app: FastAPI):
                     logger.error(f"  ❌ {module_name}: {e}")
             else:
                 logger.info(f"  ⏭️  {module_name} (deaktiviert)")
-    
+
     logger.info("=" * 60)
     logger.info("✨ ZERBERUS PRO 4.0 READY")
     logger.info("=" * 60)

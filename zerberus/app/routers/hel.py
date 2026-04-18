@@ -3,6 +3,7 @@ Hel Router – Admin-Dashboard und Konfiguration.
 """
 import logging
 import json
+import re
 import secrets
 import os
 import tempfile
@@ -28,6 +29,12 @@ try:
     _DOCX_OK = True
 except ImportError:
     _DOCX_OK = False
+
+try:
+    import pdfplumber
+    _PDF_OK = True
+except ImportError:
+    _PDF_OK = False
 
 logger = logging.getLogger(__name__)
 
@@ -175,20 +182,27 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
         .container { max-width: 1400px; margin: 0 auto; }
         h1 { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
-        .tabs { display: flex; gap: 5px; margin: 20px 0; flex-wrap: wrap; }
-        .tab-btn {
-            background: #333;
-            border: none;
-            color: #ccc;
-            padding: 12px 24px;
-            border-radius: 30px;
+        /* Patch 85: Akkordeon-Layout */
+        .hel-section { margin-bottom: 4px; }
+        .hel-section-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 16px;
+            height: 44px;
+            background: #2d2d2d;
+            border-bottom: 2px solid #c8941f;
             cursor: pointer;
             font-size: 16px;
-            transition: 0.2s;
+            font-weight: bold;
+            color: #e0e0e0;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
-        .tab-btn.active { background: #ff6b6b; color: #1a1a1a; font-weight: bold; }
-        .tab-content { display: none; background: #2d2d2d; border-radius: 15px; padding: 25px; }
-        .tab-content.active { display: block; }
+        .hel-section-header:active { background: #3d3d3d; }
+        .section-arrow { display: inline-block; width: 18px; text-align: center; color: #ffd700; transition: transform 0.2s; }
+        .hel-section-body { background: #2d2d2d; border-radius: 0 0 12px 12px; padding: 20px; overflow: hidden; transition: max-height 0.3s ease-out; }
+        .hel-section-body.collapsed { max-height: 0 !important; padding: 0 20px; }
         .card { background: #3d3d3d; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
         label { display: block; margin: 15px 0 5px; color: #ffa5a5; }
         select, textarea, input {
@@ -211,7 +225,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             margin-top: 10px;
             font-size: 16px;
         }
-        button:hover { background: #ff5252; }
+        button:hover, button:active { background: #ff5252; }
         .balance {
             background: #252525;
             padding: 15px;
@@ -238,7 +252,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             display: flex;
             justify-content: space-between;
         }
-        .session-item:hover { background: #4d4d4d; }
+        .session-item:hover, .session-item:active { background: #4d4d4d; }
         #chart-container { height: 300px; margin-top: 20px; }
         .slider-row { display: flex; align-items: center; gap: 15px; }
         .slider-row input { flex: 1; }
@@ -256,7 +270,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             font-weight: bold;
             transition: 0.2s;
         }
-        .nav-link:hover { background: #ffd700; color: #1a1a1a; }
+        .nav-link:hover, .nav-link:active { background: #ffd700; color: #1a1a1a; }
         .metric-toggles { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 10px; }
         .metric-toggle label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: #e0e0e0; }
     </style>
@@ -264,90 +278,14 @@ ADMIN_HTML = """<!DOCTYPE html>
 <body>
     <div class="container">
         <h1>&#9889; Hel – Admin-Konsole</h1>
-        <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('llm')">LLM &amp; Guthaben</button>
-            <button class="tab-btn" onclick="switchTab('cleaner')">Whisper-Cleaner</button>
-            <button class="tab-btn" onclick="switchTab('dialect')">Dialekte</button>
-            <button class="tab-btn" onclick="switchTab('system')">System-Prompt</button>
-            <button class="tab-btn" onclick="switchTab('metrics')">Metriken</button>
-            <button class="tab-btn" onclick="switchTab('gedaechtnis')">Ged&#228;chtnis / RAG</button>
-            <button class="tab-btn" onclick="switchTab('sysctl')">Systemsteuerung</button>
-            <button class="tab-btn" onclick="switchTab('nav')">&#128279; Navigation</button>
-        </div>
+        <!-- Patch 85: Akkordeon-Layout — Metriken offen, Rest eingeklappt -->
 
-        <!-- Tab LLM -->
-        <div id="tab-llm" class="tab-content active">
-            <div class="card">
-                <h2>OpenRouter Modell & Guthaben</h2>
-                <label>Modell auswählen:</label>
-                <div style="display:flex;gap:8px;margin-bottom:6px;">
-                    <button onclick="sortModels('name')" id="sortByName" style="padding:6px 14px;font-size:13px;background:#1a3a5c;color:#ffd700;border:1px solid #ffd700;border-radius:6px;cursor:pointer;">Nach Name (A&#8211;Z)</button>
-                    <button onclick="sortModels('price')" id="sortByPrice" style="padding:6px 14px;font-size:13px;background:#252525;color:#aaa;border:1px solid #555;border-radius:6px;cursor:pointer;">Nach Preis (&#8593;)</button>
-                </div>
-                <select id="modelSelect" onchange="changeModel()"></select>
-                <div class="balance" id="balanceDisplay">Guthaben wird geladen...</div>
-            </div>
-            <div class="card">
-                <h2>LLM-Parameter</h2>
-                <label>Temperatur (0–2):</label>
-                <div class="slider-row">
-                    <button onclick="stepSlider('temperature','tempValue',-0.1,0,2)" style="padding:4px 10px;font-size:16px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer;min-width:34px;">&#9660;</button>
-                    <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7" oninput="document.getElementById('tempValue').innerText=parseFloat(this.value).toFixed(1)">
-                    <button onclick="stepSlider('temperature','tempValue',0.1,0,2)" style="padding:4px 10px;font-size:16px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer;min-width:34px;">&#9650;</button>
-                    <span class="value-display" id="tempValue">0.7</span>
-                </div>
-                <label>Threshold (W&#246;rter f&#252;r Cloud):</label>
-                <div class="slider-row">
-                    <button onclick="stepSlider('threshold','threshValue',-0.1,0,100)" style="padding:4px 10px;font-size:16px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer;min-width:34px;">&#9660;</button>
-                    <input type="range" id="threshold" min="1" max="100" step="1" value="10" oninput="document.getElementById('threshValue').innerText=parseFloat(this.value).toFixed(1)">
-                    <button onclick="stepSlider('threshold','threshValue',0.1,0,100)" style="padding:4px 10px;font-size:16px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer;min-width:34px;">&#9650;</button>
-                    <span class="value-display" id="threshValue">10</span>
-                </div>
-                <button onclick="saveLLMConfig()">Einstellungen speichern</button>
-                <div id="llmStatus"></div>
-            </div>
-        </div>
-
-        <!-- Tab Cleaner -->
-        <div id="tab-cleaner" class="tab-content">
-            <div class="card">
-                <h2>Whisper-Cleaner JSON bearbeiten</h2>
-                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">F&#252;llw&#246;rter, Korrekturen, Wiederholungs-Limit (<code>whisper_cleaner.json</code>)</p>
-                <textarea id="cleanerEditor" rows="18" style="font-family: monospace;"></textarea>
-                <button onclick="saveCleaner()">Speichern</button>
-                <div id="cleanerStatus"></div>
-            </div>
-            <div class="card">
-                <h2>Fuzzy-Dictionary bearbeiten</h2>
-                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">Projektspezifische Begriffe f&#252;r Whisper-Fehlerkorrektur via Fuzzy-Matching (<code>fuzzy_dictionary.json</code>). JSON-Array von Strings.</p>
-                <textarea id="fuzzyDictEditor" rows="12" style="font-family: monospace;"></textarea>
-                <button onclick="saveFuzzyDict()">Speichern</button>
-                <div id="fuzzyDictStatus"></div>
-            </div>
-        </div>
-
-        <!-- Tab Dialekt -->
-        <div id="tab-dialect" class="tab-content">
-            <div class="card">
-                <h2>Dialekt-JSON bearbeiten</h2>
-                <textarea id="dialectEditor" rows="20" style="font-family: monospace;"></textarea>
-                <button onclick="saveDialect()">Speichern</button>
-                <div id="dialectStatus"></div>
-            </div>
-        </div>
-
-        <!-- Tab System-Prompt -->
-        <div id="tab-system" class="tab-content">
-            <div class="card">
-                <h2>System-Prompt (für alle Chats)</h2>
-                <textarea id="systemPromptEditor" rows="8" style="width:100%; font-family: monospace;"></textarea>
-                <button onclick="saveSystemPrompt()">Speichern</button>
-                <div id="systemPromptStatus"></div>
-            </div>
-        </div>
-
-        <!-- Tab Metriken -->
-        <div id="tab-metrics" class="tab-content">
+        <!-- Metriken (offen) -->
+        <div class="hel-section" id="section-metrics">
+          <div class="hel-section-header" onclick="toggleSection('metrics')">
+            <span class="section-arrow">&#9660;</span> &#128202; Metriken
+          </div>
+          <div class="hel-section-body" id="body-metrics">
             <div class="card">
                 <h2>Letzte Nachrichten</h2>
                 <table id="messagesTable">
@@ -377,18 +315,127 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <h2>Gespeicherte Sessions</h2>
                 <div id="sessionList"></div>
             </div>
+          </div>
         </div>
 
-        <!-- Tab Gedächtnis / RAG -->
-        <div id="tab-gedaechtnis" class="tab-content">
+        <!-- LLM & Guthaben -->
+        <div class="hel-section" id="section-llm">
+          <div class="hel-section-header" onclick="toggleSection('llm')">
+            <span class="section-arrow">&#9654;</span> LLM &amp; Guthaben
+          </div>
+          <div class="hel-section-body collapsed" id="body-llm" style="max-height:0;padding:0 20px;">
+            <div class="card">
+                <h2>OpenRouter Modell & Guthaben</h2>
+                <label>Modell auswählen:</label>
+                <div style="display:flex;gap:8px;margin-bottom:6px;">
+                    <button onclick="sortModels('name')" id="sortByName" style="padding:6px 14px;font-size:13px;background:#1a3a5c;color:#ffd700;border:1px solid #ffd700;border-radius:6px;cursor:pointer;">Nach Name (A&#8211;Z)</button>
+                    <button onclick="sortModels('price')" id="sortByPrice" style="padding:6px 14px;font-size:13px;background:#252525;color:#aaa;border:1px solid #555;border-radius:6px;cursor:pointer;">Nach Preis (&#8593;)</button>
+                </div>
+                <select id="modelSelect" onchange="changeModel()"></select>
+                <div class="balance" id="balanceDisplay">Guthaben wird geladen...</div>
+            </div>
+            <div class="card">
+                <h2>LLM-Parameter</h2>
+                <label>Temperatur (0–2):</label>
+                <div class="slider-row">
+                    <button onclick="stepSlider('temperature','tempValue',-0.1,0,2)" style="padding:4px 10px;font-size:16px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer;min-width:34px;">&#9660;</button>
+                    <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7" oninput="document.getElementById('tempValue').innerText=parseFloat(this.value).toFixed(1)">
+                    <button onclick="stepSlider('temperature','tempValue',0.1,0,2)" style="padding:4px 10px;font-size:16px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer;min-width:34px;">&#9650;</button>
+                    <span class="value-display" id="tempValue">0.7</span>
+                </div>
+                <label>Threshold (W&#246;rter f&#252;r Cloud):</label>
+                <div class="slider-row">
+                    <button onclick="stepSlider('threshold','threshValue',-0.1,0,100)" style="padding:4px 10px;font-size:16px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer;min-width:34px;">&#9660;</button>
+                    <input type="range" id="threshold" min="1" max="100" step="1" value="10" oninput="document.getElementById('threshValue').innerText=parseFloat(this.value).toFixed(1)">
+                    <button onclick="stepSlider('threshold','threshValue',0.1,0,100)" style="padding:4px 10px;font-size:16px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer;min-width:34px;">&#9650;</button>
+                    <span class="value-display" id="threshValue">10</span>
+                </div>
+                <button onclick="saveLLMConfig()">Einstellungen speichern</button>
+                <div id="llmStatus"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Whisper-Cleaner -->
+        <div class="hel-section" id="section-cleaner">
+          <div class="hel-section-header" onclick="toggleSection('cleaner')">
+            <span class="section-arrow">&#9654;</span> Whisper-Cleaner
+          </div>
+          <div class="hel-section-body collapsed" id="body-cleaner" style="max-height:0;padding:0 20px;">
+            <div class="card">
+                <h2>Whisper-Cleaner JSON bearbeiten</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">F&#252;llw&#246;rter, Korrekturen, Wiederholungs-Limit (<code>whisper_cleaner.json</code>)</p>
+                <textarea id="cleanerEditor" rows="18" style="font-family: monospace;"></textarea>
+                <button onclick="saveCleaner()">Speichern</button>
+                <div id="cleanerStatus"></div>
+            </div>
+            <div class="card">
+                <h2>Fuzzy-Dictionary bearbeiten</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">Projektspezifische Begriffe f&#252;r Whisper-Fehlerkorrektur via Fuzzy-Matching (<code>fuzzy_dictionary.json</code>). JSON-Array von Strings.</p>
+                <textarea id="fuzzyDictEditor" rows="12" style="font-family: monospace;"></textarea>
+                <button onclick="saveFuzzyDict()">Speichern</button>
+                <div id="fuzzyDictStatus"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dialekte -->
+        <div class="hel-section" id="section-dialect">
+          <div class="hel-section-header" onclick="toggleSection('dialect')">
+            <span class="section-arrow">&#9654;</span> Dialekte
+          </div>
+          <div class="hel-section-body collapsed" id="body-dialect" style="max-height:0;padding:0 20px;">
+            <div class="card">
+                <h2>Dialekt-JSON bearbeiten</h2>
+                <textarea id="dialectEditor" rows="20" style="font-family: monospace;"></textarea>
+                <button onclick="saveDialect()">Speichern</button>
+                <div id="dialectStatus"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- System-Prompt -->
+        <div class="hel-section" id="section-system">
+          <div class="hel-section-header" onclick="toggleSection('system')">
+            <span class="section-arrow">&#9654;</span> System-Prompt
+          </div>
+          <div class="hel-section-body collapsed" id="body-system" style="max-height:0;padding:0 20px;">
+            <div class="card">
+                <h2>System-Prompt (f&#252;r alle Chats)</h2>
+                <textarea id="systemPromptEditor" rows="8" style="width:100%; font-family: monospace;"></textarea>
+                <button onclick="saveSystemPrompt()">Speichern</button>
+                <div id="systemPromptStatus"></div>
+            </div>
+            <div class="card">
+                <h2>&#128101; Profil-&#220;bersicht (readonly)</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Konfigurierte Profile aus <code>config.yaml</code>. Temperatur <em>null</em> = globale Einstellung aus LLM-Parametern.</p>
+                <div id="profilesTable" style="overflow-x:auto;">
+                    <table>
+                        <thead><tr><th>Profil-Key</th><th>Anzeigename</th><th>Berechtigung</th><th>Modell-Override</th><th>Temperatur</th></tr></thead>
+                        <tbody id="profilesTableBody"><tr><td colspan="5" style="color:#888;">Wird geladen&#8230;</td></tr></tbody>
+                    </table>
+                </div>
+                <button onclick="loadProfiles()" style="margin-top:12px; background:#333; border:1px solid #555; color:#ccc;">&#8635; Aktualisieren</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ged&#228;chtnis / RAG -->
+        <div class="hel-section" id="section-gedaechtnis">
+          <div class="hel-section-header" onclick="toggleSection('gedaechtnis')">
+            <span class="section-arrow">&#9654;</span> &#129504; Ged&#228;chtnis / RAG
+          </div>
+          <div class="hel-section-body collapsed" id="body-gedaechtnis" style="max-height:0;padding:0 20px;">
             <div class="card">
                 <h2>&#128196; Dokument hochladen</h2>
-                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Unterst&#252;tzte Formate: <strong>.txt</strong> und <strong>.docx</strong>. Das Dokument wird automatisch in Chunks von ~300 W&#246;rtern zerlegt und in Nalas Gedächtnis (FAISS) indiziert.</p>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Unterst&#252;tzte Formate: <strong>.txt</strong> und <strong>.docx</strong>. Das Dokument wird automatisch in Chunks von ~800 W&#246;rtern zerlegt und in Nalas Ged&#228;chtnis (FAISS) indiziert.</p>
                 <label>Datei ausw&#228;hlen:</label>
-                <input type="file" id="ragFileInput" accept=".txt,.docx" style="margin-bottom:10px;">
-                <br>
-                <button onclick="uploadRagFile()">&#128196; Hochladen &amp; Indizieren</button>
-                <div id="ragUploadStatus" style="margin-top:12px; font-size:1.1em;"></div>
+                <label for="ragFileInput" id="ragFileLabel" style="display:block; padding:18px; background:#252525; border:2px dashed #555; border-radius:10px; text-align:center; cursor:pointer; margin-bottom:14px; font-size:1em; color:#ccc; touch-action:manipulation;">
+                    &#128196; Datei tippen/ausw&#228;hlen (.txt oder .docx)
+                </label>
+                <input type="file" id="ragFileInput" accept=".txt,.docx" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="updateRagFileLabel()">
+                <button onclick="uploadRagFile()" style="width:100%; padding:16px; font-size:1.1em; border-radius:12px; touch-action:manipulation;">&#128196; Hochladen &amp; Indizieren</button>
+                <div id="ragUploadStatus" style="margin-top:14px; font-size:1.05em; word-break:break-word;"></div>
             </div>
             <div class="card">
                 <h2>&#129504; Index-&#220;bersicht</h2>
@@ -399,10 +446,86 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <button onclick="clearRagIndex()" style="background:#888;">&#128465; Index leeren</button>
                 <div id="ragClearStatus" style="margin-top:8px;"></div>
             </div>
+          </div>
         </div>
 
-        <!-- Tab Navigation -->
-        <div id="tab-nav" class="tab-content">
+        <!-- Systemsteuerung -->
+        <div class="hel-section" id="section-sysctl">
+          <div class="hel-section-header" onclick="toggleSection('sysctl')">
+            <span class="section-arrow">&#9654;</span> &#128147; Systemsteuerung
+          </div>
+          <div class="hel-section-body collapsed" id="body-sysctl" style="max-height:0;padding:0 20px;">
+            <div class="card">
+                <h2>&#128147; Pacemaker-Konfiguration</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Der Pacemaker h&#228;lt den Whisper-Dienst aktiv, indem er regelm&#228;&#223;ig stille WAV-Pings sendet.</p>
+                <label>Pacemaker-Laufzeit (Minuten):</label>
+                <input type="number" id="pacemakerMinutes" min="1" max="480" value="120" style="width:150px;">
+                <p style="color:#888; font-size:0.85em; margin-top:6px;">&#8505;&#65039; &#196;nderungen wirken erst nach Neustart des Servers.</p>
+                <button onclick="savePacemakerConfig()">Speichern</button>
+                <div id="pacemakerStatus" style="margin-top:8px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Provider -->
+        <div class="hel-section" id="section-provider">
+          <div class="hel-section-header" onclick="toggleSection('provider')">
+            <span class="section-arrow">&#9654;</span> &#10060; Provider-Blacklist
+          </div>
+          <div class="hel-section-body collapsed" id="body-provider" style="max-height:0;padding:0 20px;">
+            <div class="card">
+                <h2>OpenRouter Provider-Blacklist</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">
+                    Blockierte Provider werden bei jedem Request via <code>provider.ignore</code> ausgeschlossen.
+                    <br><span style="color:#ffd700;">&#9888;&#65039; chutes und targon sind standardm&#228;&#223;ig gesperrt</span>
+                    (Rate-Limiting bekannt).
+                </p>
+                <div id="providerList" style="margin-bottom:14px;"></div>
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                    <input type="text" id="newProviderInput" placeholder="Provider-Name (z.B. deepinfra)" style="flex:1;">
+                    <button onclick="addProvider()" style="padding:10px 18px;white-space:nowrap;">+ Hinzuf&#252;gen</button>
+                </div>
+                <button onclick="saveProviderBlacklist()">&#128190; Speichern</button>
+                <div id="providerStatus" style="margin-top:8px;color:#4ecdc4;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- User-Verwaltung -->
+        <div class="hel-section" id="section-usermgmt">
+          <div class="hel-section-header" onclick="toggleSection('usermgmt')">
+            <span class="section-arrow">&#9654;</span> &#128274; User-Verwaltung
+          </div>
+          <div class="hel-section-body collapsed" id="body-usermgmt" style="max-height:0;padding:0 20px;">
+            <div class="card">
+                <h2>&#128274; Hash-Tester</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Pr&#252;ft ob ein Passwort zum gespeicherten Hash passt.</p>
+                <label>Profil</label>
+                <select id="hashTestProfile"></select>
+                <label>Passwort</label>
+                <input type="text" id="hashTestPassword" placeholder="Passwort eingeben">
+                <button onclick="testHash()" style="margin-top:12px;">&#128269; Testen</button>
+                <div id="hashTestResult" style="margin-top:12px; font-size:1.1em; font-weight:bold;"></div>
+            </div>
+            <div class="card">
+                <h2>&#128260; Passwort zur&#252;cksetzen</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Setzt ein neues Passwort f&#252;r ein Profil (mind. 4 Zeichen).</p>
+                <label>Profil</label>
+                <select id="resetProfile"></select>
+                <label>Neues Passwort</label>
+                <input type="text" id="resetPassword" placeholder="Neues Passwort (mind. 4 Zeichen)">
+                <button onclick="resetProfilePassword()" style="margin-top:12px;">&#128190; Passwort setzen</button>
+                <div id="resetResult" style="margin-top:12px; font-size:1.1em; font-weight:bold;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Navigation -->
+        <div class="hel-section" id="section-nav">
+          <div class="hel-section-header" onclick="toggleSection('nav')">
+            <span class="section-arrow">&#9654;</span> &#128279; Navigation
+          </div>
+          <div class="hel-section-body collapsed" id="body-nav" style="max-height:0;padding:0 20px;">
             <div class="card">
                 <h2>&#128279; Schnell-Navigation</h2>
                 <p style="color:#aaa; font-size:0.9em; margin-bottom:14px;">Alle Links &#246;ffnen in einem neuen Tab.</p>
@@ -416,20 +539,9 @@ ADMIN_HTML = """<!DOCTYPE html>
                     <a href="/docs" target="_blank" class="nav-link">&#128216; API Docs (Swagger)</a>
                 </div>
             </div>
+          </div>
         </div>
 
-        <!-- Tab Systemsteuerung -->
-        <div id="tab-sysctl" class="tab-content">
-            <div class="card">
-                <h2>&#128147; Pacemaker-Konfiguration</h2>
-                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Der Pacemaker h&#228;lt den Whisper-Dienst aktiv, indem er regelm&#228;&#223;ig stille WAV-Pings sendet. Er startet automatisch mit der ersten Interaktion und stoppt nach der eingestellten Laufzeit ohne weitere Aktivit&#228;t.</p>
-                <label>Pacemaker-Laufzeit (Minuten):</label>
-                <input type="number" id="pacemakerMinutes" min="1" max="480" value="120" style="width:150px;">
-                <p style="color:#888; font-size:0.85em; margin-top:6px;">&#8505;&#65039; &#196;nderungen wirken erst nach Neustart des Servers.</p>
-                <button onclick="savePacemakerConfig()">Speichern</button>
-                <div id="pacemakerStatus" style="margin-top:8px;"></div>
-            </div>
-        </div>
     </div>
 
     <script>
@@ -472,7 +584,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                 const option = document.createElement('option');
                 option.value = m.id;
                 const promptPrice = parseFloat(m.pricing?.prompt || 0);
-                const priceStr = promptPrice === 0 ? 'kostenlos' : `$${promptPrice.toFixed(6)}/1k`;
+                const priceStr = promptPrice === 0 ? 'kostenlos' : `$${(promptPrice * 1_000_000).toFixed(2)}/1M`;
                 option.textContent = `${m.name} (${priceStr})`;
                 select.appendChild(option);
             });
@@ -481,16 +593,30 @@ ADMIN_HTML = """<!DOCTYPE html>
             }
         }
         let _chartHistory = [];
+        let _prevBalance = (() => { try { const v = localStorage.getItem('hel_prevBalance'); return v !== null ? parseFloat(v) : null; } catch(_) { return null; } })();
 
-        function switchTab(name) {
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector(`.tab-btn[onclick*="${name}"]`).classList.add('active');
-            document.getElementById(`tab-${name}`).classList.add('active');
-            if (name === 'metrics') loadMetrics();
-            if (name === 'system') loadSystemPrompt();
-            if (name === 'gedaechtnis') loadRagStatus();
-            if (name === 'sysctl') loadPacemakerConfig();
+        // Patch 85: Akkordeon toggle
+        function toggleSection(id) {
+            const body = document.getElementById('body-' + id);
+            const arrow = document.querySelector('#section-' + id + ' .section-arrow');
+            const isCollapsed = body.classList.contains('collapsed');
+            if (isCollapsed) {
+                body.classList.remove('collapsed');
+                body.style.maxHeight = body.scrollHeight + 'px';
+                body.style.padding = '20px';
+                arrow.innerHTML = '&#9660;';
+                // Lazy-load Daten beim ersten Öffnen
+                if (id === 'metrics') loadMetrics();
+                if (id === 'system') { loadSystemPrompt(); loadProfiles(); }
+                if (id === 'gedaechtnis') loadRagStatus();
+                if (id === 'sysctl') loadPacemakerConfig();
+                if (id === 'provider') loadProviderBlacklist();
+            } else {
+                body.classList.add('collapsed');
+                body.style.maxHeight = '0';
+                body.style.padding = '0 20px';
+                arrow.innerHTML = '&#9654;';
+            }
         }
 
         async function loadModelsAndBalance() {
@@ -522,12 +648,21 @@ ADMIN_HTML = """<!DOCTYPE html>
                 currentModel = config.llm?.cloud_model || '';
                 renderModelSelect(_allModels, currentModel);
 
-                // Guthaben und letzte Anfrage getrennt anzeigen
-                const balanceStr = balance.balance != null
-                    ? `Guthaben: $${parseFloat(balance.balance).toFixed(2)}`
+                // Guthaben, Delta und letzte Anfrage anzeigen
+                const curBalance = balance.balance != null ? parseFloat(balance.balance) : null;
+                const balanceStr = curBalance != null
+                    ? `Guthaben: $${curBalance.toFixed(2)}`
                     : 'Guthaben: nicht verfügbar';
-                const lastCostStr = `Letzte Anfrage: $${parseFloat(balance.last_cost || 0).toFixed(6)}`;
-                balanceEl.innerHTML = `${balanceStr}<br><span style="font-size:0.85em;color:#aaa;">${lastCostStr}</span>`;
+                let deltaStr = '';
+                if (curBalance != null && _prevBalance != null) {
+                    const delta = _prevBalance - curBalance;
+                    if (delta > 0) {
+                        deltaStr = `<br><span style="font-size:0.85em;color:#ff6b6b;">Letzter Prompt: -$${delta.toFixed(6)}</span>`;
+                    }
+                }
+                if (curBalance != null) { _prevBalance = curBalance; try { localStorage.setItem('hel_prevBalance', curBalance.toString()); } catch(_) {} }
+                const lastCostStr = `Letzte Anfrage: $${(parseFloat(balance.last_cost || 0) * 1_000_000).toFixed(2)} / 1M Tokens`;
+                balanceEl.innerHTML = `${balanceStr}${deltaStr}<br><span style="font-size:0.85em;color:#aaa;">${lastCostStr}</span>`;
 
                 // Temperatur und Threshold aus config laden
                 const tempSlider = document.getElementById('temperature');
@@ -656,12 +791,19 @@ ADMIN_HTML = """<!DOCTYPE html>
             tbody.innerHTML = '';
             data.forEach((msg) => {
                 const tr = document.createElement('tr');
-                tr.innerHTML = `<td>${new Date(msg.timestamp).toLocaleString()}</td>
+                // H-03: Erster Satz, max 80 Zeichen
+                const raw = (msg.content || '');
+                const sentenceEnd = raw.search(/[.!?]/);
+                const firstSentence = sentenceEnd > 0 ? raw.substring(0, sentenceEnd + 1) : raw;
+                const truncated = firstSentence.length > 80 ? firstSentence.substring(0, 80) + '\u2026' : firstSentence;
+                const ts = new Date(msg.timestamp);
+                const timeStr = ts.toLocaleDateString('de-DE') + ' ' + ts.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
+                tr.innerHTML = `<td>${timeStr}</td>
                                   <td>${msg.role}</td>
-                                  <td>${(msg.content || '').substring(0,50)}...</td>
+                                  <td title="${raw.substring(0,200).replace(/"/g,'&quot;')}">${truncated}</td>
                                   <td>${msg.word_count ?? ''}</td>
                                   <td>${msg.vader_compound ?? ''}</td>
-                                  <td>${msg.cost !== null && msg.cost !== undefined ? msg.cost.toFixed(6) : ''}</td>`;
+                                  <td>${msg.cost !== null && msg.cost !== undefined ? `$${(msg.cost * 1_000_000).toFixed(2)} / 1M` : ''}</td>`;
                 tbody.appendChild(tr);
             });
 
@@ -695,6 +837,9 @@ ADMIN_HTML = """<!DOCTYPE html>
                     backgroundColor: 'rgba(255,107,107,0.08)',
                     tension: 0.3,
                     spanGaps: true,
+                    yAxisID: 'y',
+                    pointRadius: 3,
+                    borderWidth: 2,
                 });
             }
             if (document.getElementById('tog-wc')?.checked) {
@@ -710,8 +855,8 @@ ADMIN_HTML = """<!DOCTYPE html>
             }
             if (document.getElementById('tog-ttr')?.checked) {
                 datasets.push({
-                    label: 'TTR',
-                    data: rows.map(r => r.ttr ?? null),
+                    label: 'TTR (Rolling-50)',
+                    data: rows.map(r => r.rolling_ttr ?? r.ttr ?? null),
                     borderColor: '#ffd700',
                     backgroundColor: 'rgba(255,215,0,0.08)',
                     tension: 0.3,
@@ -739,7 +884,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                     maintainAspectRatio: false,
                     interaction: { mode: 'index', intersect: false },
                     scales: {
-                        y: { position: 'left', title: { display: true, text: 'Score / TTR / Entropy' } },
+                        y: { position: 'left', min: 0, max: 1, title: { display: true, text: 'Sentiment (0=neg · 0.5=neutral · 1=pos) / TTR / Entropy' } },
                         y2: { position: 'right', title: { display: true, text: 'Word Count' }, grid: { drawOnChartArea: false } }
                     }
                 }
@@ -748,6 +893,29 @@ ADMIN_HTML = """<!DOCTYPE html>
 
         async function exportSession(sessionId) {
             window.location.href = `/hel/admin/export/session/${sessionId}`;
+        }
+
+        // ========== Profil-Übersicht (Patch 61) ==========
+        async function loadProfiles() {
+            const tbody = document.getElementById('profilesTableBody');
+            if (!tbody) return;
+            try {
+                const res = await fetch('/hel/admin/profiles');
+                if (!res.ok) { tbody.innerHTML = '<tr><td colspan="5" style="color:#ff6b6b;">Fehler beim Laden (' + res.status + ')</td></tr>'; return; }
+                const profiles = await res.json();
+                if (!profiles.length) { tbody.innerHTML = '<tr><td colspan="5" style="color:#888;">Keine Profile konfiguriert.</td></tr>'; return; }
+                tbody.innerHTML = profiles.map(p => `
+                    <tr>
+                        <td style="font-family:monospace;">${p.key}</td>
+                        <td>${p.display_name}</td>
+                        <td><span style="background:${p.permission_level === 'admin' ? '#7b1fa2' : p.permission_level === 'user' ? '#1a3a5c' : '#333'}; padding:3px 10px; border-radius:12px; font-size:0.85em;">${p.permission_level}</span></td>
+                        <td style="font-family:monospace; font-size:0.85em;">${p.allowed_model || '<span style="color:#888;">global</span>'}</td>
+                        <td style="font-family:monospace;">${p.temperature !== null && p.temperature !== undefined ? p.temperature : '<span style="color:#888;">global</span>'}</td>
+                    </tr>
+                `).join('');
+            } catch(e) {
+                tbody.innerHTML = '<tr><td colspan="5" style="color:#ff6b6b;">Netzwerkfehler: ' + e.message + '</td></tr>';
+            }
         }
 
         // ========== RAG / Gedächtnis ==========
@@ -762,10 +930,25 @@ ADMIN_HTML = """<!DOCTYPE html>
                 const counts = {};
                 data.sources.forEach(s => { counts[s] = (counts[s] || 0) + 1; });
                 sourcesDiv.innerHTML = Object.entries(counts)
-                    .map(([src, cnt]) => `<div style="padding:4px 0; border-bottom:1px solid #444;">\uD83D\uDCC4 <strong>${src}</strong> &mdash; ${cnt} Chunk(s)</div>`)
+                    .map(([src, cnt]) => `<div style="padding:4px 0; border-bottom:1px solid #444;">[doc] <strong>${src}</strong> &mdash; ${cnt} Chunk(s)</div>`)
                     .join('');
             } else {
                 sourcesDiv.innerHTML = '<span style="color:#888;">Noch keine Dokumente indiziert.</span>';
+            }
+        }
+
+        // Patch 61: Dateiname im Label anzeigen nach Auswahl (Mobile-Feedback)
+        function updateRagFileLabel() {
+            const input = document.getElementById('ragFileInput');
+            const label = document.getElementById('ragFileLabel');
+            if (input.files && input.files.length > 0) {
+                label.innerHTML = '\u2705 <strong>' + input.files[0].name + '</strong>';
+                label.style.borderColor = '#4ecdc4';
+                label.style.color = '#4ecdc4';
+            } else {
+                label.innerHTML = '\uD83D\uDCC4 Datei tippen/ausw\u00e4hlen (.txt oder .docx)';
+                label.style.borderColor = '#555';
+                label.style.color = '#ccc';
             }
         }
 
@@ -773,24 +956,34 @@ ADMIN_HTML = """<!DOCTYPE html>
             const input = document.getElementById('ragFileInput');
             const status = document.getElementById('ragUploadStatus');
             if (!input.files || input.files.length === 0) {
-                status.innerText = '\u274C Bitte zuerst eine Datei ausw\u00e4hlen.';
+                status.innerHTML = '\u274C Bitte zuerst eine Datei ausw\u00e4hlen.';
+                status.style.color = '#ff6b6b';
                 return;
             }
             const file = input.files[0];
             const formData = new FormData();
             formData.append('file', file);
-            status.innerText = '\u23F3 Wird hochgeladen und indiziert...';
+            status.innerHTML = '\u23F3 Wird hochgeladen und indiziert\u2026';
+            status.style.color = '#ffd700';
             try {
                 const res = await fetch('/hel/admin/rag/upload', { method: 'POST', body: formData });
-                const data = await res.json();
+                const data = await res.json().catch(() => ({}));
                 if (res.ok) {
                     status.innerHTML = `\u2705 <strong>${data.chunks_indexed} Chunks indiziert</strong> aus <em>${data.filename}</em>`;
+                    status.style.color = '#4ecdc4';
                     loadRagStatus();
+                    // Label zurücksetzen
+                    input.value = '';
+                    updateRagFileLabel();
                 } else {
-                    status.innerText = '\u274C Fehler: ' + (data.detail || JSON.stringify(data));
+                    // Patch 61: HTTP-Status + detail aus Response anzeigen
+                    const detail = data.detail || JSON.stringify(data) || 'Unbekannter Fehler';
+                    status.innerHTML = `\u274C HTTP ${res.status}: ${detail}`;
+                    status.style.color = '#ff6b6b';
                 }
             } catch(e) {
-                status.innerText = '\u274C Netzwerkfehler: ' + e.message;
+                status.innerHTML = '\u274C Netzwerkfehler: ' + e.message;
+                status.style.color = '#ff6b6b';
             }
         }
 
@@ -824,10 +1017,132 @@ ADMIN_HTML = """<!DOCTYPE html>
                 res.ok ? '\u2705 Gespeichert. Wirkt nach Neustart.' : '\u274C Fehler: ' + (data.detail || '');
         }
 
+        // ========== Provider-Blacklist (Patch 63) ==========
+        let currentBlacklist = [];
+
+        async function loadProviderBlacklist() {
+            const res = await fetch('/hel/admin/provider_blacklist');
+            const data = await res.json();
+            currentBlacklist = data.blacklist || [];
+            renderProviderList();
+        }
+
+        function renderProviderList() {
+            const container = document.getElementById('providerList');
+            if (currentBlacklist.length === 0) {
+                container.innerHTML = '<span style="color:#888;">Keine Provider blockiert.</span>';
+                return;
+            }
+            container.innerHTML = currentBlacklist.map(p => `
+                <div style="display:flex;justify-content:space-between;align-items:center;background:#3d3d3d;padding:8px 12px;border-radius:8px;margin-bottom:6px;">
+                    <span>&#10060; ${p}</span>
+                    <button onclick="removeProvider('${p}')" style="background:#555;color:#fff;padding:4px 10px;font-size:13px;border-radius:6px;">&#10005;</button>
+                </div>
+            `).join('');
+        }
+
+        function addProvider() {
+            const input = document.getElementById('newProviderInput');
+            const name = input.value.trim().toLowerCase();
+            if (!name) return;
+            if (currentBlacklist.includes(name)) {
+                document.getElementById('providerStatus').textContent = 'Bereits in der Liste.';
+                return;
+            }
+            currentBlacklist.push(name);
+            renderProviderList();
+            input.value = '';
+            document.getElementById('providerStatus').textContent = '';
+        }
+
+        function removeProvider(name) {
+            currentBlacklist = currentBlacklist.filter(p => p !== name);
+            renderProviderList();
+        }
+
+        async function saveProviderBlacklist() {
+            const res = await fetch('/hel/admin/provider_blacklist', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ blacklist: currentBlacklist })
+            });
+            const data = await res.json();
+            document.getElementById('providerStatus').textContent =
+                data.status === 'ok' ? '\u2705 Gespeichert.' : '\u274C Fehler beim Speichern.';
+        }
+
         loadModelsAndBalance();
         loadCleaner();
         loadFuzzyDict();
         loadDialect();
+        // Patch 85: Metriken laden da Sektion standardmäßig offen
+        loadMetrics();
+
+        // ---- User-Verwaltung (Patch 83) ----
+        async function loadUserProfiles() {
+            try {
+                const res = await fetch('/hel/admin/profiles');
+                const profiles = await res.json();
+                const selTest = document.getElementById('hashTestProfile');
+                const selReset = document.getElementById('resetProfile');
+                selTest.innerHTML = '';
+                selReset.innerHTML = '';
+                profiles.forEach(p => {
+                    const o1 = document.createElement('option');
+                    o1.value = p.key;
+                    o1.textContent = p.display_name + ' (' + p.key + ')';
+                    selTest.appendChild(o1);
+                    selReset.appendChild(o1.cloneNode(true));
+                });
+            } catch(e) { console.error('Profile laden fehlgeschlagen:', e); }
+        }
+        loadUserProfiles();
+
+        async function testHash() {
+            const profile = document.getElementById('hashTestProfile').value;
+            const password = document.getElementById('hashTestPassword').value;
+            const el = document.getElementById('hashTestResult');
+            if (!password) { el.innerHTML = '<span style="color:#ffa500;">Bitte Passwort eingeben</span>'; return; }
+            try {
+                const res = await fetch('/hel/admin/auth/test-hash', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ profile, password })
+                });
+                const data = await res.json();
+                if (!data.hash_exists) {
+                    el.innerHTML = '<span style="color:#ffa500;">\u26a0\ufe0f Kein Hash gespeichert</span>';
+                } else if (data.match) {
+                    el.innerHTML = '<span style="color:#4ecdc4;">\u2705 Passwort stimmt!</span>';
+                } else {
+                    el.innerHTML = '<span style="color:#ff6b6b;">\u274c Falsches Passwort</span>';
+                }
+            } catch(e) { el.innerHTML = '<span style="color:#ff6b6b;">Fehler: ' + e.message + '</span>'; }
+        }
+
+        async function resetProfilePassword() {
+            const profile = document.getElementById('resetProfile').value;
+            const password = document.getElementById('resetPassword').value;
+            const el = document.getElementById('resetResult');
+            if (!password || password.length < 4) {
+                el.innerHTML = '<span style="color:#ffa500;">Mind. 4 Zeichen!</span>';
+                return;
+            }
+            if (!confirm('Passwort f\u00fcr "' + profile + '" wirklich \u00e4ndern?')) return;
+            try {
+                const res = await fetch('/hel/admin/auth/reset-password', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ profile, password })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    el.innerHTML = '<span style="color:#4ecdc4;">\u2705 Passwort f\u00fcr ' + profile + ' gesetzt!</span>';
+                } else {
+                    el.innerHTML = '<span style="color:#ff6b6b;">\u274c ' + (data.detail || 'Fehler') + '</span>';
+                }
+            } catch(e) { el.innerHTML = '<span style="color:#ff6b6b;">Fehler: ' + e.message + '</span>'; }
+        }
     </script>
 </body>
 </html>
@@ -1027,23 +1342,70 @@ async def metrics_summary(session_id: str = None):
 CONFIG_YAML_PATH = Path("config.yaml")
 
 
-def _chunk_text(text: str, chunk_size: int = 300, overlap: int = 50) -> list[str]:
-    """Zerlegt Text in Chunks von ~chunk_size Wörtern mit overlap Wörtern Überlapp."""
-    words = text.split()
-    if not words:
-        return []
-    chunks = []
-    i = 0
-    while i < len(words):
-        chunk_words = words[i:i + chunk_size]
-        chunks.append(" ".join(chunk_words))
-        i += chunk_size - overlap
-    return chunks
+# Kapitelgrenzen-Regex: Prolog / Akt I–VII / Epilog / Glossar am Zeilenanfang
+_CHAPTER_RE = re.compile(
+    r'(?m)(?=^(?:Prolog|Epilog|Glossar|Akt\s+[IVXLC]+)\b)',
+    re.IGNORECASE,
+)
+
+
+def _chunk_text(
+    text: str,
+    chunk_size: int = 800,
+    overlap: int = 160,
+    min_chunk_words: int = 120,
+) -> tuple[list[str], int]:
+    """Zerlegt Text in Chunks mit harten Splits an Kapitelgrenzen.
+
+    Kapitelgrenzen (Prolog / Akt I–VII / Epilog / Glossar) werden nie
+    überlappt — Overlap nur innerhalb eines Abschnitts.
+    Einheit: Wörter (nicht Token, nicht Zeichen) — Patch 75.
+
+    Patch 88 (Fix A): Post-Processing-Pass merged Residual-Chunks unter
+    `min_chunk_words` in den Vorgänger-Chunk. Kurze Tails (z.B. 5w/16w/64w)
+    kapern bei normalisierten MiniLM-Embeddings sonst Rang 1.
+    Rückgabe: (chunks, merged_count)
+    """
+    # Harter Split an Kapitelgrenzen
+    sections = _CHAPTER_RE.split(text)
+    sections = [s.strip() for s in sections if s.strip()]
+
+    chunks: list[str] = []
+    for section in sections:
+        words = section.split()
+        if not words:
+            continue
+        i = 0
+        while i < len(words):
+            chunk_words = words[i:i + chunk_size]
+            chunks.append(" ".join(chunk_words))
+            i += chunk_size - overlap
+
+    # Patch 88: Residual-Tail-Merge
+    merged_count = 0
+    if len(chunks) > 1 and min_chunk_words > 0:
+        cleaned: list[str] = []
+        for chunk in chunks:
+            wc = len(chunk.split())
+            if wc < min_chunk_words and cleaned:
+                # an Vorgänger anhängen
+                cleaned[-1] = cleaned[-1] + "\n\n" + chunk
+                merged_count += 1
+            else:
+                cleaned.append(chunk)
+        # Edge-Case: Erster Chunk war zu kurz → in Nachfolger einbetten
+        if cleaned and len(cleaned[0].split()) < min_chunk_words and len(cleaned) > 1:
+            cleaned[1] = cleaned[0] + "\n\n" + cleaned[1]
+            cleaned.pop(0)
+            merged_count += 1
+        chunks = cleaned
+
+    return chunks, merged_count
 
 
 @router.post("/admin/rag/upload")
 async def rag_upload(file: UploadFile = File(...)):
-    """Lädt .txt oder .docx hoch, zerlegt in Chunks und indiziert sie im FAISS-Index."""
+    """Lädt .txt, .md, .docx oder .pdf hoch, zerlegt in Chunks und indiziert sie im FAISS-Index."""
     from zerberus.modules.rag.router import (
         _ensure_init, _encode, _add_to_index, RAG_AVAILABLE
     )
@@ -1057,36 +1419,68 @@ async def rag_upload(file: UploadFile = File(...)):
     filename = file.filename or "unbekannt"
     suffix = Path(filename).suffix.lower()
 
-    if suffix == ".txt":
-        raw_bytes = await file.read()
+    raw_bytes = await file.read()
+
+    if suffix in (".txt", ".md"):
         text = raw_bytes.decode("utf-8", errors="replace")
     elif suffix == ".docx":
         if not _DOCX_OK:
             raise HTTPException(422, "python-docx nicht installiert. Bitte 'pip install python-docx' ausführen.")
-        raw_bytes = await file.read()
-        doc = DocxDocument(io.BytesIO(raw_bytes))
-        text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        try:
+            doc = DocxDocument(io.BytesIO(raw_bytes))
+            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except Exception as e:
+            raise HTTPException(422, f"DOCX konnte nicht gelesen werden: {e}")
+    elif suffix == ".pdf":
+        if not _PDF_OK:
+            raise HTTPException(422, "pdfplumber nicht installiert. Bitte 'pip install pdfplumber' ausführen.")
+        try:
+            pages = []
+            with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        pages.append(page_text)
+            text = "\n\n".join(pages)
+        except Exception as e:
+            raise HTTPException(422, f"PDF konnte nicht gelesen werden: {e}")
     else:
-        raise HTTPException(422, f"Nicht unterstütztes Format '{suffix}'. Nur .txt und .docx erlaubt.")
+        raise HTTPException(422, f"Nicht unterstütztes Format '{suffix}'. Erlaubt: .txt, .md, .docx, .pdf")
 
     text = text.strip()
     if not text:
         raise HTTPException(400, "Datei ist leer oder enthält keinen lesbaren Text.")
 
-    chunks = _chunk_text(text, chunk_size=300, overlap=50)
+    # chunk_size=800 Wörter, overlap=160 Wörter (20 %), kapitelaware — Patch 75
+    # Patch 88: min_chunk_words aus config (Default 120) für Residual-Merge
+    rag_cfg_full = settings.modules.get("rag", {})
+    min_words = int(rag_cfg_full.get("min_chunk_words", 120))
+    chunks, merged_count = _chunk_text(
+        text, chunk_size=800, overlap=160, min_chunk_words=min_words
+    )
     if not chunks:
         raise HTTPException(400, "Kein Text nach dem Chunking übrig.")
+
+    logger.info(
+        f"[RAG-Chunking] Doc={filename}, Chunks={len(chunks)} (nach Merge), "
+        f"merged={merged_count} kurze Residuals, min_chunk_words={min_words}"
+    )
 
     await _ensure_init(settings)
 
     indexed = 0
     for chunk in chunks:
         vec = await asyncio.to_thread(_encode, chunk)
-        await asyncio.to_thread(_add_to_index, vec, chunk, {"source": filename}, settings)
+        word_count = len(chunk.split())
+        await asyncio.to_thread(
+            _add_to_index, vec, chunk,
+            {"source": filename, "word_count": word_count},
+            settings,
+        )
         indexed += 1
 
-    logger.info(f"📚 RAG-Upload: {indexed} Chunks aus '{filename}' indiziert")
-    return {"status": "ok", "filename": filename, "chunks_indexed": indexed}
+    logger.info(f"✅ RAG-Upload abgeschlossen: {indexed}/{len(chunks)} Chunks aus '{filename}' indiziert")
+    return {"status": "ok", "filename": filename, "chunks_indexed": indexed, "merged_residuals": merged_count}
 
 
 @router.get("/admin/rag/status")
@@ -1110,6 +1504,47 @@ async def rag_clear():
         raise HTTPException(503, "RAG-Abhängigkeiten nicht installiert.")
     await asyncio.to_thread(_reset_sync, settings)
     return {"status": "ok", "message": "RAG-Index geleert."}
+
+
+@router.post("/admin/rag/reindex")
+async def rag_reindex():
+    """Baut den FAISS-Index aus den gespeicherten Metadaten-Chunks neu auf.
+    Gewählte Option: Endpunkt statt Auto-Clear beim Start — kein ungewollter
+    Datenverlust beim Neustart; User triggert Reindex bewusst nach Chunk-Änderung.
+    Sinnvoll nach: Embedding-Modell-Wechsel oder Chunk-Parameter-Änderung
+    (sofern alter Index dann gelöscht und Dokumente neu hochgeladen wurden).
+    """
+    from zerberus.modules.rag.router import (
+        _reset_sync, _encode, _add_to_index, _metadata as current_meta, RAG_AVAILABLE
+    )
+    settings = get_settings()
+    mod_cfg = settings.modules.get("rag", {})
+    if not mod_cfg.get("enabled", False):
+        raise HTTPException(503, "RAG-Modul ist in config.yaml deaktiviert.")
+    if not RAG_AVAILABLE:
+        raise HTTPException(503, "RAG-Abhängigkeiten nicht installiert.")
+
+    # Kopie der aktuellen Chunks sichern bevor Reset
+    chunks_to_reindex = [(m.get("text", ""), {k: v for k, v in m.items() if k != "text"})
+                         for m in current_meta if m.get("text", "").strip()]
+
+    if not chunks_to_reindex:
+        return {"status": "ok", "message": "Index war leer — nichts zu reindizieren.", "reindexed": 0}
+
+    logger.info(f"🔄 RAG-Reindex gestartet: {len(chunks_to_reindex)} Chunks werden neu eingebettet")
+
+    # Index leeren
+    await asyncio.to_thread(_reset_sync, settings)
+
+    # Alle Chunks neu einbetten und einfügen
+    reindexed = 0
+    for text, meta in chunks_to_reindex:
+        vec = await asyncio.to_thread(_encode, text)
+        await asyncio.to_thread(_add_to_index, vec, text, meta, settings)
+        reindexed += 1
+
+    logger.info(f"✅ RAG-Reindex abgeschlossen: {reindexed} Chunks neu indiziert")
+    return {"status": "ok", "reindexed": reindexed}
 
 
 # ============================================================
@@ -1158,6 +1593,156 @@ async def post_pacemaker_config(request: Request):
 
 
 # ============================================================
+# Profil-Übersicht (Patch 61) – readonly, kein password_hash
+# ============================================================
+
+@router.get("/admin/profiles")
+async def get_profiles():
+    """
+    Gibt alle konfigurierten Profile zurück – ohne password_hash.
+    Patch 61: Für die readonly Profil-Übersicht im Hel-Dashboard.
+    """
+    if not CONFIG_YAML_PATH.exists():
+        return []
+    with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    profiles = data.get("profiles", {})
+    result = []
+    for key, val in profiles.items():
+        if not isinstance(val, dict):
+            continue
+        result.append({
+            "key": key,
+            "display_name": val.get("display_name", key),
+            "permission_level": val.get("permission_level", "guest"),
+            "allowed_model": val.get("allowed_model"),
+            "temperature": val.get("temperature"),
+        })
+    return result
+
+
+# ============================================================
+# User-Verwaltung: Hash-Test & Passwort-Reset (Patch 83)
+# ============================================================
+
+@router.post("/admin/auth/test-hash")
+async def test_hash(request: Request):
+    """Testet ob ein Passwort zum gespeicherten Hash eines Profils passt."""
+    import bcrypt
+    body = await request.json()
+    profile_key = body.get("profile", "").strip()
+    password = body.get("password", "")
+
+    if not profile_key or not password:
+        raise HTTPException(status_code=400, detail="profile und password erforderlich")
+
+    if not CONFIG_YAML_PATH.exists():
+        raise HTTPException(status_code=500, detail="config.yaml nicht gefunden")
+
+    with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    profiles = data.get("profiles", {})
+    profile = profiles.get(profile_key)
+    if not profile:
+        raise HTTPException(status_code=404, detail=f"Profil '{profile_key}' nicht gefunden")
+
+    stored_hash = profile.get("password_hash", "")
+    if not stored_hash:
+        return {"match": False, "hash_exists": False}
+
+    try:
+        match = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+    except Exception as e:
+        logger.error(f"[DEBUG-83] Hash-Test Fehler: {e}")
+        return {"match": False, "hash_exists": True, "error": str(e)}
+
+    return {"match": match, "hash_exists": True}
+
+
+@router.post("/admin/auth/reset-password")
+async def reset_password(request: Request):
+    """Setzt das Passwort eines Profils neu (bcrypt, rounds=12)."""
+    import bcrypt
+    body = await request.json()
+    profile_key = body.get("profile", "").strip()
+    new_password = body.get("password", "")
+
+    if not profile_key or len(new_password) < 4:
+        raise HTTPException(status_code=400, detail="profile erforderlich, password mind. 4 Zeichen")
+
+    if not CONFIG_YAML_PATH.exists():
+        raise HTTPException(status_code=500, detail="config.yaml nicht gefunden")
+
+    with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    profiles = data.get("profiles", {})
+    if profile_key not in profiles:
+        raise HTTPException(status_code=404, detail=f"Profil '{profile_key}' nicht gefunden")
+
+    new_hash = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    data["profiles"][profile_key]["password_hash"] = new_hash
+
+    temp_fd, temp_path = tempfile.mkstemp(dir=CONFIG_YAML_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as tmp:
+            yaml.dump(data, tmp, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        os.replace(temp_path, CONFIG_YAML_PATH)
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise HTTPException(status_code=500, detail=f"Fehler beim Speichern: {e}")
+
+    reload_settings()
+    logger.info(f"[DEBUG-83] Passwort für Profil '{profile_key}' zurückgesetzt.")
+    return {"success": True, "profile": profile_key}
+
+
+# ============================================================
+# Provider-Blacklist (Patch 63)
+# ============================================================
+
+@router.get("/admin/provider_blacklist")
+async def get_provider_blacklist():
+    """Gibt aktuelle OpenRouter Provider-Blacklist zurück."""
+    if not CONFIG_YAML_PATH.exists():
+        return {"blacklist": []}
+    with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    blacklist = cfg.get("openrouter", {}).get("provider_blacklist", [])
+    return {"blacklist": blacklist}
+
+
+@router.post("/admin/provider_blacklist")
+async def post_provider_blacklist(request: Request):
+    """Speichert neue Provider-Blacklist in config.yaml und lädt Settings neu."""
+    data = await request.json()
+    blacklist = data.get("blacklist", [])
+    if not isinstance(blacklist, list):
+        raise HTTPException(400, "blacklist muss eine Liste sein.")
+
+    if not CONFIG_YAML_PATH.exists():
+        raise HTTPException(500, "config.yaml nicht gefunden.")
+
+    with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+
+    cfg.setdefault("openrouter", {})["provider_blacklist"] = [str(p).lower() for p in blacklist]
+
+    temp_fd, temp_path = tempfile.mkstemp(dir=CONFIG_YAML_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        os.replace(temp_path, CONFIG_YAML_PATH)
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise HTTPException(500, f"Fehler beim Schreiben: {e}")
+
+    reload_settings()
+    return {"status": "ok"}
+
+
+# ============================================================
 # Metrics History mit BERT-Sentiment (Patch 57)
 # ============================================================
 
@@ -1178,24 +1763,56 @@ async def metrics_history(limit: int = 50):
         cols = {row[1] for row in col_result.fetchall()}
         has_bert = "bert_sentiment_label" in cols and "bert_sentiment_score" in cols
 
+        # Patch 64: BERT-Score als gerichteter Wert (0=negativ, 0.5=neutral, 1=positiv).
+        # Vor Patch 64 war bert_sentiment_score die rohe Konfidenz (0.5–1.0, immer hoch),
+        # was die Linie im Chart unsichtbar machte. Jetzt: positive→score, negative→(1-score).
         bert_cols = (
-            ", mm.bert_sentiment_label, mm.bert_sentiment_score"
+            """, mm.bert_sentiment_label,
+    CASE
+        WHEN mm.bert_sentiment_label = 'positive' THEN mm.bert_sentiment_score
+        WHEN mm.bert_sentiment_label = 'negative' THEN (1.0 - mm.bert_sentiment_score)
+        WHEN mm.bert_sentiment_label = 'neutral'  THEN 0.5
+        ELSE (i.sentiment + 1.0) / 2.0
+    END as bert_sentiment_score"""
             if has_bert
-            else ", NULL as bert_sentiment_label, NULL as bert_sentiment_score"
+            else ", NULL as bert_sentiment_label, (i.sentiment + 1.0) / 2.0 as bert_sentiment_score"
         )
 
         try:
             result = await session.execute(text(f"""
-                SELECT i.id, i.timestamp, i.role, i.session_id,
+                SELECT i.id, i.timestamp, i.role, i.session_id, i.content,
                        mm.word_count, mm.ttr, mm.shannon_entropy, mm.vader_compound
                        {bert_cols}
                 FROM interactions i
                 JOIN message_metrics mm ON i.id = mm.message_id
+                WHERE i.role = 'user'
                 ORDER BY i.timestamp DESC
                 LIMIT :limit
             """), {"limit": limit})
             rows = result.fetchall()
-            return [dict(row._mapping) for row in rows]
         except Exception as e:
             logger.warning(f"[metrics/history] Fehler: {e}")
             return []
+
+        # Patch 64: Rolling-Window-TTR über die letzten ROLLING_WINDOW Nachrichten.
+        # Per-Nachrichten-TTR ist bei kurzen Sätzen immer 1.0 (alle Tokens einmalig).
+        # Rolling TTR akkumuliert Tokens über das Fenster → aussagekräftigere Kurve.
+        import re as _re
+        ROLLING_WINDOW = 50
+        raw_rows = [dict(row._mapping) for row in rows]
+        chron = list(reversed(raw_rows))          # älteste zuerst
+        token_lists = [
+            _re.findall(r'\b\w+\b', (r.get("content") or "").lower())
+            for r in chron
+        ]
+        for i, row in enumerate(chron):
+            start = max(0, i - ROLLING_WINDOW + 1)
+            window_tokens: list = []
+            for tl in token_lists[start:i + 1]:
+                window_tokens.extend(tl)
+            if window_tokens:
+                row["rolling_ttr"] = round(len(set(window_tokens)) / len(window_tokens), 3)
+            else:
+                row["rolling_ttr"] = row.get("ttr")
+            row.pop("content", None)              # content nicht ans Frontend senden
+        return list(reversed(chron))

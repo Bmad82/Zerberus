@@ -79,11 +79,6 @@ class ProfileLoginRequest(BaseModel):
     password: str
 
 
-class ChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str
-
-
 # ---------------------------------------------------------------------------
 # SSE Event-Mapping
 # ---------------------------------------------------------------------------
@@ -114,14 +109,6 @@ NALA_HTML = """<!DOCTYPE html>
             --color-gold: #f0b429;
             --color-gold-dark: #c8941f;
             --color-text-light: #e8eaf0;
-            --color-accent: #ec407a;
-            /* Patch 86: Bubble-Farben (Fallback auf Theme-Farben) */
-            --bubble-user-bg: var(--color-accent);
-            --bubble-user-text: var(--color-primary);
-            --bubble-llm-bg: var(--color-primary-mid);
-            --bubble-llm-text: var(--color-text-light);
-            /* Patch 86: Chat-Schriftgröße */
-            --font-size-base: 15px;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -206,7 +193,7 @@ NALA_HTML = """<!DOCTYPE html>
             align-items: center;
             line-height: 1;
         }
-        .pw-toggle:hover, .pw-toggle:active { color: var(--color-gold); }
+        .pw-toggle:hover { color: var(--color-gold); }
         #login-submit {
             padding: 12px 40px;
             background: var(--color-gold);
@@ -218,7 +205,7 @@ NALA_HTML = """<!DOCTYPE html>
             cursor: pointer;
             transition: background 0.2s;
         }
-        #login-submit:hover, #login-submit:active { background: var(--color-gold-dark); }
+        #login-submit:hover { background: var(--color-gold-dark); }
         .login-hint {
             color: #6a8ab8;
             font-size: 0.82em;
@@ -239,7 +226,7 @@ NALA_HTML = """<!DOCTYPE html>
             justify-content: space-between;
             font-size: 1.5em;
             font-weight: bold;
-            background: var(--color-accent);
+            background: var(--color-primary-mid);
             border-bottom: 2px solid var(--color-gold);
             transition: background 0.4s;
         }
@@ -261,6 +248,19 @@ NALA_HTML = """<!DOCTYPE html>
             margin-left: 6px;
             color: var(--color-text-light);
         }
+        .logout-btn {
+            font-size: 0.6em;
+            font-weight: normal;
+            cursor: pointer;
+            opacity: 0.8;
+            padding: 4px 10px;
+            border: 1px solid var(--color-gold);
+            border-radius: 12px;
+            white-space: nowrap;
+            color: var(--color-gold);
+        }
+        .logout-btn:hover { opacity: 1; }
+
         /* ── Status-Bar (Patch 46: SSE) ── */
         #status-bar {
             text-align: center;
@@ -309,11 +309,8 @@ NALA_HTML = """<!DOCTYPE html>
             cursor: pointer;
             word-wrap: break-word;
             color: var(--color-text-light);
-            border-left: 3px solid transparent;
-            transition: all 0.15s ease;
         }
-        .session-item:hover, .session-item:active { background: #0f1e38; border-left-color: var(--color-gold); }
-        .session-item.pinned { border-left-color: var(--color-gold); }
+        .session-item:hover { background: #0f1e38; }
         .session-date { font-size: 0.8em; color: #6a8ab8; }
         .my-prompt-area {
             width: 100%;
@@ -341,7 +338,7 @@ NALA_HTML = """<!DOCTYPE html>
             font-weight: bold;
             cursor: pointer;
         }
-        .my-prompt-save-btn:hover, .my-prompt-save-btn:active { background: var(--color-gold-dark); }
+        .my-prompt-save-btn:hover { background: var(--color-gold-dark); }
         .my-prompt-status { font-size: 0.78em; color: #6a8ab8; margin-top: 5px; min-height: 16px; }
         .overlay {
             display: none;
@@ -363,24 +360,22 @@ NALA_HTML = """<!DOCTYPE html>
         }
         .message {
             max-width: 80%;
-            padding: 13px 18px;
+            padding: 12px 16px;
             border-radius: 20px;
             word-wrap: break-word;
             animation: fadeIn 0.3s;
-            font-size: var(--font-size-base);
         }
         .user-message {
             align-self: flex-end;
-            color: var(--bubble-user-text);
-            background: var(--bubble-user-bg);
-            border-radius: 18px 18px 4px 18px;
-            box-shadow: 0 1px 6px rgba(240,180,41,0.15);
+            color: var(--color-primary);
+            background: var(--color-gold);
+            border-bottom-right-radius: 5px;
         }
         .bot-message {
             align-self: flex-start;
-            background: var(--bubble-llm-bg);
-            color: var(--bubble-llm-text);
-            border-radius: 18px 18px 18px 4px;
+            background: var(--color-primary-mid);
+            color: var(--color-text-light);
+            border-bottom-left-radius: 5px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.3);
         }
         .input-area {
@@ -393,7 +388,6 @@ NALA_HTML = """<!DOCTYPE html>
             position: sticky;
             bottom: 0;
             z-index: 10;
-            backdrop-filter: blur(8px);
         }
         .input-row {
             display: flex;
@@ -404,13 +398,13 @@ NALA_HTML = """<!DOCTYPE html>
         #text-input {
             flex: 1;
             padding: 10px 16px;
-            border: 1px solid rgba(240,180,41,0.3);
+            border: 2px solid #2a4068;
             border-radius: 20px;
-            font-size: var(--font-size-base);
+            font-size: 16px;
             outline: none;
             background: var(--color-primary);
             color: var(--color-text-light);
-            transition: border 0.2s, box-shadow 0.2s;
+            transition: border 0.2s;
             resize: none;
             overflow-y: hidden;
             min-height: 48px;
@@ -418,7 +412,7 @@ NALA_HTML = """<!DOCTYPE html>
             line-height: 1.45;
             font-family: inherit;
         }
-        #text-input:focus { border-color: var(--color-gold); box-shadow: 0 0 0 2px rgba(240,180,41,0.15); }
+        #text-input:focus { border-color: var(--color-gold); }
         .send-btn, .mic-btn {
             width: 50px;
             height: 50px;
@@ -430,8 +424,8 @@ NALA_HTML = """<!DOCTYPE html>
             align-items: center;
             justify-content: center;
             cursor: pointer;
-            transition: all 0.15s ease;
-            box-shadow: 0 2px 8px rgba(240,180,41,0.3);
+            transition: transform 0.2s, background 0.2s;
+            box-shadow: 0 3px 8px rgba(0,0,0,0.3);
         }
         .send-btn { background: var(--color-gold); }
         .mic-btn  { background: var(--color-gold); }
@@ -439,8 +433,8 @@ NALA_HTML = """<!DOCTYPE html>
             background: #f44336;
             animation: pulse 1.5s infinite;
         }
-        .send-btn:hover, .send-btn:active { background: var(--color-gold-dark); transform: scale(1.05); box-shadow: 0 4px 14px rgba(240,180,41,0.5); }
-        .mic-btn:hover, .mic-btn:active  { background: var(--color-gold-dark); transform: scale(1.05); box-shadow: 0 4px 14px rgba(240,180,41,0.5); }
+        .send-btn:hover { background: var(--color-gold-dark); }
+        .mic-btn:hover  { background: var(--color-gold-dark); }
         .send-btn:active, .mic-btn:active { transform: scale(0.95); }
         #transcript-hint {
             font-size: 0.78em;
@@ -462,49 +456,12 @@ NALA_HTML = """<!DOCTYPE html>
             from { opacity: 0; transform: translateY(10px); }
             to   { opacity: 1; transform: translateY(0); }
         }
-        /* Patch 76: Whisper-Verarbeitung – Gold-Puls */
-        @keyframes pulseGold {
-            0%   { box-shadow: 0 0 0 0 rgba(198,160,51,0.8); }
-            70%  { box-shadow: 0 0 0 12px rgba(198,160,51,0); }
-            100% { box-shadow: 0 0 0 0 rgba(198,160,51,0); }
-        }
-        .mic-btn.processing {
-            background: var(--color-gold);
-            animation: pulseGold 1.2s infinite;
-            opacity: 0.85;
-        }
-        /* Patch 76: Typing-Indicator (drei springende Punkte) */
-        .typing-indicator {
-            align-self: flex-start;
-            background: var(--bubble-llm-bg);
-            border-radius: 20px;
-            border-bottom-left-radius: 5px;
-            padding: 14px 18px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
-            animation: fadeIn 0.3s;
-            display: flex;
-            gap: 6px;
-            align-items: center;
-        }
-        .typing-dot {
-            width: 8px; height: 8px;
-            background: var(--color-gold);
-            border-radius: 50%;
-            animation: typingBounce 1.2s infinite;
-            opacity: 0.6;
-        }
-        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
-        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes typingBounce {
-            0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
-            30%            { transform: translateY(-6px); opacity: 1; }
-        }
 
         /* ── Sidebar-Aktionen (Patch 67) ── */
         .sidebar-actions {
             display: flex;
             gap: 8px;
-            margin-bottom: 10px;
+            margin-bottom: 14px;
         }
         .sidebar-action-btn {
             flex: 1;
@@ -512,13 +469,12 @@ NALA_HTML = """<!DOCTYPE html>
             background: var(--color-primary);
             color: var(--color-gold);
             border: 1px solid var(--color-gold);
-            border-radius: 8px;
+            border-radius: 10px;
             font-size: 0.8em;
             cursor: pointer;
             text-align: center;
-            transition: all 0.15s ease;
         }
-        .sidebar-action-btn:hover, .sidebar-action-btn:active { background: rgba(240,180,41,0.08); border-color: var(--color-gold); }
+        .sidebar-action-btn:hover { background: #0f1e38; }
 
         /* ── Expand-Button Vollbild (Patch 67) ── */
         .expand-btn {
@@ -535,7 +491,7 @@ NALA_HTML = """<!DOCTYPE html>
             justify-content: center;
             flex-shrink: 0;
         }
-        .expand-btn:hover, .expand-btn:active { color: var(--color-gold); border-color: var(--color-gold); }
+        .expand-btn:hover { color: var(--color-gold); border-color: var(--color-gold); }
 
         /* ── Fullscreen-Modal (Patch 67) ── */
         #fullscreen-modal {
@@ -621,7 +577,7 @@ NALA_HTML = """<!DOCTYPE html>
             padding: 0 1px;
             line-height: 1;
         }
-        .copy-btn:hover, .copy-btn:active { color: var(--color-gold); }
+        .copy-btn:hover { color: var(--color-gold); }
         .copy-ok { color: #4caf50 !important; }
 
         /* ── Export-Dropdown (Patch 65) ── */
@@ -655,195 +611,7 @@ NALA_HTML = """<!DOCTYPE html>
         }
         .export-select:focus { border-color: var(--color-gold); color: var(--color-gold); }
         .export-select option { background: var(--color-primary-mid); color: var(--color-text-light); }
-
-        /* ── Patch 77: Session-Item-Struktur (A1) ── */
-        .session-item-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 4px; }
-        .session-title { font-size: 0.88em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; color: var(--color-text-light); }
-        .session-ts { font-size: 0.7em; color: #6a8ab8; white-space: nowrap; flex-shrink: 0; padding-top: 1px; }
-        .session-preview { font-size: 0.77em; color: #8aa0c0; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4; }
-        .session-pin-btn { background: none; border: none; cursor: pointer; color: #6a8ab8; font-size: 0.85em; padding: 0 2px; flex-shrink: 0; line-height: 1; }
-        .session-pin-btn:hover, .session-pin-btn:active, .session-pin-btn.pinned { color: var(--color-gold); }
-        /* ── Patch 77: Archiv-Suche (A2) ── */
-        .archive-search { width: 100%; padding: 8px 12px; background: var(--color-primary); border: 1px solid rgba(240,180,41,0.3); border-radius: 20px; color: var(--color-text-light); font-size: 0.85em; outline: none; margin-bottom: 10px; box-sizing: border-box; }
-        .archive-search:focus { border-color: var(--color-gold); }
-        /* ── Patch 77: Sidebar-Header-Trennlinie (B4) ── */
-        .sidebar-header { border-bottom: 1px solid rgba(240,180,41,0.2); padding-bottom: 14px; margin-bottom: 10px; }
-        /* ── Patch 77: Theme-Modal (C) — Patch 86: zu Settings-Modal erweitert ── */
-        #settings-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 3000; align-items: center; justify-content: center; }
-        #settings-modal.open { display: flex; }
-        .theme-modal-inner { background: var(--color-primary-mid); border: 1px solid var(--color-gold); border-radius: 12px; padding: 24px 28px; min-width: 280px; max-width: 360px; width: 90%; }
-        .theme-modal-inner h4 { color: var(--color-gold); margin: 0 0 18px; }
-        .theme-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-        .theme-row label { font-size: 0.88em; color: var(--color-text-light); }
-        .theme-row input[type="color"] { width: 48px; height: 30px; border: 1px solid #2a4068; border-radius: 6px; cursor: pointer; background: none; padding: 2px; }
-        .theme-fav-row { display: flex; gap: 8px; margin-bottom: 10px; }
-        .theme-fav-btn { flex: 1; padding: 7px 4px; background: var(--color-primary); color: var(--color-text-light); border: 1px solid #2a4068; border-radius: 6px; font-size: 0.78em; cursor: pointer; text-align: center; }
-        .theme-fav-btn:hover, .theme-fav-btn:active { border-color: var(--color-gold); color: var(--color-gold); }
-        .theme-btn-row { display: flex; gap: 8px; margin-top: 8px; }
-
-        /* ── Patch 86: Top-Bar Icon-Buttons (Settings + Export) ── */
-        .icon-btn {
-            width: 44px;
-            height: 44px;
-            border: 1px solid var(--color-gold);
-            border-radius: 10px;
-            background: transparent;
-            color: var(--color-gold);
-            font-size: 1.1em;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-left: 6px;
-            transition: background 0.15s ease;
-        }
-        .icon-btn:hover, .icon-btn:active { background: rgba(240,180,41,0.15); }
-
-        /* ── Patch 86: Abmelden-Button dezent ── */
-        .sidebar-action-btn-muted {
-            opacity: 0.7;
-            background: transparent !important;
-            color: var(--color-text-light) !important;
-            border-color: #2a4068 !important;
-        }
-        .sidebar-action-btn-muted:hover, .sidebar-action-btn-muted:active {
-            opacity: 1;
-            border-color: var(--color-gold) !important;
-            color: var(--color-gold) !important;
-        }
-
-        /* ── Patch 86: Settings-Modal Sektionen ── */
-        .settings-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(240,180,41,0.2); }
-        .settings-section h5 { color: var(--color-gold); margin: 0 0 10px; font-size: 0.92em; }
-        .bubble-picker-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
-        .bubble-picker-row label { font-size: 0.84em; color: var(--color-text-light); flex: 1; }
-        .bubble-picker-row input[type="color"] { width: 44px; height: 30px; border: 1px solid #2a4068; border-radius: 6px; cursor: pointer; background: none; padding: 2px; }
-        .bubble-reset-btn {
-            background: transparent;
-            border: 1px solid #2a4068;
-            border-radius: 6px;
-            color: #6a8ab8;
-            width: 28px;
-            height: 28px;
-            cursor: pointer;
-            font-size: 0.9em;
-            padding: 0;
-        }
-        .bubble-reset-btn:hover, .bubble-reset-btn:active { color: var(--color-gold); border-color: var(--color-gold); }
-        .font-preset-row { display: flex; gap: 6px; margin-bottom: 8px; }
-        .font-preset-btn {
-            flex: 1;
-            min-height: 44px;
-            background: var(--color-primary);
-            color: var(--color-text-light);
-            border: 1px solid #2a4068;
-            border-radius: 8px;
-            font-size: 0.82em;
-            cursor: pointer;
-            padding: 6px 4px;
-            transition: all 0.15s ease;
-        }
-        .font-preset-btn:hover, .font-preset-btn:active { border-color: var(--color-gold); color: var(--color-gold); }
-        .font-preset-btn.active { border-color: var(--color-gold); color: var(--color-gold); background: rgba(240,180,41,0.08); }
-
-        /* ── Patch 86: Settings-Modal responsiv (scrollbar auf Mobile) ── */
-        .settings-modal-inner { max-height: 88vh; overflow-y: auto; }
-
-        /* ── Patch 86: Export-Modal ── */
-        #export-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 3000; align-items: center; justify-content: center; }
-        #export-modal.open { display: flex; }
-        .export-modal-inner { background: var(--color-primary-mid); border: 1px solid var(--color-gold); border-radius: 12px; padding: 22px 24px; min-width: 260px; max-width: 340px; width: 90%; }
-        .export-modal-inner h4 { color: var(--color-gold); margin: 0 0 16px; }
-        .export-opt-btn {
-            display: block;
-            width: 100%;
-            min-height: 44px;
-            padding: 10px 12px;
-            margin-bottom: 8px;
-            background: var(--color-primary);
-            color: var(--color-text-light);
-            border: 1px solid #2a4068;
-            border-radius: 8px;
-            font-size: 0.9em;
-            cursor: pointer;
-            text-align: left;
-            transition: all 0.15s ease;
-        }
-        .export-opt-btn:hover, .export-opt-btn:active { border-color: var(--color-gold); color: var(--color-gold); }
-        .export-cancel-btn {
-            width: 100%;
-            min-height: 44px;
-            margin-top: 4px;
-            background: transparent;
-            color: #6a8ab8;
-            border: 1px solid #2a4068;
-            border-radius: 8px;
-            font-size: 0.88em;
-            cursor: pointer;
-        }
-        .export-toast {
-            position: fixed;
-            bottom: 90px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: var(--color-primary-mid);
-            color: var(--color-gold);
-            border: 1px solid var(--color-gold);
-            border-radius: 8px;
-            padding: 10px 18px;
-            font-size: 0.88em;
-            z-index: 4000;
-            animation: fadeIn 0.2s;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.5);
-        }
-
-        /* Patch 83: Sternenregen bei Tap */
-        .tap-star {
-            position: fixed;
-            pointer-events: none;
-            z-index: 9999;
-            opacity: 1;
-            animation: starFall 1.2s cubic-bezier(0.25, 0, 0.7, 1) forwards;
-        }
-        @keyframes starFall {
-            0%   { transform: translateY(0) translateX(0) scale(1); opacity: 1; }
-            60%  { opacity: 0.8; }
-            100% { transform: translateY(120px) translateX(var(--fall-x)) scale(0.3); opacity: 0; }
-        }
     </style>
-    <script>
-        /* Patch 77 C3 + Patch 86: Theme + Bubble + Schriftgröße aus localStorage – vor erstem Render */
-        (function() {
-            var r = document.documentElement.style;
-            try {
-                var t = localStorage.getItem('nala_theme');
-                if (t) {
-                    var v = JSON.parse(t);
-                    if (v.primary)   r.setProperty('--color-primary', v.primary);
-                    if (v.mid)       r.setProperty('--color-primary-mid', v.mid);
-                    if (v.gold)      r.setProperty('--color-gold', v.gold);
-                    if (v.textLight) r.setProperty('--color-text-light', v.textLight);
-                    if (v.accent)    r.setProperty('--color-accent', v.accent);
-                }
-            } catch(_) {}
-            try {
-                var map = {
-                    nala_bubble_user_bg:   '--bubble-user-bg',
-                    nala_bubble_user_text: '--bubble-user-text',
-                    nala_bubble_llm_bg:    '--bubble-llm-bg',
-                    nala_bubble_llm_text:  '--bubble-llm-text'
-                };
-                Object.keys(map).forEach(function(k) {
-                    var v = localStorage.getItem(k);
-                    if (v) r.setProperty(map[k], v);
-                });
-                var fs = localStorage.getItem('nala_font_size');
-                if (fs) r.setProperty('--font-size-base', fs);
-            } catch(_) {}
-        })();
-    </script>
-    <!-- Patch 86: jsPDF für Chat-Export als PDF -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
 <div class="app-container">
@@ -874,9 +642,7 @@ NALA_HTML = """<!DOCTYPE html>
                 👑 Nala
                 <span class="profile-badge" id="profile-badge"></span>
             </div>
-            <!-- Patch 86: Settings + Export als Icon-Buttons (Abmelden ist ins Menü gewandert) -->
-            <button class="icon-btn" onclick="openSettingsModal()" aria-label="Einstellungen" title="Einstellungen">🔧</button>
-            <button class="icon-btn" onclick="openExportMenu()" aria-label="Exportieren" title="Exportieren">💾</button>
+            <div class="logout-btn" onclick="doLogout()">Abmelden</div>
         </div>
 
         <!-- Status-Bar (Patch 46: SSE Pipeline-Status) -->
@@ -884,20 +650,13 @@ NALA_HTML = """<!DOCTYPE html>
 
         <!-- Sidebar -->
         <div class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <div class="close-btn" onclick="toggleSidebar()">✖</div>
-                <!-- Patch 86: Navigation-Aktionen (Einstellungen + Export sind jetzt in der Top-Bar) -->
-                <div class="sidebar-actions">
-                    <button class="sidebar-action-btn" onclick="newSession()">➕ Neue Session</button>
-                    <button class="sidebar-action-btn" onclick="openPwModal()">🔑 Passwort</button>
-                </div>
-                <div style="margin-bottom:4px;">
-                    <button class="sidebar-action-btn sidebar-action-btn-muted" style="width:100%;" onclick="doLogout()">🚪 Abmelden</button>
-                </div>
-                <div id="pw-status" style="font-size:0.82em;min-height:1.2em;margin-top:4px;"></div>
+            <div class="close-btn" onclick="toggleSidebar()">✖</div>
+            <!-- Patch 67: Sidebar-Aktionen -->
+            <div class="sidebar-actions">
+                <button class="sidebar-action-btn" onclick="newSession()">➕ Neue Session</button>
+                <button class="sidebar-action-btn" onclick="exportChat()">💾 Exportieren</button>
             </div>
             <h3>📋 Letzte Chats</h3>
-            <input type="search" class="archive-search" id="archive-search" placeholder="Archiv durchsuchen…">
             <ul class="session-list" id="session-list"><li class="session-item">Lade...</li></ul>
             <h3>📌 Angepinnt</h3>
             <ul class="session-list" id="pinned-list"></ul>
@@ -937,110 +696,6 @@ NALA_HTML = """<!DOCTYPE html>
             <button class="fs-cancel-btn" onclick="fullscreenClose(false)">Abbrechen</button>
             <button class="fs-accept-btn" onclick="fullscreenClose(true)">✓ Übernehmen</button>
         </div>
-    </div>
-</div>
-
-<!-- Patch 73: Passwort-ändern-Modal -->
-<div id="pw-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:3000;align-items:center;justify-content:center;">
-    <div style="background:var(--color-surface,#0a1628);border:1px solid var(--color-gold,#c9a84c);border-radius:12px;padding:28px 32px;min-width:320px;max-width:420px;width:90%;">
-        <h4 style="margin:0 0 18px;color:var(--color-gold,#c9a84c);">🔑 Passwort ändern</h4>
-        <input type="password" id="pw-old" placeholder="Aktuelles Passwort" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:9px 12px;background:#0d1f3c;border:1px solid #2a4a7f;border-radius:6px;color:#e0e8f8;font-size:0.95em;" />
-        <input type="password" id="pw-new1" placeholder="Neues Passwort" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:9px 12px;background:#0d1f3c;border:1px solid #2a4a7f;border-radius:6px;color:#e0e8f8;font-size:0.95em;" />
-        <input type="password" id="pw-new2" placeholder="Neues Passwort wiederholen" style="width:100%;box-sizing:border-box;margin-bottom:14px;padding:9px 12px;background:#0d1f3c;border:1px solid #2a4a7f;border-radius:6px;color:#e0e8f8;font-size:0.95em;" />
-        <div id="pw-modal-error" style="color:#e57373;font-size:0.85em;min-height:1.2em;margin-bottom:10px;"></div>
-        <div style="display:flex;gap:10px;">
-            <button onclick="closePwModal()" style="flex:1;padding:9px;background:#1a3a6a;border:none;border-radius:6px;color:#e0e8f8;cursor:pointer;">Abbrechen</button>
-            <button onclick="submitPwChange()" style="flex:1;padding:9px;background:var(--color-gold,#c9a84c);border:none;border-radius:6px;color:#0a1628;font-weight:700;cursor:pointer;">Speichern</button>
-        </div>
-    </div>
-</div>
-
-<!-- Patch 86: Settings-Modal (Theme + Bubble + Schriftgröße) -->
-<div id="settings-modal">
-    <div class="theme-modal-inner settings-modal-inner">
-        <h4>🔧 Einstellungen</h4>
-
-        <!-- Sektion A: Theme-Farben (Patch 77/79) -->
-        <div class="settings-section" style="border-top:none;padding-top:0;margin-top:0;">
-            <h5>🎨 Theme-Farben</h5>
-            <div class="theme-row"><label>Hintergrund</label><input type="color" id="tc-primary" oninput="themePreview()"></div>
-            <div class="theme-row"><label>Panel / Header</label><input type="color" id="tc-mid" oninput="themePreview()"></div>
-            <div class="theme-row"><label>Akzentfarbe</label><input type="color" id="tc-gold" oninput="themePreview()"></div>
-            <div class="theme-row"><label>Textfarbe</label><input type="color" id="tc-text" oninput="themePreview()"></div>
-            <div class="theme-row"><label>Akzent / Header</label><input type="color" id="tc-accent" oninput="themePreview()"></div>
-        </div>
-
-        <!-- Sektion B: Bubble-Farben (Patch 86 / N-F07) -->
-        <div class="settings-section">
-            <h5>💬 Bubble-Farben</h5>
-            <div class="bubble-picker-row">
-                <label>User-Bubble Hintergrund</label>
-                <input type="color" id="bc-user-bg" oninput="bubblePreview()">
-                <button class="bubble-reset-btn" onclick="resetBubble('user-bg')" title="Zurücksetzen">↺</button>
-            </div>
-            <div class="bubble-picker-row">
-                <label>User-Bubble Text</label>
-                <input type="color" id="bc-user-text" oninput="bubblePreview()">
-                <button class="bubble-reset-btn" onclick="resetBubble('user-text')" title="Zurücksetzen">↺</button>
-            </div>
-            <div class="bubble-picker-row">
-                <label>LLM-Bubble Hintergrund</label>
-                <input type="color" id="bc-llm-bg" oninput="bubblePreview()">
-                <button class="bubble-reset-btn" onclick="resetBubble('llm-bg')" title="Zurücksetzen">↺</button>
-            </div>
-            <div class="bubble-picker-row">
-                <label>LLM-Bubble Text</label>
-                <input type="color" id="bc-llm-text" oninput="bubblePreview()">
-                <button class="bubble-reset-btn" onclick="resetBubble('llm-text')" title="Zurücksetzen">↺</button>
-            </div>
-            <button class="export-opt-btn" style="margin-top:4px;" onclick="resetAllBubbles()">↺ Alle Bubble-Farben zurücksetzen</button>
-        </div>
-
-        <!-- Sektion C: Schriftgröße (Patch 86 / N-F09) -->
-        <div class="settings-section">
-            <h5>🔤 Schriftgröße</h5>
-            <div class="font-preset-row">
-                <button class="font-preset-btn" data-size="13px" onclick="setFontSize('13px')">Klein</button>
-                <button class="font-preset-btn" data-size="15px" onclick="setFontSize('15px')">Normal</button>
-                <button class="font-preset-btn" data-size="17px" onclick="setFontSize('17px')">Groß</button>
-                <button class="font-preset-btn" data-size="19px" onclick="setFontSize('19px')">Extra</button>
-            </div>
-            <button class="export-opt-btn" onclick="resetFontSize()">↺ Zurücksetzen</button>
-        </div>
-
-        <!-- Sektion D: Favoriten (Patch 77 erweitert zu v2) -->
-        <div class="settings-section">
-            <h5>⭐ Favoriten (Theme + Bubble + Schrift)</h5>
-            <div class="theme-fav-row">
-                <button class="theme-fav-btn" onclick="saveFav(1)">💾 Fav 1</button>
-                <button class="theme-fav-btn" onclick="loadFav(1)">📂 Fav 1</button>
-            </div>
-            <div class="theme-fav-row">
-                <button class="theme-fav-btn" onclick="saveFav(2)">💾 Fav 2</button>
-                <button class="theme-fav-btn" onclick="loadFav(2)">📂 Fav 2</button>
-            </div>
-            <div class="theme-fav-row">
-                <button class="theme-fav-btn" onclick="saveFav(3)">💾 Fav 3</button>
-                <button class="theme-fav-btn" onclick="loadFav(3)">📂 Fav 3</button>
-            </div>
-        </div>
-
-        <div class="theme-btn-row" style="margin-top:14px;">
-            <button onclick="closeSettingsModal()" style="flex:1;padding:11px;background:#1a3a6a;border:none;border-radius:6px;color:#e0e8f8;cursor:pointer;min-height:44px;">Schließen</button>
-            <button onclick="resetTheme()" style="flex:1;padding:11px;background:transparent;border:1px solid #2a4068;border-radius:6px;color:#6a8ab8;cursor:pointer;min-height:44px;">Theme-Reset</button>
-            <button onclick="saveTheme()" style="flex:1;padding:11px;background:var(--color-gold);border:none;border-radius:6px;color:#0a1628;font-weight:700;cursor:pointer;min-height:44px;">Theme-Save</button>
-        </div>
-    </div>
-</div>
-
-<!-- Patch 86: Export-Menü-Modal -->
-<div id="export-modal">
-    <div class="export-modal-inner">
-        <h4>💾 Chat exportieren</h4>
-        <button class="export-opt-btn" onclick="exportAsPDF()">📄 Als PDF</button>
-        <button class="export-opt-btn" onclick="exportAsText()">📝 Als Text (.txt)</button>
-        <button class="export-opt-btn" onclick="exportAsClipboard()">📋 In Zwischenablage</button>
-        <button class="export-cancel-btn" onclick="closeExportMenu()">Abbrechen</button>
     </div>
 </div>
 
@@ -1102,8 +757,6 @@ NALA_HTML = """<!DOCTYPE html>
                 if (evt.type === 'done') {
                     statusBar.style.opacity = '0';
                 } else {
-                    // Patch 76: Typing-Indicator bei llm_start einblenden
-                    if (evt.type === 'llm_start') showTypingIndicator();
                     statusBar.textContent = evt.message;
                     statusBar.style.opacity = '1';
                 }
@@ -1200,7 +853,7 @@ NALA_HTML = """<!DOCTYPE html>
         loginScreen.style.display = 'none';
         chatScreen.style.display  = 'flex';
         if (currentProfile) {
-            document.documentElement.style.setProperty('--color-accent', currentProfile.theme_color);
+            mainHeader.style.background = currentProfile.theme_color;
             profileBadge.textContent    = '– ' + currentProfile.display_name;
         }
         loadSessions();
@@ -1232,94 +885,7 @@ NALA_HTML = """<!DOCTYPE html>
         document.getElementById('login-error').textContent = 'Sitzung abgelaufen – bitte erneut einloggen.';
     }
 
-    // ── Archiv: Pin-Hilfsfunktionen (A3) ──
-    function getPinnedIds() {
-        try { return JSON.parse(sessionStorage.getItem('pinned_sessions') || '[]'); } catch(_) { return []; }
-    }
-    function setPinnedIds(ids) {
-        sessionStorage.setItem('pinned_sessions', JSON.stringify(ids));
-    }
-    function togglePin(sid, btn) {
-        const ids = getPinnedIds();
-        const idx = ids.indexOf(sid);
-        if (idx === -1) {
-            ids.push(sid);
-            btn.textContent = '📌';
-            btn.classList.add('pinned');
-        } else {
-            ids.splice(idx, 1);
-            btn.textContent = '📍';
-            btn.classList.remove('pinned');
-        }
-        setPinnedIds(ids);
-        renderSessionList(window._lastSessions || []);
-    }
-
-    // ── Archiv: Session-Liste rendern (A1+A2+A3) ──
-    function renderSessionList(sessions) {
-        window._lastSessions = sessions;
-        const searchEl = document.getElementById('archive-search');
-        const q = (searchEl ? searchEl.value : '').toLowerCase();
-        const pinnedIds = getPinnedIds();
-
-        const pinned   = sessions.filter(s => pinnedIds.includes(s.session_id));
-        const unpinned = sessions.filter(s => !pinnedIds.includes(s.session_id));
-        const ordered  = [...pinned, ...unpinned];
-        const filtered = q ? ordered.filter(s => (s.first_message || '').toLowerCase().includes(q)) : ordered;
-
-        sessionList.innerHTML = '';
-        if (filtered.length === 0) {
-            sessionList.innerHTML = '<li class="session-item">Keine Chats</li>';
-            return;
-        }
-
-        filtered.forEach(s => {
-            const rawMsg   = s.first_message || 'Neuer Chat';
-            const title    = rawMsg.length > 40 ? rawMsg.slice(0, 40) + '…' : rawMsg;
-            const preview  = rawMsg.length > 42 ? rawMsg.slice(0, 80) + (rawMsg.length > 80 ? '…' : '') : '';
-            const ts       = s.created_at
-                ? new Date(s.created_at).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' })
-                : '';
-            const isPinned = pinnedIds.includes(s.session_id);
-
-            const li = document.createElement('li');
-            li.className = 'session-item' + (isPinned ? ' pinned' : '');
-
-            const header = document.createElement('div');
-            header.className = 'session-item-header';
-
-            const titleEl = document.createElement('span');
-            titleEl.className = 'session-title';
-            titleEl.textContent = title;
-
-            const tsEl = document.createElement('span');
-            tsEl.className = 'session-ts';
-            tsEl.textContent = ts;
-
-            const pinBtn = document.createElement('button');
-            pinBtn.className = 'session-pin-btn' + (isPinned ? ' pinned' : '');
-            pinBtn.title = isPinned ? 'Entpinnen' : 'Anpinnen';
-            pinBtn.textContent = isPinned ? '📌' : '📍';
-            pinBtn.onclick = (e) => { e.stopPropagation(); togglePin(s.session_id, pinBtn); };
-
-            header.appendChild(titleEl);
-            header.appendChild(tsEl);
-            header.appendChild(pinBtn);
-            li.appendChild(header);
-
-            if (preview) {
-                const previewEl = document.createElement('div');
-                previewEl.className = 'session-preview';
-                previewEl.textContent = preview;
-                li.appendChild(previewEl);
-            }
-
-            li.onclick = () => loadSession(s.session_id);
-            sessionList.appendChild(li);
-        });
-    }
-
-    // ── Archiv laden ──
+    // ── Archiv ──
     async function loadSessions() {
         try {
             // Patch 67 fix: Auth-Header mitschicken – /archive/* ist JWT-geschützt
@@ -1329,7 +895,19 @@ NALA_HTML = """<!DOCTYPE html>
                 return;
             }
             const sessions = await response.json();
-            renderSessionList(sessions);
+            sessionList.innerHTML = '';
+            if (sessions.length === 0) {
+                sessionList.innerHTML = '<li class="session-item">Keine Chats</li>';
+            } else {
+                sessions.forEach(s => {
+                    const li = document.createElement('li');
+                    li.className = 'session-item';
+                    li.innerHTML = `<div>${s.first_message || 'Neuer Chat'}</div>
+                                    <div class="session-date">${new Date(s.created_at).toLocaleString()}</div>`;
+                    li.onclick = () => loadSession(s.session_id);
+                    sessionList.appendChild(li);
+                });
+            }
         } catch (e) {
             sessionList.innerHTML = '<li class="session-item">Fehler beim Laden</li>';
         }
@@ -1381,11 +959,9 @@ NALA_HTML = """<!DOCTYPE html>
             if (response.status === 401) { handle401(); return; }
             const data = await response.json();
             const reply = data.choices?.[0]?.message?.content || 'Keine Antwort';
-            removeTypingIndicator(); // Patch 76
             addMessage(reply, 'bot');
             loadSessions();
         } catch (error) {
-            removeTypingIndicator(); // Patch 76
             addMessage('❌ Fehler: ' + error.message, 'bot');
         }
     }
@@ -1399,10 +975,6 @@ NALA_HTML = """<!DOCTYPE html>
                 audioChunks = [];
                 mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
                 mediaRecorder.onstop = async () => {
-                    // Patch 76: Ladeindikator während Whisper-Verarbeitung
-                    const micBtnEl = document.getElementById('micBtn');
-                    micBtnEl.disabled = true;
-                    micBtnEl.classList.add('processing');
                     const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                     const formData  = new FormData();
                     formData.append('file', audioBlob, 'recording.webm');
@@ -1416,27 +988,14 @@ NALA_HTML = """<!DOCTYPE html>
                         const data = await response.json();
                         const transcript = data.transcript || '';
                         if (transcript) {
-                            // Patch 76: Selektion=ersetzen / Cursor=einfügen / leer=setzen
-                            const sel0 = textInput.selectionStart;
-                            const sel1 = textInput.selectionEnd;
-                            const cur  = textInput.value;
-                            if (!cur) {
-                                textInput.value = transcript;
-                            } else if (sel0 !== sel1) {
-                                textInput.value = cur.substring(0, sel0) + transcript + cur.substring(sel1);
-                                textInput.setSelectionRange(sel0 + transcript.length, sel0 + transcript.length);
-                            } else {
-                                textInput.value = cur.substring(0, sel0) + transcript + cur.substring(sel0);
-                                textInput.setSelectionRange(sel0 + transcript.length, sel0 + transcript.length);
-                            }
+                            // Transkript ins Eingabefeld – KEIN Auto-Send
+                            textInput.value = transcript;
+                            textInput.setSelectionRange(transcript.length, transcript.length);
                             textInput.focus();
                             transcriptHint.textContent = '🎤 Transkript – prüfen und mit Enter senden';
                         }
                     } catch (e) {
                         addMessage('❌ Fehler bei Spracherkennung', 'bot');
-                    } finally {
-                        micBtnEl.disabled = false;
-                        micBtnEl.classList.remove('processing');
                     }
                 };
                 mediaRecorder.start();
@@ -1469,9 +1028,8 @@ NALA_HTML = """<!DOCTYPE html>
         textInput.style.height = Math.min(Math.max(sh, 96), 140) + 'px';
     });
     textInput.addEventListener('blur', () => {
-        // Patch 76: Leerfeld → CSS-Default (1 Zeile); Inhalt vorhanden → Höhe beibehalten
         if (!textInput.value.trim()) {
-            textInput.style.height = '';
+            textInput.style.height = '48px';
         }
     });
 
@@ -1489,8 +1047,10 @@ NALA_HTML = """<!DOCTYPE html>
         const timeStr = tsOverride || now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
         chatMessages.push({ text, sender, timestamp: timeStr });
 
+        const color = (currentProfile && sender === 'user') ? currentProfile.theme_color : null;
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${sender === 'user' ? 'user-message' : 'bot-message'}`;
+        if (color) msgDiv.style.background = color;
         msgDiv.textContent = text;
 
         const wrapper = document.createElement('div');
@@ -1535,32 +1095,14 @@ NALA_HTML = """<!DOCTYPE html>
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
-    // Patch 76: Typing-Indicator Bubble
-    function showTypingIndicator() {
-        if (document.getElementById('typing-indicator')) return;
-        const wrapper = document.createElement('div');
-        wrapper.id = 'typing-indicator';
-        wrapper.className = 'msg-wrapper';
-        const bubble = document.createElement('div');
-        bubble.className = 'typing-indicator';
-        bubble.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
-        wrapper.appendChild(bubble);
-        messagesDiv.appendChild(wrapper);
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
-    function removeTypingIndicator() {
-        const el = document.getElementById('typing-indicator');
-        if (el) el.remove();
-    }
-
-    // Patch 67 + Patch 86: Kopieren-Feedback mit execCommand-Fallback
-    async function copyBubble(text, btn) {
-        const ok = await copyToClipboard(text);
-        if (!ok) return;
-        const orig = btn.textContent;
-        btn.textContent = '✓';
-        btn.classList.add('copy-ok');
-        setTimeout(() => { btn.textContent = orig; btn.classList.remove('copy-ok'); }, 1500);
+    // Patch 67: Kopieren-Feedback
+    function copyBubble(text, btn) {
+        navigator.clipboard.writeText(text).then(() => {
+            const orig = btn.textContent;
+            btn.textContent = '✓';
+            btn.classList.add('copy-ok');
+            setTimeout(() => { btn.textContent = orig; btn.classList.remove('copy-ok'); }, 1500);
+        }).catch(() => {});
     }
 
     // ── Export-Funktion (Patch 65) ──
@@ -1630,14 +1172,12 @@ NALA_HTML = """<!DOCTYPE html>
         const lines = chatMessages.map(m =>
             `[${m.timestamp}] ${m.sender === 'user' ? 'Du' : 'Nala'}: ${m.text}`
         );
-        const content = lines.join('\\n');
+        const content = lines.join('\n');
         const blob = new Blob([content], { type: 'text/plain; charset=utf-8' });
         const url = URL.createObjectURL(blob);
-        const now = new Date();
-        const stamp = now.toISOString().slice(0,16).replace('T','_').replace(':','-');
         const a = document.createElement('a');
         a.href = url;
-        a.download = `nala_export_${stamp}.txt`;
+        a.download = `nala_chat_${new Date().toISOString().slice(0, 10)}.txt`;
         document.body.appendChild(a);
         a.click();
         setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
@@ -1692,347 +1232,6 @@ NALA_HTML = """<!DOCTYPE html>
             statusEl.textContent = '❌ Verbindungsfehler';
         }
     }
-
-    // ── Patch 73: Passwort ändern ──
-    function openPwModal() {
-        document.getElementById('pw-old').value = '';
-        document.getElementById('pw-new1').value = '';
-        document.getElementById('pw-new2').value = '';
-        document.getElementById('pw-modal-error').textContent = '';
-        const modal = document.getElementById('pw-modal');
-        modal.style.display = 'flex';
-        document.getElementById('pw-old').focus();
-    }
-
-    function closePwModal() {
-        document.getElementById('pw-modal').style.display = 'none';
-    }
-
-    async function submitPwChange() {
-        const oldPw = document.getElementById('pw-old').value;
-        const newPw1 = document.getElementById('pw-new1').value;
-        const newPw2 = document.getElementById('pw-new2').value;
-        const errEl = document.getElementById('pw-modal-error');
-        errEl.textContent = '';
-
-        if (newPw1 !== newPw2) { errEl.textContent = 'Passwörter stimmen nicht überein'; return; }
-        if (newPw1.length < 6) { errEl.textContent = 'Neues Passwort muss mindestens 6 Zeichen haben'; return; }
-
-        try {
-            const res = await fetch('/nala/change-password', {
-                method: 'POST',
-                headers: profileHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ old_password: oldPw, new_password: newPw1 })
-            });
-            if (res.ok) {
-                closePwModal();
-                const statusEl = document.getElementById('pw-status');
-                statusEl.style.color = '#66bb6a';
-                statusEl.textContent = '✓ Passwort gespeichert';
-                setTimeout(() => { statusEl.textContent = ''; }, 3000);
-            } else {
-                const data = await res.json().catch(() => ({}));
-                errEl.textContent = data.detail || 'Fehler beim Speichern';
-            }
-        } catch (_) {
-            errEl.textContent = 'Verbindungsfehler';
-        }
-    }
-
-    // ── Patch 77 A2: Archiv-Suche live ──
-    (function() {
-        const searchEl = document.getElementById('archive-search');
-        if (searchEl) {
-            searchEl.addEventListener('input', () => renderSessionList(window._lastSessions || []));
-        }
-    })();
-
-    // ── Patch 77 C: Theme-Editor ──
-    function cssToHex(css) {
-        if (!css) return '#000000';
-        css = css.trim();
-        if (css.startsWith('#')) {
-            if (css.length === 4) return '#' + css[1]+css[1]+css[2]+css[2]+css[3]+css[3];
-            return css.slice(0, 7);
-        }
-        const m = css.match(/\d+/g);
-        if (!m || m.length < 3) return '#000000';
-        return '#' + [m[0], m[1], m[2]].map(n => (+n).toString(16).padStart(2, '0')).join('');
-    }
-    // ── Patch 86: Settings-Modal (ersetzt Theme-Modal) ──
-    function openSettingsModal() {
-        const r = getComputedStyle(document.documentElement);
-        document.getElementById('tc-primary').value = cssToHex(r.getPropertyValue('--color-primary'));
-        document.getElementById('tc-mid').value     = cssToHex(r.getPropertyValue('--color-primary-mid'));
-        document.getElementById('tc-gold').value    = cssToHex(r.getPropertyValue('--color-gold'));
-        document.getElementById('tc-text').value    = cssToHex(r.getPropertyValue('--color-text-light'));
-        document.getElementById('tc-accent').value  = cssToHex(r.getPropertyValue('--color-accent'));
-        document.getElementById('bc-user-bg').value   = cssToHex(r.getPropertyValue('--bubble-user-bg'));
-        document.getElementById('bc-user-text').value = cssToHex(r.getPropertyValue('--bubble-user-text'));
-        document.getElementById('bc-llm-bg').value    = cssToHex(r.getPropertyValue('--bubble-llm-bg'));
-        document.getElementById('bc-llm-text').value  = cssToHex(r.getPropertyValue('--bubble-llm-text'));
-        markActiveFontPreset();
-        document.getElementById('settings-modal').classList.add('open');
-    }
-    function closeSettingsModal() {
-        document.getElementById('settings-modal').classList.remove('open');
-    }
-    function themePreview() {
-        const r = document.documentElement.style;
-        r.setProperty('--color-primary',     document.getElementById('tc-primary').value);
-        r.setProperty('--color-primary-mid', document.getElementById('tc-mid').value);
-        r.setProperty('--color-gold',        document.getElementById('tc-gold').value);
-        r.setProperty('--color-text-light',  document.getElementById('tc-text').value);
-        r.setProperty('--color-accent',      document.getElementById('tc-accent').value);
-    }
-    function saveTheme() {
-        const theme = {
-            primary:   document.getElementById('tc-primary').value,
-            mid:       document.getElementById('tc-mid').value,
-            gold:      document.getElementById('tc-gold').value,
-            textLight: document.getElementById('tc-text').value,
-            accent:    document.getElementById('tc-accent').value,
-        };
-        localStorage.setItem('nala_theme', JSON.stringify(theme));
-        closeSettingsModal();
-    }
-    function resetTheme() {
-        const d = { primary: '#0a1628', mid: '#1a2f4e', gold: '#f0b429', textLight: '#e8eaf0', accent: '#ec407a' };
-        const r = document.documentElement.style;
-        r.setProperty('--color-primary', d.primary);
-        r.setProperty('--color-primary-mid', d.mid);
-        r.setProperty('--color-gold', d.gold);
-        r.setProperty('--color-text-light', d.textLight);
-        r.setProperty('--color-accent', d.accent);
-        document.getElementById('tc-primary').value = d.primary;
-        document.getElementById('tc-mid').value     = d.mid;
-        document.getElementById('tc-gold').value    = d.gold;
-        document.getElementById('tc-text').value    = d.textLight;
-        document.getElementById('tc-accent').value  = d.accent;
-        localStorage.removeItem('nala_theme');
-    }
-
-    // ── Patch 86: Bubble-Farben (N-F07) ──
-    const BUBBLE_KEYS = {
-        'user-bg':   { css: '--bubble-user-bg',   ls: 'nala_bubble_user_bg',   picker: 'bc-user-bg',   fallback: '--color-accent' },
-        'user-text': { css: '--bubble-user-text', ls: 'nala_bubble_user_text', picker: 'bc-user-text', fallback: '--color-primary' },
-        'llm-bg':    { css: '--bubble-llm-bg',    ls: 'nala_bubble_llm_bg',    picker: 'bc-llm-bg',    fallback: '--color-primary-mid' },
-        'llm-text':  { css: '--bubble-llm-text',  ls: 'nala_bubble_llm_text',  picker: 'bc-llm-text',  fallback: '--color-text-light' },
-    };
-    function bubblePreview() {
-        const r = document.documentElement.style;
-        Object.keys(BUBBLE_KEYS).forEach(k => {
-            const cfg = BUBBLE_KEYS[k];
-            const val = document.getElementById(cfg.picker).value;
-            r.setProperty(cfg.css, val);
-            localStorage.setItem(cfg.ls, val);
-        });
-    }
-    function resetBubble(which) {
-        const cfg = BUBBLE_KEYS[which];
-        if (!cfg) return;
-        // Property entfernen → Fallback auf Theme-Farbe greift
-        document.documentElement.style.removeProperty(cfg.css);
-        localStorage.removeItem(cfg.ls);
-        // Picker-Wert auf aktuellen Fallback synchronisieren
-        const r = getComputedStyle(document.documentElement);
-        document.getElementById(cfg.picker).value = cssToHex(r.getPropertyValue(cfg.fallback));
-    }
-    function resetAllBubbles() {
-        Object.keys(BUBBLE_KEYS).forEach(resetBubble);
-    }
-
-    // ── Patch 86: Schriftgröße (N-F09) ──
-    function setFontSize(px) {
-        document.documentElement.style.setProperty('--font-size-base', px);
-        localStorage.setItem('nala_font_size', px);
-        markActiveFontPreset();
-    }
-    function resetFontSize() {
-        document.documentElement.style.removeProperty('--font-size-base');
-        localStorage.removeItem('nala_font_size');
-        markActiveFontPreset();
-    }
-    function markActiveFontPreset() {
-        const current = getComputedStyle(document.documentElement).getPropertyValue('--font-size-base').trim();
-        document.querySelectorAll('.font-preset-btn').forEach(b => {
-            b.classList.toggle('active', b.dataset.size === current);
-        });
-    }
-
-    // ── Patch 86: Favoriten v2 (Theme + Bubble + Schrift) ──
-    function saveFav(n) {
-        const payload = {
-            v: 2,
-            theme: {
-                primary:   document.getElementById('tc-primary').value,
-                mid:       document.getElementById('tc-mid').value,
-                gold:      document.getElementById('tc-gold').value,
-                textLight: document.getElementById('tc-text').value,
-                accent:    document.getElementById('tc-accent').value,
-            },
-            bubble: {
-                userBg:   localStorage.getItem('nala_bubble_user_bg')   || null,
-                userText: localStorage.getItem('nala_bubble_user_text') || null,
-                llmBg:    localStorage.getItem('nala_bubble_llm_bg')    || null,
-                llmText:  localStorage.getItem('nala_bubble_llm_text')  || null,
-            },
-            fontSize: localStorage.getItem('nala_font_size') || null,
-        };
-        localStorage.setItem('nala_theme_fav_' + n, JSON.stringify(payload));
-    }
-    function loadFav(n) {
-        const stored = localStorage.getItem('nala_theme_fav_' + n);
-        if (!stored) return;
-        try {
-            const raw = JSON.parse(stored);
-            // Schema-Detect: v2 hat .theme / .bubble / .fontSize, v1 ist flach (primary/mid/gold/...)
-            const t = (raw && raw.v === 2) ? raw.theme : raw;
-            if (t) {
-                document.getElementById('tc-primary').value = t.primary   || '#0a1628';
-                document.getElementById('tc-mid').value     = t.mid       || '#1a2f4e';
-                document.getElementById('tc-gold').value    = t.gold      || '#f0b429';
-                document.getElementById('tc-text').value    = t.textLight || '#e8eaf0';
-                document.getElementById('tc-accent').value  = t.accent    || '#ec407a';
-                themePreview();
-            }
-            if (raw && raw.v === 2) {
-                const r = document.documentElement.style;
-                const bMap = [
-                    ['userBg',   BUBBLE_KEYS['user-bg']],
-                    ['userText', BUBBLE_KEYS['user-text']],
-                    ['llmBg',    BUBBLE_KEYS['llm-bg']],
-                    ['llmText',  BUBBLE_KEYS['llm-text']],
-                ];
-                bMap.forEach(([key, cfg]) => {
-                    const v = raw.bubble && raw.bubble[key];
-                    if (v) {
-                        r.setProperty(cfg.css, v);
-                        localStorage.setItem(cfg.ls, v);
-                        document.getElementById(cfg.picker).value = v;
-                    } else {
-                        r.removeProperty(cfg.css);
-                        localStorage.removeItem(cfg.ls);
-                        const rr = getComputedStyle(document.documentElement);
-                        document.getElementById(cfg.picker).value = cssToHex(rr.getPropertyValue(cfg.fallback));
-                    }
-                });
-                if (raw.fontSize) setFontSize(raw.fontSize); else resetFontSize();
-            }
-        } catch(_) {}
-    }
-
-    // ── Patch 86: Clipboard-Helper mit execCommand-Fallback (HTTP-LAN-Kontexte) ──
-    async function copyToClipboard(text) {
-        if (navigator.clipboard && window.isSecureContext) {
-            try { await navigator.clipboard.writeText(text); return true; } catch (_) {}
-        }
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.top = '0';
-        ta.style.left = '0';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        let ok = false;
-        try { ok = document.execCommand('copy'); } catch (_) {}
-        ta.remove();
-        return ok;
-    }
-
-    function showToast(msg) {
-        const old = document.querySelector('.export-toast');
-        if (old) old.remove();
-        const t = document.createElement('div');
-        t.className = 'export-toast';
-        t.textContent = msg;
-        document.body.appendChild(t);
-        setTimeout(() => { t.remove(); }, 2000);
-    }
-
-    // ── Patch 86: Export-Menü (N-F05) ──
-    function openExportMenu() {
-        if (chatMessages.length === 0) {
-            showToast('Kein Chat zum Exportieren.');
-            return;
-        }
-        document.getElementById('export-modal').classList.add('open');
-    }
-    function closeExportMenu() {
-        document.getElementById('export-modal').classList.remove('open');
-    }
-    function _chatStamp() {
-        const now = new Date();
-        return now.toISOString().slice(0,16).replace('T','_').replace(':','-');
-    }
-    function _chatLines() {
-        return chatMessages.map(m =>
-            `[${m.timestamp}] ${m.sender === 'user' ? 'Du' : 'Nala'}: ${m.text}`
-        );
-    }
-    function exportAsText() {
-        closeExportMenu();
-        exportChat();  // bestehende Patch-67-Funktion
-    }
-    function exportAsPDF() {
-        closeExportMenu();
-        if (!window.jspdf || !window.jspdf.jsPDF) {
-            showToast('PDF-Bibliothek nicht geladen.');
-            return;
-        }
-        try {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF();
-            doc.setFontSize(11);
-            const margin = 12, pageWidth = 210 - 2 * margin, pageBottom = 285;
-            let y = 15;
-            _chatLines().forEach(line => {
-                const wrapped = doc.splitTextToSize(line, pageWidth);
-                wrapped.forEach(w => {
-                    if (y > pageBottom) { doc.addPage(); y = 15; }
-                    doc.text(w, margin, y);
-                    y += 6;
-                });
-                y += 2;
-            });
-            doc.save(`nala_export_${_chatStamp()}.pdf`);
-        } catch (e) {
-            showToast('PDF-Export fehlgeschlagen.');
-        }
-    }
-    async function exportAsClipboard() {
-        closeExportMenu();
-        const text = _chatLines().join('\\n');
-        const ok = await copyToClipboard(text);
-        showToast(ok ? 'Chat in Zwischenablage kopiert.' : 'Kopieren fehlgeschlagen.');
-    }
-
-    /* Patch 83: Sternenregen bei Tap */
-    function spawnStars(x, y, count) {
-        count = count || 5;
-        for (var i = 0; i < count; i++) {
-            var star = document.createElement('div');
-            star.className = 'tap-star';
-            star.textContent = '\u2b50';
-            star.style.left = (x + (Math.random() - 0.5) * 40) + 'px';
-            star.style.top = y + 'px';
-            star.style.fontSize = (12 + Math.random() * 12) + 'px';
-            star.style.setProperty('--fall-x', (Math.random() - 0.5) * 60 + 'px');
-            document.body.appendChild(star);
-            setTimeout(function(el) { return function() { el.remove(); }; }(star), 1200);
-        }
-    }
-    document.addEventListener('touchstart', function(e) {
-        var touch = e.touches[0];
-        spawnStars(touch.clientX, touch.clientY);
-    });
-    document.addEventListener('click', function(e) {
-        if (!e.target.closest('button, a, input, textarea, select')) {
-            spawnStars(e.clientX, e.clientY, 3);
-        }
-    });
 </script>
 </body>
 </html>
@@ -2108,19 +1307,12 @@ async def profile_login(req: ProfileLoginRequest, settings: Settings = Depends(g
     - Kein JWT, kein Cookie – Browser speichert in localStorage.
     """
     profiles = _load_profiles()
-    matched_key = None
-    for k, p in profiles.items():
-        if req.profile.lower() in [k.lower(), p.get("display_name", "").lower()]:
-            matched_key = k
-            break
-    if not matched_key:
+    key = req.profile.lower()
+    if key not in profiles:
         raise HTTPException(status_code=404, detail="Profil nicht gefunden")
 
-    key = matched_key
     profile = profiles[key]
     stored_hash = profile.get("password_hash", "")
-
-    logger.warning(f"[DEBUG-83] Login attempt: profile_key='{key}' | hash_exists={bool(stored_hash)} | hash_prefix='{stored_hash[:10] if stored_hash else 'EMPTY'}'")
 
     if not stored_hash:
         # First-Run-Setup: Hash setzen und speichern
@@ -2133,9 +1325,7 @@ async def profile_login(req: ProfileLoginRequest, settings: Settings = Depends(g
             raise HTTPException(status_code=500, detail="Hash konnte nicht gespeichert werden")
     else:
         # Passwort prüfen
-        password_match = bcrypt.checkpw(req.password.encode(), stored_hash.encode())
-        logger.warning(f"[DEBUG-83] Login result: match={password_match}")
-        if not password_match:
+        if not bcrypt.checkpw(req.password.encode(), stored_hash.encode()):
             raise HTTPException(status_code=401, detail="Falsches Passwort")
 
     # System-Prompt für dieses Profil laden
@@ -2247,43 +1437,6 @@ async def save_my_prompt(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Patch 73: Self-Service Passwort-Reset
-# ---------------------------------------------------------------------------
-
-@router.post("/change-password")
-async def change_password(req: ChangePasswordRequest, request: Request, settings: Settings = Depends(get_settings)):
-    """
-    Patch 73: User ändert sein eigenes Passwort.
-    - Profil-Key aus JWT (request.state.profile_name) — kein Selbst-Angeben möglich
-    - Altes Passwort per bcrypt prüfen
-    - Neues Passwort hashen (rounds=12), config.yaml schreiben, reload_settings()
-    """
-    profile_key = getattr(request.state, "profile_name", None)
-    if not profile_key:
-        raise HTTPException(status_code=401, detail="Nicht eingeloggt")
-
-    profiles = _load_profiles()
-    if profile_key not in profiles:
-        raise HTTPException(status_code=404, detail="Profil nicht gefunden")
-
-    stored_hash = profiles[profile_key].get("password_hash", "")
-    if not stored_hash or not bcrypt.checkpw(req.old_password.encode(), stored_hash.encode()):
-        raise HTTPException(status_code=401, detail="Altes Passwort falsch")
-
-    new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt(rounds=12)).decode()
-    try:
-        _save_profile_hash(profile_key, new_hash)
-    except Exception as e:
-        logger.error(f"❌ Passwort-Reset für '{profile_key}' fehlgeschlagen: {e}")
-        raise HTTPException(status_code=500, detail="Passwort konnte nicht gespeichert werden")
-
-    from zerberus.core.config import reload_settings
-    reload_settings()
-    logger.info(f"🔑 Passwort für Profil '{profile_key}' geändert.")
-    return {"detail": "Passwort geändert"}
-
-
-# ---------------------------------------------------------------------------
 # TEIL 1: Voice-Endpunkt (mit Profil-Unterstützung)
 # ---------------------------------------------------------------------------
 
@@ -2327,9 +1480,8 @@ async def voice_endpoint(
         cleaned = clean_transcript(raw_transcript)
         logger.info(f"🎤 Transkript: '{raw_transcript}' -> '{cleaned}'")
 
-        if not cleaned or not cleaned.strip():
-            logger.info("[DEBUG-83] Stille erkannt — leeres Transkript nach Cleaner (nala/voice)")
-            return {"transcript": "", "response": "", "sentiment": "neutral", "note": "silence_detected"}
+        if not cleaned:
+            return {"transcript": "", "response": "", "sentiment": "neutral"}
 
         # ------------------------------------------------------------------
         # 3. Dialekterkennung – Kurzschluss
@@ -2386,32 +1538,14 @@ async def voice_endpoint(
 @router.get("/greeting")
 async def get_greeting(request: Request):
     """
-    Patch 72: Personalisierte, tageszeit-abhängige Begrüßung.
-    Sucht nach 'Du bist [Name]' oder 'Ich bin [Name]' im System-Prompt.
-    Name muss großgeschrieben sein – schließt Artikel wie 'ein' aus.
-    Fallback: generische Begrüßung ohne Namensteil.
+    Patch 67: Personalisierte Begrüßung aus dem aktiven System-Prompt.
+    Sucht nach 'Du bist/Ich bin [Name]' im System-Prompt des eingeloggten Profils.
+    Fallback: generische Begrüßung.
     """
     import re
-    from datetime import datetime
-
-    hour = datetime.now().hour
-    if 6 <= hour < 12:
-        prefix = "Guten Morgen"
-    elif 12 <= hour < 18:
-        prefix = "Hallo"
-    elif 18 <= hour < 22:
-        prefix = "Guten Abend"
-    else:
-        prefix = "Hallo"
-
-    def build_greeting(name: str | None) -> str:
-        if name:
-            return f"{prefix}, {name}! Wie kann ich dir helfen?"
-        return f"{prefix}! Wie kann ich dir helfen?"
-
     profile_name = getattr(request.state, "profile_name", None)
     if not profile_name:
-        return {"greeting": build_greeting(None)}
+        return {"greeting": "Hallo! Wie kann ich dir helfen?"}
 
     profiles = _load_profiles()
     profile = profiles.get(profile_name.lower(), {})
@@ -2435,21 +1569,16 @@ async def get_greeting(request: Request):
                     data = json.load(f)
                     prompt = data.get("prompt", "")
                     if prompt:
-                        m = re.search(
-                            r'(?:du bist|ich bin|you are|i am)\s+(\w+)',
-                            prompt,
-                            re.IGNORECASE,
-                        )
+                        m = re.search(r'(?:du bist|ich bin|you are|i am)\s+(\w+)', prompt, re.IGNORECASE)
                         if m:
-                            candidate = m.group(1)
-                            # Nur übernehmen wenn großgeschrieben (kein Artikel wie 'ein')
-                            if candidate[0].isupper():
-                                char_name = candidate
+                            char_name = m.group(1)
             except Exception:
                 pass
             break  # erste existierende Datei reicht
 
-    return {"greeting": build_greeting(char_name or None)}
+    if char_name:
+        return {"greeting": f"Hallo! Ich bin {char_name}. Wie kann ich dir helfen?"}
+    return {"greeting": "Hallo! Wie kann ich dir helfen?"}
 
 
 @router.get("/health")

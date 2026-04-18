@@ -28,16 +28,17 @@ class LLMService:
                 return data.get("prompt", "")
         return ""
 
-    async def call(self, messages: list, session_id: Optional[str] = None, model_override: Optional[str] = None) -> Tuple[str, str, int, int, float]:
+    async def call(self, messages: list, session_id: Optional[str] = None, model_override: Optional[str] = None, temperature_override: Optional[float] = None) -> Tuple[str, str, int, int, float]:
         """
         Führt einen LLM-Call durch.
         Gibt zurück: (antwort, modell, prompt_tokens, completion_tokens, kosten_in_usd)
         Konfiguration kommt ausschliesslich aus config.yaml (Single Source of Truth).
         model_override: wenn gesetzt, wird dieses Modell statt dem globalen cloud_model verwendet.
+        temperature_override: Patch 61 – wenn gesetzt, überschreibt legacy.settings.ai_temperature.
         """
         settings = get_settings()
         model = model_override or settings.legacy.models.cloud_model
-        temperature = settings.legacy.settings.ai_temperature
+        temperature = temperature_override if temperature_override is not None else settings.legacy.settings.ai_temperature
 
         # System-Prompt einfügen, falls nicht vorhanden
         sys_prompt = self._load_system_prompt()
@@ -49,15 +50,20 @@ class LLMService:
             logger.error("Kein OPENROUTER_API_KEY gesetzt")
             return ("Fehler: Kein API-Key", model, 0, 0, 0.0)
 
+        blacklist = getattr(settings.openrouter, "provider_blacklist", [])
+        provider_block = {
+            "data_collection": "deny",
+            "order": ["EU"],
+            "allow_fallbacks": True
+        }
+        if blacklist:
+            provider_block["ignore"] = blacklist
+
         payload = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "provider": {
-                "data_collection": "deny",
-                "order": ["EU"],
-                "allow_fallbacks": True
-            }
+            "provider": provider_block
         }
         headers = {"Authorization": f"Bearer {api_key}"}
 

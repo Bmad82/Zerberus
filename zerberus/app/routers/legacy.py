@@ -90,6 +90,11 @@ def load_system_prompt(profile_name: str | None = None) -> str:
 
 
 # ---------- Chat-Endpunkt ----------
+# TEXT-CHAT-PFAD (Patch 60 – verifiziert):
+#   Nala-Frontend (sendMessage) → POST /v1/chat/completions → hier → store_interaction() ✅
+#   Voice-Pfad (POST /nala/voice) gibt nur Transkript zurück → User tippt/korrigiert →
+#   sendet dann selbst via POST /v1/chat/completions → landet ebenfalls hier.
+#   Beide Pfade speichern user + assistant in der DB.
 
 @router.post("/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
@@ -101,6 +106,8 @@ async def chat_completions(
     # Patch 54: Werte aus JWT-Middleware (request.state), nicht mehr aus Headers
     profile_name = getattr(request.state, "profile_name", None)
     permission_level = getattr(request.state, "permission_level", "guest")
+    # Patch 61: Temperatur-Override aus JWT-Payload (via Middleware in request.state)
+    temperature_override: float | None = getattr(request.state, "temperature", None)
     llm_service = LLMService()
 
     # Letzte User-Nachricht ermitteln
@@ -123,9 +130,9 @@ async def chat_completions(
     dialect_response = check_dialect_shortcut(last_user_msg, settings)
     if dialect_response:
         try:
-            await store_interaction("user", last_user_msg, session_id=session_id)
-            await store_interaction("assistant", dialect_response, session_id=session_id)
-            update_interaction()
+            await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "")
+            await store_interaction("assistant", dialect_response, session_id=session_id, profile_name=profile_name or "")
+            await update_interaction()
         except Exception as e:
             logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")
         return ChatCompletionResponse(
@@ -141,9 +148,9 @@ async def chat_completions(
         if intent not in allowed_intents:
             logger.info(f"🔒 Permission-Block (legacy): '{permission_level}' darf '{intent}' nicht ausführen")
             try:
-                await store_interaction("user", last_user_msg, session_id=session_id)
-                await store_interaction("assistant", _HITL_MESSAGE, session_id=session_id)
-                update_interaction()
+                await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "")
+                await store_interaction("assistant", _HITL_MESSAGE, session_id=session_id, profile_name=profile_name or "")
+                await update_interaction()
             except Exception:
                 pass
             return ChatCompletionResponse(
@@ -166,42 +173,94 @@ async def chat_completions(
     # ------------------------------------------------------------------
     # Orchestrator-Pipeline: RAG-Suche → LLM → Auto-Index
     # Fallback: direkter LLM-Call ohne RAG falls Pipeline nicht verfügbar
+    # Patch 80b: Skip-Logik + Intent-Snippet (analog orchestrator.py)
     # ------------------------------------------------------------------
     messages_for_llm = [m.model_dump() for m in req.messages]
 
     if _ORCH_PIPELINE_OK:
         try:
-            # 1. RAG-Suche auf die letzte User-Nachricht
-            rag_hits = await _rag_search(last_user_msg, settings)
+            # Patch 85: RAG-Skip nur bei CONVERSATION-Intent UND kurzen Nachrichten ohne ?
+            # Patch 80b hatte zu aggressiv geskippt: QUESTION-Intent ohne "?" + < 15 Wörter
+            # wurde fälschlich übersprungen → RAG nie erreicht
+            skip_rag = (
+                intent == "CONVERSATION" and
+                len(last_user_msg.split()) < 15 and
+                "?" not in last_user_msg
+            )
+
+            logger.warning(f"[DEBUG-85] Intent: {intent} | Nachricht ({len(last_user_msg.split())} Wörter): {last_user_msg[:80]}")
+            logger.warning(f"[DEBUG-85] RAG-Skip: {skip_rag} | intent={intent}, wörter={len(last_user_msg.split())}, '?'={'?' in last_user_msg}")
+
+            if skip_rag:
+                logger.info(f"⏭️ RAG übersprungen (intent={intent}, words={len(last_user_msg.split())}, '?'={'?' in last_user_msg})")
+                rag_hits = []
+            else:
+                # 1. RAG-Suche auf die letzte User-Nachricht
+                rag_hits = await _rag_search(last_user_msg, settings)
+                logger.warning(f"[DEBUG-83] RAG results: {len(rag_hits) if rag_hits else 0} hits")
+                if rag_hits:
+                    for i, r in enumerate(rag_hits[:3]):
+                        logger.warning(f"[DEBUG-83] RAG hit {i}: l2={r.get('l2_distance', 'N/A'):.3f} | text={r.get('text', '')[:80]}")
+
+            # Patch 80b: Intent-Snippet einfügen (analog orchestrator.py)
+            from zerberus.app.routers.orchestrator import INTENT_SNIPPETS
+            snippet = INTENT_SNIPPETS.get(intent, "")
 
             if rag_hits:
                 context_lines = "\n".join(f"[Gedächtnis]: {h['text']}" for h in rag_hits)
-                enriched_content = f"{context_lines}\n\n{last_user_msg}"
+                enriched_content = f"[Intent: {intent}]\n{context_lines}\n\n{snippet}\n{last_user_msg}" if snippet else f"[Intent: {intent}]\n{context_lines}\n\n{last_user_msg}"
                 # Letzte User-Nachricht in der Kopie anreichern
                 for i in range(len(messages_for_llm) - 1, -1, -1):
                     if messages_for_llm[i]["role"] == "user":
                         messages_for_llm[i] = {"role": "user", "content": enriched_content}
                         break
                 logger.info(f"🧠 RAG lieferte {len(rag_hits)} Treffer für Legacy-Chat")
+            elif snippet:
+                # Auch ohne RAG: Intent-Snippet einfügen
+                for i in range(len(messages_for_llm) - 1, -1, -1):
+                    if messages_for_llm[i]["role"] == "user":
+                        messages_for_llm[i] = {"role": "user", "content": f"[Intent: {intent}]\n{snippet}\n{last_user_msg}"}
+                        break
 
-            # 2. LLM-Call mit angereichertem Kontext
-            answer, model, p_tok, c_tok, cost = await llm_service.call(messages_for_llm, session_id)
+            # Patch 80b: Fallback-Permission für Allgemeinwissen im System-Prompt
+            for m in messages_for_llm:
+                if m["role"] == "system":
+                    _lower = m["content"].lower()
+                    if not any(kw in _lower for kw in ("allgemein", "wissen", "smalltalk")):
+                        m["content"] += (
+                            "\nWenn keine spezifischen Dokumentinformationen verfügbar sind, "
+                            "beantworte allgemeine Fragen aus deinem Allgemeinwissen und führe normale Gespräche."
+                        )
+                    break
+
+            # Debug-Logging: System-Prompt-Ende + RAG-Status
+            sys_content = next((m["content"] for m in messages_for_llm if m["role"] == "system"), "")
+            logger.warning(f"[DEBUG-80b] System-Prompt (letzte 200 Zeichen): ...{sys_content[-200:]}")
+            logger.warning(f"[DEBUG-80b] RAG-Kontext vorhanden: {bool(rag_hits)} | Anzahl RAG-Hits: {len(rag_hits)}")
+
+            # Patch 85: llm_start Event für Typing-Bubble (war nur im Orchestrator, nicht im Legacy-Pfad)
+            bus = get_event_bus()
+            await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
+
+            # 2. LLM-Call mit angereichertem Kontext (Patch 61: temperature_override)
+            answer, model, p_tok, c_tok, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
             logger.info(f"LLM [{model}] {p_tok}+{c_tok} Tokens, ${cost:.6f}")
-
-            # 3. User-Nachricht in den RAG-Index schreiben (non-blocking)
-            await _rag_index_background(last_user_msg, settings)
 
         except Exception as e:
             logger.warning(f"⚠️ Orchestrator-Pipeline fehlgeschlagen, direkter LLM-Fallback: {e}")
-            answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id)
+            bus = get_event_bus()
+            await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
+            answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
     else:
         # Fallback: direkter LLM-Call ohne RAG
-        answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id)
+        bus = get_event_bus()
+        await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
+        answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
 
     try:
-        await store_interaction("user", last_user_msg, session_id=session_id)
-        await store_interaction("assistant", answer, session_id=session_id)
-        update_interaction()
+        await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "")
+        await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "")
+        await update_interaction()
     except Exception as e:
         logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")
 
@@ -236,8 +295,14 @@ async def audio_transcriptions(
         cleaned_transcript = clean_transcript(raw_transcript)
 
         logger.info(f"🎤 Transkript: '{raw_transcript}' -> '{cleaned_transcript}'")
+
+        # Patch 83: Stille/leeres Transkript nach Cleaner abfangen
+        if not cleaned_transcript.strip():
+            logger.info("[DEBUG-83] Stille erkannt — leeres Transkript nach Cleaner")
+            return {"text": "", "note": "silence_detected"}
+
         await store_interaction("whisper_input", raw_transcript, integrity=0.9)
-        update_interaction()
+        await update_interaction()
 
         return {"text": cleaned_transcript}
 

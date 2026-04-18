@@ -205,8 +205,31 @@ async def _rag_search(query: str, settings: Settings) -> list[dict]:
     try:
         await rag_ensure_init(settings)
         vec = await asyncio.to_thread(rag_encode, query)
-        hits = await asyncio.to_thread(rag_search, vec, _RAG_TOP_K)
-        return [h for h in hits if h.get("l2_distance", 999) < _RAG_L2_THRESHOLD]
+        min_words = int(rag_cfg.get("min_chunk_words", 0))
+        rerank_enabled = bool(rag_cfg.get("rerank_enabled", False))
+        rerank_model = str(rag_cfg.get("rerank_model", ""))
+        rerank_multiplier = int(rag_cfg.get("rerank_multiplier", 4))
+        hits = await asyncio.to_thread(
+            rag_search,
+            vec,
+            _RAG_TOP_K,
+            min_words,
+            query,
+            rerank_enabled,
+            rerank_model,
+            rerank_multiplier,
+        )
+        # Patch 85: Debug-Log für gefilterte Treffer
+        # Patch 89: L2-Threshold greift nur wenn kein Rerank aktiv war —
+        # sonst macht die L2-Distanz als Relevanzmaß weniger Sinn
+        # (Reranker kann Chunks mit höherem L2 auf Rang 1 heben).
+        if rerank_enabled and hits:
+            filtered = hits  # Reranker hat schon sortiert/ausgewählt
+        else:
+            filtered = [h for h in hits if h.get("l2_distance", 999) < _RAG_L2_THRESHOLD]
+            if hits and not filtered:
+                logger.warning(f"[DEBUG-85] RAG: {len(hits)} Treffer gefunden, aber ALLE über L2-Threshold {_RAG_L2_THRESHOLD}! Nächster: {hits[0].get('l2_distance', 'N/A'):.3f}")
+        return filtered
     except Exception as e:
         logger.warning(f"RAG-Suche fehlgeschlagen (graceful fallback): {e}")
         return []
@@ -251,6 +274,7 @@ async def _run_pipeline(
     profile_name: str | None = None,
     permission_level: str = "guest",
     allowed_model: str | None = None,
+    temperature_override: float | None = None,
 ) -> tuple[str, str, int, int, float, str, float | None, str | None]:
     """
     Vollständige Orchestrator-Pipeline mit Session-Kontext (Patch 43):
@@ -258,6 +282,7 @@ async def _run_pipeline(
 
     Patch 46: Publiziert Events mit session_id für SSE-Streaming.
     Patch 47: Permission-Check vor LLM-Call, Intent-Snippets, Modell-Override.
+    Patch 61: temperature_override – wenn gesetzt, überschreibt globale ai_temperature.
 
     Rückgabe: (answer, model, prompt_tokens, completion_tokens, cost, intent)
     Kann von anderen Routen direkt importiert werden (kein HTTP-Roundtrip).
@@ -272,6 +297,7 @@ async def _run_pipeline(
     intent = detect_intent(message)
     modules_used.append(f"intent:{intent}")
     logger.info(f"🎯 Intent erkannt: {intent} (Permission: {permission_level})")
+    logger.warning(f"[DEBUG-80b] Intent: {intent} | Nachricht ({len(message.split())} Wörter): {message[:80]}")
 
     await bus.publish(Event(
         type="intent_detected",
@@ -322,14 +348,32 @@ async def _run_pipeline(
 
     # ------------------------------------------------------------------
     # 1. RAG: Relevanten Kontext aus dem Gedächtnis holen
+    #    Patch 78b: Skip bei CONVERSATION-Intent oder kurzen Eingaben ohne Fragezeichen
     # ------------------------------------------------------------------
-    await bus.publish(Event(
-        type="rag_search",
-        data={},
-        session_id=session_id,
-    ))
+    # Patch 85: RAG-Skip nur bei CONVERSATION + kurz + kein ?
+    # Vorher: OR-Logik skippte auch QUESTION-Intent ohne "?" → RAG nie erreicht
+    skip_rag = (
+        intent == "CONVERSATION" and
+        len(message.split()) < 15 and
+        "?" not in message
+    )
 
-    rag_hits = await _rag_search(message, settings)
+    logger.warning(f"[DEBUG-85] RAG-Skip: {skip_rag} | intent={intent}, wörter={len(message.split())}, '?'={'?' in message}")
+
+    if skip_rag:
+        logger.info(f"⏭️ RAG übersprungen (intent={intent}, words={len(message.split())}, '?'={'?' in message})")
+        rag_hits = []
+    else:
+        await bus.publish(Event(
+            type="rag_search",
+            data={},
+            session_id=session_id,
+        ))
+        rag_hits = await _rag_search(message, settings)
+        logger.warning(f"[DEBUG-83] RAG results: {len(rag_hits) if rag_hits else 0} hits")
+        if rag_hits:
+            for i, r in enumerate(rag_hits[:3]):
+                logger.warning(f"[DEBUG-83] RAG hit {i}: l2={r.get('l2_distance', 'N/A'):.3f} | text={r.get('text', '')[:80]}")
 
     # Intent-Snippet direkt vor der User-Message einfügen (Patch 47)
     snippet = INTENT_SNIPPETS.get(intent, "")
@@ -348,17 +392,42 @@ async def _run_pipeline(
     # 2. Session-History + System-Prompt laden
     # ------------------------------------------------------------------
     sys_prompt = _load_system_prompt(profile_name)
+    # Patch 78b: Fallback-Permission für Allgemeinwissen + Smalltalk
+    if sys_prompt:
+        _lower = sys_prompt.lower()
+        if not any(kw in _lower for kw in ("allgemein", "wissen", "smalltalk")):
+            sys_prompt += (
+                "\nWenn keine spezifischen Dokumentinformationen verfügbar sind, "
+                "beantworte allgemeine Fragen aus deinem Allgemeinwissen und führe normale Gespräche."
+            )
     messages = []
     if sys_prompt:
         messages.append({"role": "system", "content": sys_prompt})
 
     if session_id:
         history = await get_session_messages(session_id)
+        history_lines = []
         for h in history:
             if h["role"] in ("user", "assistant"):
-                messages.append({"role": h["role"], "content": h["content"]})
+                history_lines.append(f"{h['role'].upper()}: {h['content']}")
+        if history_lines:
+            history_block = (
+                "[VERGANGENE SESSION — nur Tonreferenz, nicht als aktuelles Gespräch behandeln]\n"
+                + "\n".join(history_lines)
+                + "\n[ENDE VERGANGENE SESSION]"
+            )
+            # Inject into system prompt so LLM treats it as context, not active conversation
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += "\n\n" + history_block
+            else:
+                messages.insert(0, {"role": "system", "content": history_block})
 
     messages.append({"role": "user", "content": user_content})
+
+    # [DEBUG-80b] System-Prompt + RAG-Status loggen
+    _sys_content = next((m["content"] for m in messages if m["role"] == "system"), "")
+    logger.warning(f"[DEBUG-80b] System-Prompt (letzte 200 Zeichen): ...{_sys_content[-200:]}")
+    logger.warning(f"[DEBUG-80b] RAG-Kontext vorhanden: {bool(rag_hits)} | Anzahl RAG-Hits: {len(rag_hits)}")
 
     # ------------------------------------------------------------------
     # 3. LLM-Aufruf (Patch 47: Modell-Override wenn Profil allowed_model gesetzt hat)
@@ -373,6 +442,7 @@ async def _run_pipeline(
         messages,
         session_id=session_id or None,
         model_override=allowed_model or None,
+        temperature_override=temperature_override,
     )
     logger.info(f"LLM [{model}] {p_tok}+{c_tok} Tokens, ${cost:.6f}")
     modules_used.append("llm")
@@ -425,16 +495,16 @@ async def _run_pipeline(
     # ------------------------------------------------------------------
     if session_id:
         try:
-            await store_interaction("user", message, session_id=session_id)
-            await store_interaction("assistant", answer, session_id=session_id)
+            await store_interaction("user", message, session_id=session_id, profile_name=profile_name or "")
+            await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "")
             await save_cost(session_id, model, p_tok, c_tok, cost)
         except Exception as e:
             logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")
 
     # ------------------------------------------------------------------
-    # 5. User-Nachricht automatisch in RAG schreiben (non-blocking)
+    # 5. RAG auto-index deaktiviert (Patch 68: verhindert unerwünschte
+    #    "orchestrator"-Chunks im RAG-Index nach manuellem Upload/Clear)
     # ------------------------------------------------------------------
-    await _rag_index_background(message, settings)
 
     await bus.publish(Event(
         type="rag_indexed",

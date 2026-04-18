@@ -1,0 +1,87 @@
+# Backlog – Stand nach Patch 83
+*Hier landet alles was nicht sofort dran ist. Wird bei Patch-Planung konsultiert.*
+
+---
+
+## 🐛 Bugs (Hel)
+
+**H-01 — LLM-Dropdown falsche Preiseinheit**
+`$/1000 Token` → `$/1M Token`. Formel: `cost * 1_000_000`.
+In Patch 69a für Metriktabelle gefixt, Dropdown vergessen.
+
+**H-02 — Kostendelta letzter Prompt fehlt**
+`balance_vorher - balance_jetzt` wird nirgends berechnet. State für vorherigen Balance-Wert fehlt.
+
+**H-03 — Hel Metriken: Chat-Text zu breit**
+Kürzen auf ersten Satz + Timestamp, analog Nala-Archiv (Patch 77).
+
+**H-04 — Hel Metriken: BERT/Sentiment springt zwischen Extremen**
+Nur maximale Ausschläge. Normalisierungsfehler in oliverguhr/german-sentiment-bert prüfen.
+
+**H-05 — Hel Metriken: Nur User-Eingaben verifizieren**
+Sicherstellen dass LLM-Outputs nicht in Metrikberechnung einfließen. Explizit kommentieren.
+
+---
+
+## ✨ Features — Nala
+
+**N-F02 — Lade-Indikator: drehendes Rad + „Denke nach…"**
+Sichtbar während LLM arbeitet. (Patch 76 hat Typing-Bubble, das hier wäre ein Upgrade)
+
+**N-F03 — Wiederholen-Button an jeder Chat-Bubble**
+Letzte Nachricht = neu senden. Weiter oben = Fork (alter Verlauf bleibt).
+
+**N-F04 — Bearbeiten-Button an jeder Chat-Bubble**
+Letzte = direkte Änderung. Weiter oben = Fork.
+
+**N-F09b — Schriftgröße Hel**
+Nala-Teil in Patch 86 erledigt (4 Presets via `--font-size-base`). Pendant für Hel-UI fehlt noch.
+
+**N-F10 — Display-Rotation prüfen**
+Landscape-Mode testen, CSS-Fix falls nötig.
+
+---
+
+## ✨ Features — Hel
+
+**H-F01 — Sticky Tab-Leiste (Karteikarten)**
+Tabs oben, immer sichtbar, per Wischgeste wechselbar.
+
+**H-F02 — Dialekt-JSON + WhisperCleaner: UX statt Rohtext**
+Scrollbare Liste statt JSON-Editor. Strukturiertes Formular.
+
+**H-F03 — Mehr Metriken-Auswahl + feineres Design**
+Konzept noch offen. Chris will explizit erinnert werden.
+
+---
+
+## 📝 Reminder
+- Metriken-Tabelle optisch überarbeiten → Chris erinnern wenn's ansteht
+- :active statt :hover durchgängig prüfen (Mobile)
+- RAG 500er beim ersten Upload nach Clear — Lazy-Load-Guard greift nicht immer
+
+---
+
+## 🔎 RAG-Qualität (aus Patch 87 Eval-Report)
+
+Basis: `rag_eval_report_patch87.md`. **Eval-Stand nach Patch 89: 10/11 JA, 1/11 TEILWEISE, 0 NEIN.** Q4 + Q10 geheilt durch Cross-Encoder-Reranker.
+
+**R-01 — Mindest-Chunk-Länge filtern** ✅ ERLEDIGT in Patch 88
+~~Residual-Tails < 50 Wörter entweder mit Vorgänger-Chunk mergen oder beim Retrieval ausfiltern.~~
+Implementiert mit `min_chunk_words=120` in Chunking (Fix A: merge in Vorgänger) und Retrieval (Fix B: over-fetch + filter). Index ging von 18 → 12 Chunks. Erwartung „Q3/Q8 von TEILWEISE auf JA" hat sich aber **nicht erfüllt** — Status-Verteilung unverändert. Diagnose siehe `rag_eval_delta_patch88.md`. Embedding-Modell ist die eigentliche Bremse.
+
+**R-02 — Embedding-Modell-Upgrade evaluieren** 📉 PRIO RUNTER
+Nach Patch 89 deutlich weniger dringend: Der Cross-Encoder-Reranker kompensiert die MiniLM-Schwäche bei Eigennamen ausreichend. Trotzdem als Option fürs Protokoll — `BAAI/bge-m3` als Bi-Encoder würde die Rerank-Kandidatenmenge noch etwas hübscher machen. Kein Akutthema.
+
+**R-03 — Cross-Encoder-Reranker als zweite Stufe** ✅ ERLEDIGT in Patch 89
+~~`BAAI/bge-reranker-v2-m3` über die Top-N des FAISS-Retrievals.~~
+Implementiert als eigenständiges Modul `zerberus/modules/rag/reranker.py` mit Lazy-Load-Guard und Fail-Safe-Fallback. FAISS over-fetch `top_k * 4`, Rerank sortiert neu. **Eval-Delta: 4/11 JA → 10/11 JA.** Q4 (Perseiden 0.942) und Q10 (Ulm 0.929) beide auf Rang 1. Details: `rag_eval_delta_patch89.md`.
+
+**R-04 — Query-Expansion via LLM vor RAG** ⭐ NÄCHSTER KANDIDAT (für Aggregat-Queries)
+Kurzer LLM-Call vor `_search_index`, der synonyme Formulierungen / Stichworte erzeugt. Nach Patch 89 ist Q11 („Nenn alle Momente wo…") das einzige verbleibende TEILWEISE — Aggregat-Query, die mehrere Chunks gleichzeitig gewichtet braucht. Query-Expansion könnte hier jeweils einen Rerank-Call pro expandierte Sub-Query triggern, dann die Hits mergen. Alternative: LLM-seitige Multi-Chunk-Aggregation im Orchestrator (Top-N gleichzeitig in den Kontext, kein zweiter Retrieval-Pass).
+
+**R-05 — Sektion-Typ als Metadata-Feld**
+Akt/Prolog/Epilog/Glossar beim Chunking mitspeichern. Definitionsfragen ("Was steht im Glossar zu…") können dann auf `section_type=glossar` gefiltert werden. Nach Patch 89 nur noch Bonus-Optimierung — Glossar-Queries (Q3, Q6) funktionieren durch den Reranker bereits zuverlässig.
+
+**R-06 — MMR/Diversity-Reranking**
+Verhindert, dass Top-5 aus derselben Sektion kommt. Nach Patch 89 weniger dringend, weil Rerank die relevanten Chunks genauer trifft und Top-5-Diversität weniger kritisch ist.

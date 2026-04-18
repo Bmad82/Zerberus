@@ -5,7 +5,7 @@ import logging
 import uuid
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, joinedload
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, select, func
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, select, func, text
 from datetime import datetime
 
 from zerberus.core.config import get_settings
@@ -16,13 +16,28 @@ Base = declarative_base()
 
 # Sentiment-Analyse (Patch 57: graceful – kein Crash wenn Modul/Modell nicht verfügbar)
 def _compute_sentiment(text: str) -> float:
-    """Gibt sentiment compound zurück (0.0 als Fallback)."""
+    """Gibt sentiment compound zurück (0.0 als Fallback).
+    Patch 84: Score-gewichtet statt nur Extreme (-1/0/1).
+    Patch 85: BERT-Konfidenz gedämpft — BERT gibt fast immer >0.9 zurück,
+    was zu binären 0/1-Extremen im Chart führte. Jetzt: Konfidenz-basierte
+    Skalierung mit Dämpfung: sentiment = direction * (0.3 + 0.7 * (score - 0.5) / 0.5)
+    Ergibt Werte im Bereich [-1.0, +1.0] mit besserer Abstufung.
+    """
     try:
         from zerberus.modules.sentiment.router import analyze_sentiment
         result = analyze_sentiment(text)
-        # Konvertiere label → compound-ähnlichen Wert für Rückwärtskompatibilität
-        label_map = {"positive": 1.0, "negative": -1.0, "neutral": 0.0}
-        return label_map.get(result["label"], 0.0)
+        label = result.get("label", "neutral")
+        score = float(result.get("score", 0.5))
+        if label == "neutral":
+            return 0.0
+        # Dämpfung: score 0.5→0.3, score 0.75→0.65, score 1.0→1.0
+        dampened = 0.3 + 0.7 * max(0.0, (score - 0.5)) / 0.5
+        dampened = min(dampened, 1.0)
+        if label == "positive":
+            return round(dampened, 4)
+        elif label == "negative":
+            return round(-dampened, 4)
+        return 0.0
     except Exception:
         return 0.0
 
@@ -32,6 +47,7 @@ class Interaction(Base):
 
     id = Column(Integer, primary_key=True)
     session_id = Column(String(36), index=True, nullable=True)
+    profile_name = Column(String(100), nullable=True, default="")  # Patch 60: User-Tag
     timestamp = Column(DateTime, default=datetime.utcnow)
     role = Column(String(50))
     content = Column(Text)
@@ -90,19 +106,32 @@ async def init_db():
 
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Patch 60: profile_name Spalte graceful hinzufügen (kein Schema-Reset, kein Datenverlust)
+        col_result = await conn.execute(text("PRAGMA table_info(interactions)"))
+        existing_cols = {row[1] for row in col_result.fetchall()}
+        if "profile_name" not in existing_cols:
+            await conn.execute(text("ALTER TABLE interactions ADD COLUMN profile_name TEXT DEFAULT ''"))
+            logger.info("✅ interactions.profile_name Spalte hinzugefügt (Patch 60)")
     logger.info("✅ Datenbank bereit")
 
 async def get_db() -> AsyncSession:
     async with _async_session_maker() as session:
         yield session
 
-async def store_interaction(role: str, content: str, session_id: str = None, integrity: float = 1.0):
+async def store_interaction(
+    role: str,
+    content: str,
+    session_id: str = None,
+    integrity: float = 1.0,
+    profile_name: str = "",  # Patch 60: User-Tag für DB-Level-Trennung
+):
     sentiment = _compute_sentiment(content)
     word_count = len(content.split())
 
     async with _async_session_maker() as session:
         interaction = Interaction(
             session_id=session_id,
+            profile_name=profile_name or "",
             role=role,
             content=content,
             sentiment=sentiment,
@@ -114,7 +143,7 @@ async def store_interaction(role: str, content: str, session_id: str = None, int
         # Metriken berechnen und speichern
         metrics = compute_metrics(content)
         await save_metrics(interaction.id, metrics)
-    logger.debug(f"💾 Gespeichert: {role}, {word_count} Wörter, Sentiment {sentiment:.2f}")
+    logger.debug(f"💾 Gespeichert: {role}, {word_count} Wörter, Sentiment {sentiment:.2f}, profile={profile_name or '–'}")
 
 async def get_all_sessions(limit: int = 50) -> list:
     async with _async_session_maker() as session:
@@ -269,6 +298,7 @@ async def get_latest_metrics(limit: int = 10, session_id: str = None) -> list:
         return [dict(row._mapping) for row in rows]
 
 async def get_metrics_summary(session_id: str = None) -> dict:
+    """Patch 84: Nur User-Eingaben in Metrik-Zusammenfassung (LLM-Outputs verfälschen Sentiment/TTR)."""
     async with _async_session_maker() as session:
         from sqlalchemy import func
         query = (
@@ -280,6 +310,7 @@ async def get_metrics_summary(session_id: str = None) -> dict:
                 func.count(Interaction.id).label("total_messages")
             )
             .outerjoin(MessageMetrics, Interaction.id == MessageMetrics.message_id)
+            .where(Interaction.role == "user")
         )
         if session_id:
             query = query.where(Interaction.session_id == session_id)

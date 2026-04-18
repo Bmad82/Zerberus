@@ -1,7 +1,5 @@
 {
   "llm": {
-    "cloud_model": "deepseek/deepseek-v3.2",
-    "temperature": 0.7,
-    "threshold": 0
+    "cloud_model": "deepseek/deepseek-v3.2"
   }
 }

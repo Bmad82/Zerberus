@@ -1,5 +1,6 @@
 """
-Pacemaker – Startet nach einer Interaktion und hält VRAM 30 Minuten warm.
+Pacemaker – Startet nach einer Interaktion und hält VRAM warm.
+Patch 59: Double-Start-Bug behoben via atomarem Lock + pacemaker_task.done()-Check.
 """
 import logging
 import asyncio
@@ -13,7 +14,9 @@ logger = logging.getLogger(__name__)
 
 last_interaction_time = 0
 pacemaker_task = None
-pacemaker_running = False
+_pacemaker_running = False
+_pacemaker_lock = asyncio.Lock()
+
 
 def create_silent_wav() -> bytes:
     sample_rate = 16000
@@ -21,12 +24,12 @@ def create_silent_wav() -> bytes:
     num_channels = 1
     bits_per_sample = 16
     bytes_per_sample = bits_per_sample // 8
-    
+
     riff_header = b'RIFF'
     file_size = 36 + num_samples * num_channels * bytes_per_sample
     riff_header += struct.pack('<I', file_size)
     riff_header += b'WAVE'
-    
+
     fmt_chunk = b'fmt '
     fmt_chunk += struct.pack('<I', 16)
     fmt_chunk += struct.pack('<H', 1)
@@ -35,13 +38,14 @@ def create_silent_wav() -> bytes:
     fmt_chunk += struct.pack('<I', sample_rate * num_channels * bytes_per_sample)
     fmt_chunk += struct.pack('<H', num_channels * bytes_per_sample)
     fmt_chunk += struct.pack('<H', bits_per_sample)
-    
+
     data_chunk = b'data'
     data_size = num_samples * num_channels * bytes_per_sample
     data_chunk += struct.pack('<I', data_size)
     silence = bytes([0] * data_size)
-    
+
     return riff_header + fmt_chunk + data_chunk + silence
+
 
 async def pacemaker_worker():
     settings = get_settings()
@@ -51,7 +55,7 @@ async def pacemaker_worker():
     keep_alive = pm.keep_alive_minutes * 60
 
     logger.info("💓 Pacemaker-Worker gestartet (Laufzeit: %d min)", pm.keep_alive_minutes)
-    global pacemaker_running, last_interaction_time
+    global _pacemaker_running, last_interaction_time
 
     # Erstpuls sofort beim Start – kein Warten auf erstes Intervall
     try:
@@ -64,11 +68,11 @@ async def pacemaker_worker():
     except Exception as e:
         logger.warning(f"⚠️ Pacemaker-Erstpuls fehlgeschlagen (nicht kritisch): {e}")
 
-    while pacemaker_running:
+    while _pacemaker_running:
         await asyncio.sleep(interval)
         if time.time() - last_interaction_time > keep_alive:
             logger.info("⏸️ Keine Interaktion für %d Minuten – Pacemaker stoppt", pm.keep_alive_minutes)
-            pacemaker_running = False
+            _pacemaker_running = False
             break
 
         try:
@@ -81,11 +85,19 @@ async def pacemaker_worker():
         except Exception as e:
             logger.error(f"❌ Pacemaker-Fehler: {e}")
 
-def update_interaction():
-    global last_interaction_time, pacemaker_running, pacemaker_task
+    # Worker beendet sich – Flag zurücksetzen
+    _pacemaker_running = False
+
+
+async def update_interaction():
+    """
+    Aktualisiert den Interaktions-Zeitstempel und startet den Pacemaker-Worker
+    atomar (Patch 59: Lock + done()-Check verhindert Doppel-Start).
+    """
+    global last_interaction_time, _pacemaker_running, pacemaker_task
     last_interaction_time = time.time()
-    
-    if not pacemaker_running:
-        logger.info("▶️ Pacemaker wird gestartet (erste Interaktion)")
-        pacemaker_running = True
-    pacemaker_task = asyncio.create_task(pacemaker_worker())
+    async with _pacemaker_lock:
+        if pacemaker_task is None or pacemaker_task.done():
+            logger.info("▶️ Pacemaker wird gestartet")
+            _pacemaker_running = True
+            pacemaker_task = asyncio.create_task(pacemaker_worker())

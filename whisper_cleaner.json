@@ -7,6 +7,10 @@
     "replacement": ""
   },
   {
+    "pattern": "(?i)untertitelung des zdf für funk[,\\s]+\\d{4}\\.?",
+    "replacement": ""
+  },
+  {
     "pattern": "(?i)untertitel im auftrag des zdf\\.?",
     "replacement": ""
   },
@@ -34,6 +38,10 @@
     "replacement": ""
   },
   {
+    "pattern": "(?i)\\bdas war's für heute[.!]?",
+    "replacement": ""
+  },
+  {
     "pattern": "(?i)vielen dank fürs zuschauen und bis zum nächsten mal\\.",
     "replacement": ""
   },
@@ -42,7 +50,15 @@
     "replacement": ""
   },
   {
+    "pattern": "(?i)\\b(vielen dank für's zuschauen|danke für's zuschauen)\\b",
+    "replacement": ""
+  },
+  {
     "pattern": "(?i)\\b(wir sehen uns( beim nächsten mal)?|tschüss?|ciao|bye|bis dann|bis später|auf wiedersehen)\\b",
+    "replacement": ""
+  },
+  {
+    "pattern": "(?i)\\bbis zum nächsten mal[.!]?",
     "replacement": ""
   },
   {
@@ -93,7 +109,7 @@
   },
   {
     "pattern": "(?i)\\b(\\w{2,})\\s+\\1\\b",
-    "replacement": "$1"
+    "replacement": "\\1"
   },
   {
     "pattern": "(?i)\\b(das ist das|das war das|das ist es)\\b",
@@ -146,6 +162,29 @@
   {
     "pattern": "(?i)\\$\\$(unverständlich|inaudible)\\$\\$",
     "replacement": ""
+  },
+  {
+    "_comment": "STILLE-HALLUZINATIONEN (Patch 83) - breite Patterns für Whisper-Output bei Stille/Rauschen"
+  },
+  {
+    "pattern": "(?i)^\\s*(untertitel(ung)?\\s+(des|von|durch|im Auftrag)\\s+.{0,50})\\s*$",
+    "replacement": "",
+    "_comment": "Whisper-Halluzination bei Stille: Untertitelungshinweise"
+  },
+  {
+    "pattern": "^\\s*\\.{2,}\\s*$",
+    "replacement": "",
+    "_comment": "Whisper-Halluzination bei Stille: nur Punkte"
+  },
+  {
+    "pattern": "(?i)^\\s*(Vielen Dank (für|fürs)\\s+(Zuschauen|Zusehen|Ihre Aufmerksamkeit)[.!]?)\\s*$",
+    "replacement": "",
+    "_comment": "Whisper-Halluzination bei Stille: Dankesfloskeln"
+  },
+  {
+    "pattern": "(?i)^\\s*(Copyright|©|Alle Rechte vorbehalten).*$",
+    "replacement": "",
+    "_comment": "Whisper-Halluzination bei Stille: Copyright-Hinweise"
   },
   {
     "_comment": "CLEANUP - Immer am Ende der Pipeline ausführen!"

@@ -26,7 +26,16 @@
       "Bash(find C:UserschrisPythonRosaNala_RosaZerberus -maxdepth 1 -type f \\\\\\(-name *.md -o -name *.txt -o -name *.json \\\\\\))",
       "Bash(venvScriptspython.exe -c \"from PIL import Image; print\\(''Pillow OK''\\)\")",
       "Bash(\"venv/Scripts/python.exe\" -c \"from PIL import Image; print\\(''Pillow OK''\\)\")",
-      "Bash(\"venv/Scripts/python.exe\" -c \":*)"
+      "Bash(\"venv/Scripts/python.exe\" -c \":*)",
+      "Bash(find . -not -path */.git/* -type d)",
+      "Bash(find ./zerberus ./docs ./data -type f -name *.py -o -name *.yaml -o -name *.yml -o -name *.md -o -name *.txt)",
+      "Bash(python -c \"from zerberus.app.routers import nala; print\\('OK, HTML length:', len\\(nala.NALA_HTML\\)\\)\")",
+      "Bash(curl -s -k http://127.0.0.1:5000/rag/health)",
+      "Bash(curl -sv http://127.0.0.1:5000/rag/health)",
+      "Bash(curl -sk https://127.0.0.1:5000/rag/health)",
+      "Bash(curl -sk -H \"X-API-Key: ca55f7c73d68e45abfdae92dbba67c209cdc0eac5d483275118efd34d2e2b868\" https://127.0.0.1:5000/rag/health)",
+      "Bash(python -c ' *)",
+      "Bash(venv/Scripts/python.exe -c ' *)"
     ]
   }
 }

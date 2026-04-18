@@ -63,6 +63,16 @@ rate_limiting:
 # - cloud_api_url: OpenRouter-API-Endpunkt (normalerweise nicht ändern)
 # - YOUR_TAILSCALE_DOMAIN ersetzen durch deine Tailscale-Domain, z.B. mein-pc.tail12345.ts.net
 # ============================================================
+# ============================================================
+# OpenRouter Provider-Blacklist (Patch 63)
+# Provider in dieser Liste werden bei jedem Request via provider.ignore ausgeschlossen.
+# chutes und targon sind standard-gesperrt (Rate-Limiting bekannt).
+# ============================================================
+openrouter:
+  provider_blacklist:
+    - "chutes"
+    - "targon"
+
 legacy:
   models:
     cloud_model: meta-llama/llama-3.3-70b-instruct
@@ -170,7 +180,21 @@ modules:
     vector_db_path: ./data/vectors
     embedding_model: all-MiniLM-L6-v2
     chunk_size: 512
+    chunk_overlap: 160
+    # Patch 88: Mindest-Wortanzahl pro Chunk. Kürzere Residual-Tails werden
+    # beim Chunking in den Vorgänger gemerged und beim Retrieval gefiltert.
+    min_chunk_words: 120
     index_type: flat
+    # Patch 70: Quell-Dokument für rag_eval.py (Pfad relativ zum Projektroot)
+    eval_source_doc: docs/Rosendornen_2_Auflage.docx
+    # Patch 89 (R-03): Cross-Encoder-Reranker als zweite Retrieval-Stufe.
+    # FAISS over-fetched top_k * rerank_multiplier Kandidaten, der Reranker
+    # bewertet Query+Chunk mit voller Token-Attention und sortiert neu.
+    # Modell-Download (~1 GB) beim ersten Call, danach Festplatten-Cache.
+    # Fail-Safe: bei Fehler fällt der Code auf FAISS-Reihenfolge zurück.
+    rerank_enabled: true
+    rerank_model: BAAI/bge-reranker-v2-m3
+    rerank_multiplier: 4
 
   # MQTT – IoT-Sensor-Integration (aktuell deaktiviert)
   mqtt:
@@ -199,6 +223,13 @@ modules:
     auth_token: YOUR_TOKEN_HERE
     phone_number: whatsapp:+14155238886
 
+  # Metric Engine – linguistische Textanalyse (Patch 59)
+  # Endpunkte: POST /metrics/analyze, GET /metrics/history
+  # Hinweis: spaCy-Modell muss einmalig installiert werden:
+  #   venv\Scripts\activate && python -m spacy download de_core_news_sm
+  metrics:
+    enabled: true
+
 # ============================================================
 # JWT-Authentifizierung – Token-Geheimnis für Login-Sessions
 # token_secret: Langer zufälliger String – NIEMALS teilen oder ins Git einchecken!
@@ -207,6 +238,11 @@ modules:
 auth:
   token_secret: "YOUR_SECRET_KEY_HERE"
   token_expire_minutes: 480  # 8 Stunden
+  # Patch 59/64: Statischer API-Key für externe Clients (z.B. Dictate-Keyboard, SillyTavern)
+  # Wenn gesetzt, wird der X-API-Key Header als Alternative zum JWT Bearer-Token akzeptiert.
+  # Generieren: python -c "import secrets; print(secrets.token_hex(32))"
+  # Leer lassen ("") um das Feature zu deaktivieren.
+  static_api_key: ""
 
 # ============================================================
 # Nutzerprofile – Login-Accounts für Nala
@@ -222,10 +258,12 @@ profiles:
     theme_color: '#ec407a'
     permission_level: admin
     allowed_model: null
-  user2:
+    temperature: null   # null = globale Einstellung aus legacy.settings.ai_temperature
+  jojo:
     display_name: Jojo
     password_hash: ''
     system_prompt_file: system_prompt_user2.json
     theme_color: '#7b1fa2'
     permission_level: user
     allowed_model: null
+    temperature: null   # null = globale Einstellung aus legacy.settings.ai_temperature

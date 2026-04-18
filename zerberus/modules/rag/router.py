@@ -127,6 +127,10 @@ class IndexDocumentRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _encode(text: str) -> np.ndarray:
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        _model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
     vec = _model.encode([text], normalize_embeddings=True)
     return vec.astype("float32")
 
@@ -142,23 +146,78 @@ def _add_to_index(vec: np.ndarray, text: str, extra_meta: dict, settings: Settin
     return _index.ntotal
 
 
-def _search_index(vec: np.ndarray, top_k: int) -> list[dict]:
-    """Führt Nearest-Neighbor-Suche durch und gibt Ergebnisse zurück."""
+def _search_index(
+    vec: np.ndarray,
+    top_k: int,
+    min_chunk_words: int = 0,
+    query_text: str | None = None,
+    rerank_enabled: bool = False,
+    rerank_model: str = "",
+    rerank_multiplier: int = 4,
+) -> list[dict]:
+    """Führt Nearest-Neighbor-Suche durch und gibt Ergebnisse zurück.
+
+    Patch 88 (Fix B): Wenn `min_chunk_words > 0`, wird intern mit
+    `top_k * 2` over-fetched, dann Chunks unter der Mindestlänge gefiltert,
+    schließlich auf `top_k` getrimmt. Fängt kurze Residual-Chunks ab,
+    die bei normalisierten MiniLM-Embeddings systematisch Rang 1 kapern.
+    Wortanzahl kommt aus `metadata.word_count` (Patch 88) oder wird
+    on-the-fly via `len(text.split())` berechnet.
+
+    Patch 89 (R-03): Wenn `rerank_enabled=True`, over-fetched der FAISS
+    `top_k * rerank_multiplier` Kandidaten, filtert kurze Chunks, und reicht
+    die Liste an den Cross-Encoder (`zerberus.modules.rag.reranker.rerank`)
+    weiter. Das Reranker-Ergebnis wird auf `top_k` getrimmt. Benötigt
+    `query_text` (Cross-Encoder scored Query+Chunk-Paare).
+    """
     n_vectors = _index.ntotal
     if n_vectors == 0:
         return []
-    k = min(top_k, n_vectors)
-    distances, indices = _index.search(vec, k)
+
+    # Patch 89: Over-fetch-Multiplikator bestimmen
+    if rerank_enabled and query_text:
+        over_fetch = max(rerank_multiplier, 2)
+    elif min_chunk_words > 0:
+        over_fetch = 2
+    else:
+        over_fetch = 1
+
+    fetch_k = min(top_k * over_fetch, n_vectors)
+    distances, indices = _index.search(vec, fetch_k)
+
     results = []
+    dropped = 0
     for dist, idx in zip(distances[0], indices[0]):
         if idx == -1:
             continue
         entry = _metadata[idx].copy()
-        # L2-Distanz in ein Score-ähnliches Maß umwandeln (kleiner = besser → invertieren)
         entry["score"] = float(1.0 / (1.0 + dist))
         entry["l2_distance"] = float(dist)
+
+        if min_chunk_words > 0:
+            wc = entry.get("word_count")
+            if wc is None:
+                wc = len(entry.get("text", "").split())
+            if wc < min_chunk_words:
+                dropped += 1
+                continue
+
         results.append(entry)
-    return results
+
+    if min_chunk_words > 0 and dropped > 0:
+        logger.debug(
+            f"[DEBUG-88] RAG filter: over-fetched {fetch_k}, "
+            f"dropped {dropped} short chunks (< {min_chunk_words} words), "
+            f"kept {len(results)} for rerank/return"
+        )
+
+    # Patch 89: Cross-Encoder Rerank (optional)
+    if rerank_enabled and query_text and rerank_model and results:
+        from zerberus.modules.rag.reranker import rerank as _rerank
+        results = _rerank(query_text, results, rerank_model, top_k)
+        return results
+
+    return results[:top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +272,20 @@ async def semantic_search(
         raise HTTPException(400, "query darf nicht leer sein.")
 
     vec = await asyncio.to_thread(_encode, query)
-    results = await asyncio.to_thread(_search_index, vec, req.top_k)
+    min_words = int(mod_cfg.get("min_chunk_words", 0))
+    rerank_enabled = bool(mod_cfg.get("rerank_enabled", False))
+    rerank_model = str(mod_cfg.get("rerank_model", ""))
+    rerank_multiplier = int(mod_cfg.get("rerank_multiplier", 4))
+    results = await asyncio.to_thread(
+        _search_index,
+        vec,
+        req.top_k,
+        min_words,
+        query,
+        rerank_enabled,
+        rerank_model,
+        rerank_multiplier,
+    )
 
     bus = get_event_bus()
     await bus.publish(Event(type="rag_search", data={"query": query[:100], "results": len(results)}))

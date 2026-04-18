@@ -1,7 +1,7 @@
 # Zerberus Pro 4.0 – Projektdokumentation
 
-**Stand:** 2026-04-05
-**Version:** 4.0 (Patch 58 – UI-Verbesserungen, Guthaben-Fix, Slider-Buttons, Dialect-Kurzschluss)
+**Stand:** 2026-04-10
+**Version:** 4.0 (Patch 65 – Multimodaler Input/Output + RAG-Fix)
 **Status:** Aktiv in Entwicklung
 
 ---
@@ -273,6 +273,12 @@ Response: { transcript, response, sentiment }
   - `POST /hel/admin/rag/upload` – `.txt`/`.docx` hochladen, Chunking (~300 Wörter, 50 Überlapp), FAISS-Indexierung; Dateiname als `source`-Metadatum
   - `GET /hel/admin/rag/status` – Index-Größe (Anzahl Chunks) + Liste der Quellen aus `metadata.json`
   - `DELETE /hel/admin/rag/clear` – Index leeren (`faiss.index` + `metadata.json` zurücksetzen)
+- **Patch 66 – RAG Chunk-Optimierung:**
+  - Chunk-Parameter erhöht: `chunk_size=800 Wörter` (war 300), `overlap=160 Wörter` (war 50, entspricht 20 % von 800) — Einheit ist **Wörter**, nicht Token oder Zeichen
+  - Kein Hard-Limit auf Dokumentlänge — gesamtes Dokument wird indiziert
+  - Upload-Logging: INFO-Log mit Chunk-Anzahl direkt nach Chunking (vor dem Einbetten)
+  - Neuer Endpunkt `POST /hel/admin/rag/reindex` — baut FAISS-Index aus gespeicherten Metadaten neu auf (sinnvoll nach Embedding-Modell-Wechsel; für neue Chunk-Parameter Index leeren + Dokumente neu hochladen)
+  - Einheit und Defaults sind als Docstring in `_chunk_text()` dokumentiert (`zerberus/app/routers/hel.py`)
 - **Patch 56 – Pacemaker:**
   - `GET /hel/admin/pacemaker/config` – Aktuelle Pacemaker-Konfiguration
   - `POST /hel/admin/pacemaker/config` – `keep_alive_minutes` in `config.yaml` speichern (wirkt nach Neustart)
@@ -339,7 +345,7 @@ Regelbasiert, keine KI:
 
 | Tabelle | Felder | Zweck |
 |---|---|---|
-| `interactions` | id, session_id, timestamp, role, content, sentiment, word_count, integrity | Alle Nachrichten (user, assistant, whisper_input) |
+| `interactions` | id, session_id, profile_name, timestamp, role, content, sentiment, word_count, integrity | Alle Nachrichten (user, assistant, whisper_input); profile_name = User-Tag (Patch 60) |
 | `message_metrics` | message_id, word_count, sentence_count, character_count, avg_word_length, unique_word_count, ttr, hapax_count, yule_k, shannon_entropy, vader_compound | Linguistische Metriken pro Nachricht |
 | `costs` | session_id, model, prompt_tokens, completion_tokens, total_tokens, cost, timestamp | API-Kosten pro LLM-Call |
 
@@ -1315,6 +1321,63 @@ Registrierung in `zerberus/main.py` – zuletzt registriert = zuerst ausgeführt
 
 ---
 
+### Patch 59: Pacemaker-Fix, Statischer API-Key, Metric Engine Level 1
+
+**Stand:** 2026-04-06
+
+#### Säule 1 – Pacemaker Double-Start-Bug behoben (`zerberus/app/pacemaker.py`)
+
+- **Problem:** `update_interaction()` konnte mehrfach vor dem ersten Worker-Start aufgerufen werden → mehrere parallele `pacemaker_worker`-Tasks
+- **Fix:** `update_interaction()` ist jetzt `async`; Guard via `async with _pacemaker_lock: if pacemaker_task is None or pacemaker_task.done():`
+- `_pacemaker_running = False` wird am Ende von `pacemaker_worker()` explizit gesetzt (Cleanup nach natürlichem Stopp)
+- Alle Call-Sites in `legacy.py` und `nala.py` auf `await update_interaction()` umgestellt
+
+#### Säule 2 – Dialect 401 Bug: Statischer API-Key (`config.py`, `middleware.py`)
+
+- Neuer Config-Eintrag `auth.static_api_key` in `config.yaml` und `config.yaml.example`
+- In `AuthConfig` (Pydantic): `static_api_key: str = ""` (Patch 59)
+- JWT-Middleware prüft **vor** dem Bearer-Check ob `X-API-Key` Header gesetzt ist und mit `static_api_key` übereinstimmt
+- Bei Match: Request direkt durchgelassen, kein JWT erforderlich
+- Graceful: leerer String = Feature deaktiviert, kein Verhaltensunterschied
+
+#### Säule 3 – Metric Engine Level 1 (`zerberus/modules/metrics/`)
+
+Neues Modul mit drei Dateien:
+
+**`engine.py` – Pure-Python + spaCy Metriken:**
+
+| Funktion | Beschreibung | Typ |
+|---|---|---|
+| `compute_ttr()` | Type-Token-Ratio | Pure Python |
+| `compute_mattr()` | Moving Average TTR (Fenster 50) | Pure Python |
+| `compute_hapax_ratio()` | Hapax-Legomena-Anteil | Pure Python |
+| `compute_avg_sentence_length()` | Ø Satzlänge in Wörtern | Pure Python |
+| `compute_shannon_entropy()` | Shannon Entropy der Wortverteilung | Pure Python |
+| `compute_hedging_frequency()` | Anteil Hedge-Wörter | spaCy (graceful) |
+| `compute_self_reference_frequency()` | Anteil Selbstreferenz-Tokens | spaCy (graceful) |
+| `compute_causal_ratio()` | Anteil Sätze mit Kausalkonnektoren | spaCy (graceful) |
+
+- spaCy wird **lazy geladen** (`_get_nlp()`), kein Import beim Modulstart
+- spaCy-Metriken geben `None` zurück wenn `de_core_news_sm` nicht installiert ist
+
+**`router.py` – Endpunkte:**
+- `POST /metrics/analyze` – nimmt `{"text": str, "session_id": str}`, gibt alle Metriken zurück, schreibt in `message_metrics`
+- `GET /metrics/history?session_id=&limit=20` – liest `message_metrics` aus DB
+- Berechnung via `asyncio.to_thread` (non-blocking)
+- Neue DB-Spalten (`ttr`, `mattr`, `hapax_ratio`, `avg_sentence_length`, `shannon_entropy`, `hedging_freq`, `self_ref_freq`, `causal_ratio`) werden per PRAGMA-Check angelegt (wie Overnight-Scheduler)
+
+**`config.yaml`:** `modules.metrics.enabled: true`
+
+**`requirements.txt`:** `spacy>=3.7.0` hinzugefügt
+
+**spaCy-Modell einmalig installieren:**
+```
+venv\Scripts\activate
+python -m spacy download de_core_news_sm
+```
+
+---
+
 ### Patch 58: UI-Verbesserungen, Guthaben-Fix, Slider-Buttons, Dialect-Kurzschluss
 
 **Stand:** 2026-04-05
@@ -1585,7 +1648,11 @@ Registrierung in `zerberus/main.py` – zuletzt registriert = zuerst ausgeführt
 | Patch 56 | ✅ Erledigt | RAG-Dokument-Upload (Hel-Dashboard), Pacemaker-Erstpuls + 120 min Laufzeit, README-Erweiterung (RAG + Pacemaker) |
 | Patch 57 | ✅ Erledigt | German BERT Sentiment (VADER entfernt), Dashboard Bug-Fix models/balance, Navigation-Tab, Overnight-Scheduler, Multi-Metrik-Graph |
 | Patch 58 | ✅ Erledigt | UI-Verbesserungen Hel-Dashboard, Guthaben-Fix (last_cost aus DB), Slider ±0.1-Buttons, Dialect-Kurzschluss vor Permission-Check |
-| Patch 59 | 🔜 Nächster Meilenstein | GitHub privat + Kumpels-Beta |
+| Patch 59 | ✅ Erledigt | Pacemaker Double-Start-Fix, Statischer API-Key Infra, Metric Engine Level 1 (TTR, MATTR, Hapax, Shannon Entropy, spaCy-Metriken) |
+| Patch 60 | ✅ Erledigt | BERT-Chart-Fix (COALESCE SQL + yAxisID), TTR-Berechnungs-Fix (Debug-Log), User-Tag in DB (profile_name), Text-Chat Speicherung verifiziert |
+| Patch 61 | ✅ Erledigt | RAG-Upload Mobile-Fix + MIME-Type-Toleranz (suffix-only), Per-User Temperatur-Override (ProfileConfig + JWT + request.state), JWT-Erweiterung um temperature, Hel-Dashboard Profil-Übersicht (readonly), GET /hel/admin/profiles |
+| Patch 62 | ✅ Erledigt | Whisper-Cleaner Bugfixes: ZDF-für-funk-Variante, "Das war's für heute", "für's Zuschauen", "Bis zum nächsten Mal" standalone |
+| Patch 63 | ✅ Erledigt | OpenRouter Provider-Blacklist: config.yaml + llm.py provider.ignore + Hel-Tab "Provider" (chutes + targon default) |
 
 ### Langfristige Meilensteine (2026+)
 
@@ -1710,6 +1777,7 @@ Ideen und Erweiterungen ohne konkrete Zuteilung zu einem Patch:
 | DELETE | `/hel/admin/session/{id}` | Hel | Session löschen |
 | GET | `/hel/metrics/latest_with_costs` | Hel | Metriken + Kosten |
 | GET | `/hel/metrics/summary` | Hel | Zusammenfassung |
+| GET | `/hel/admin/profiles` | Hel | Profil-Liste (ohne password_hash, Patch 61) |
 | GET | `/hel/debug/trace/{session_id}` | Hel | Session-Debug |
 | GET | `/hel/debug/state` | Hel | Systemzustand |
 | GET | `/archive/sessions` | Archive | Session-Liste |
@@ -1853,5 +1921,450 @@ den Systemkontext und die Aufgabe: "Brich dieses System. Melde was du findest."
 
 ---
 
+---
+
+## Patch 64 – Static API Key + Metrik-Darstellung Fix (2026-04-10)
+
+### Static API Key (Aufgabe 1)
+- `config.yaml` → `auth.static_api_key` mit 32-Byte Hex-Zufallskey befüllt
+- Middleware `token_auth_middleware` (`zerberus/core/middleware.py`) prüft bereits seit Patch 59 `X-API-Key` Header vor JWT-Validierung — kein Code-Change nötig
+- Externe Clients senden: `X-API-Key: <key>` → JWT-Prüfung wird übersprungen
+
+### Metrik-Darstellung (Aufgabe 2)
+
+**Problem A – TTR konstant 1.0:**
+- Ursache: `compute_metrics()` in `database.py` berechnet TTR pro Einzelnachricht; kurze Sätze (< 10 Wörter) haben nahezu alle Tokens einmalig → TTR = 1.0
+- Fix: `metrics_history` Endpoint (`hel.py`) fetcht jetzt `i.content`, berechnet Rolling-Window-TTR über letzte 50 Nachrichten in Python
+- Algorithmus: Token-Listen pro Nachricht akkumuliert; Fenster `[i-49 … i]`; `unique(tokens) / total(tokens)`; Feld `rolling_ttr` im JSON-Response
+- Chart JS: Dataset "TTR (Rolling-50)" liest `r.rolling_ttr` (Fallback: `r.ttr`)
+
+**Problem B – BERT-Linie unsichtbar:**
+- Ursache: `bert_sentiment_score` enthielt rohe Modell-Konfidenz (0.5–1.0, immer hoch) — Linie klebte am oberen Rand oder war farblich nicht vom Hintergrund unterscheidbar
+- Fix: SQL CASE-Ausdruck in `metrics_history`:
+  - `positive` → `mm.bert_sentiment_score` (0.5–1.0, obere Hälfte)
+  - `negative` → `1.0 - mm.bert_sentiment_score` (0.0–0.5, untere Hälfte)
+  - `neutral` → `0.5` (Mittellinie)
+  - Fallback (kein BERT-Label): `(i.sentiment + 1.0) / 2.0`
+- Chart Y-Achse: `min: 0, max: 1` explizit, Achsentitel: "Sentiment (0=neg · 0.5=neutral · 1=pos) / TTR / Entropy"
+
 *Dieses Dokument wurde automatisch aus dem Quellcode und der CLAUDE.md generiert.*
-*Stand: 2026-04-05, Patch 54.*
+*Stand: 2026-04-10, Patch 64.*
+
+---
+
+## Patch 65 – Multimodaler Input/Output + RAG-Fix (2026-04-10)
+
+### RAG-Dependencies Fix (Aufgabe 1)
+
+**Problem:** `sentence-transformers==2.2.2` importierte `cached_download` aus `huggingface_hub`, das in Version `>=0.25` entfernt wurde. Resultat: `ImportError`, RAG-Modul komplett nicht verfügbar.
+
+**Fix:**
+- `requirements.txt`: `sentence-transformers>=2.7.0` (gelockerte Untergrenze statt Pin)
+- Installierte Version: `5.4.0` — vollständig kompatibel mit `huggingface_hub 0.36.2`
+- `faiss-cpu==1.7.4` bleibt gepinnt (stabiler als GPU-Variante auf RTX 3060)
+
+### RAG-Upload Multiformat (Aufgabe 2)
+
+- `zerberus/app/routers/hel.py`: `rag_upload` Endpunkt erweitert
+- Neue Formate: `.pdf` via `pdfplumber`, `.md` via UTF-8 Direktlese (wie `.txt`)
+- `.pdf`: `pdfplumber.open()` → seitenweise `extract_text()`, Seiten mit `\n\n` verbunden
+- `.docx`: unverändert (python-docx), jetzt mit try/except gegen Crash
+- Guard-Pattern: `_PDF_OK` (analog zu `_DOCX_OK`) — graceful 422 wenn Library fehlt
+- Neue Dependency: `pdfplumber>=0.10.0` (zieht `pdfminer.six`, `pypdfium2` nach)
+
+### Export-Endpunkt (Aufgabe 3)
+
+**Neuer Endpunkt:** `POST /nala/export`
+
+Request-Body: `{"text": str, "format": "pdf"|"docx"|"md"|"txt", "filename": str}`
+
+| Format | Library | Content-Type |
+|--------|---------|--------------|
+| `pdf`  | reportlab 4.x | `application/pdf` |
+| `docx` | python-docx | `application/vnd.openxmlformats-...` |
+| `md`   | — | `text/markdown; charset=utf-8` |
+| `txt`  | — | `text/plain; charset=utf-8` |
+
+- PDF: `SimpleDocTemplate` A4, 2.5 cm Ränder, Helvetica 11pt, HTML-Escaping für `&<>`
+- DOCX: Heading-1 „Nala – Antwort", zeilenweise `add_paragraph()`
+- Authentifizierung: Bearer-JWT oder `X-API-Key` via bestehende Middleware — kein gesonderter Bypass nötig
+- Neue Dependency: `reportlab>=4.0.0`
+
+### Nala-UI Export-Dropdown (Aufgabe 3 – Frontend)
+
+- `addMessage()` in `NALA_HTML` umgebaut: Bot-Nachrichten erhalten `.msg-wrapper` div
+- Darunter: `.export-row` mit `<select class="export-select">` (4 Optionen)
+- User-Nachrichten: `.msg-wrapper.user-wrapper` (align-self: flex-end, kein Export-Dropdown)
+- `exportMessage(text, fmt)`: `fetch POST /nala/export` → `res.blob()` → `URL.createObjectURL()` → programmatischer `<a>` Download
+- Styling: Dark-Navy-konform, transparenter Select mit Gold-Focus-Border
+
+*Stand: 2026-04-10, Patch 65.*
+
+---
+
+### Patch 66: RAG Chunk-Optimierung
+
+**Stand:** 2026-04-10
+
+**Ziel:** Verbesserung der RAG-Trefferquote durch größere Chunks und mehr Überlapp. Diagnose: 2/11 korrekte Treffer bei Test-Fragen. Ursache: Chunks zu klein (300 Wörter), zu wenig Kontext pro Chunk, Glossar und Dokumentende wurden nicht erreicht.
+
+**Änderungen:**
+
+- `_chunk_text()` in `zerberus/app/routers/hel.py`:
+  - `chunk_size`: 300 → **800 Wörter**
+  - `overlap`: 50 → **160 Wörter** (20 % von 800)
+  - Einheit: **Wörter** (`text.split()`), nicht Token, nicht Zeichen — im Docstring dokumentiert
+- Upload-Logging: INFO-Zeile direkt nach Chunking mit Chunk-Anzahl + Parametern (`chunk_size=800 Wörter, overlap=160`)
+- Kein Hard-Limit auf Dokumentlänge — gesamtes Dokument wird verarbeitet (war bereits so; explizit verifiziert)
+- Neuer Endpunkt `POST /hel/admin/rag/reindex`:
+  - Baut FAISS-Vektoren aus den in `metadata.json` gespeicherten Chunk-Texten neu auf
+  - Sinnvoll nach Embedding-Modell-Wechsel
+  - Für neue Chunk-Größen: erst `/admin/rag/clear`, dann Dokumente neu hochladen (Chunks werden dann mit neuen Parametern erstellt)
+  - Kein Auto-Clear beim Serverstart — bewusstes Triggern verhindert ungewollten Datenverlust
+
+*Stand: 2026-04-10, Patch 66.*
+
+---
+
+### Patch 67: Nala Frontend UI-Fixes
+
+**Stand:** 2026-04-10
+
+**Ziel:** Sieben UI-Verbesserungen + Archiv-Bug-Fix im Nala-Frontend (`nala.py` – inline HTML/CSS/JS).
+
+**Änderungen:**
+
+1. **Neue Session per Hamburger-Menü** – Sidebar enthält jetzt zwei Action-Buttons: „➕ Neue Session" und „💾 Exportieren". `newSession()` generiert neue UUID, leert Chat, startet SSE neu und ruft `fetchGreeting()` auf.
+
+2. **Textarea Auto-Expand** – `<input id="text-input">` wurde zu `<textarea>` umgebaut. Beim Focus expandiert das Feld auf ≥3 Zeilen (max 140px); auf blur kollabiert es zurück auf 1 Zeile wenn leer. Shift+Enter = Zeilenumbruch, Enter = Senden (via `keydown`-Listener).
+
+3. **Vollbild-Button** – `⛶`-Button neben Textarea öffnet Fullscreen-Modal (88vw × 68vh). „Übernehmen" überträgt Text zurück ins Hauptfeld; „Abbrechen" verwirft.
+
+4. **Chat-Bubble Toolbar** – Jede Bubble zeigt beim Hover Timestamp (HH:MM) + 📋-Kopieren-Button. `copyBubble()` nutzt `navigator.clipboard`; visuelles Feedback „✓" für 1,5 Sek.
+
+5. **Chat exportieren** – Sidebar-Button „💾 Exportieren" ruft `exportChat()` auf: sammelt `chatMessages[]`-Array, schreibt `[HH:MM] Rolle: Text`-Format, Download als `.txt`.
+
+6. **Archiv-Bug behoben** – `loadSessions()` und `loadSession()` haben keine Auth-Header mitgeschickt → JWT-Middleware hat alle `/archive/*`-Requests mit 401 abgelehnt. Fix: `profileHeaders()` in beiden fetch-Calls. Zusätzlich: explizite Fehlerbehandlung wenn `response.ok === false`.
+
+7. **Dynamische Startnachricht (Option A)** – Neuer Endpunkt `GET /nala/greeting`. Backend liest System-Prompt des eingeloggten Profils, sucht per Regex nach `Du bist / Ich bin [Name]` und gibt personalisierten Gruß zurück. Frontend: `showChatScreen()` ruft `fetchGreeting()` statt hardcodierter Nachricht. Fallback: „Hallo! Wie kann ich dir helfen?".
+
+**Neue State-Variable:** `chatMessages = []` – wird bei `doLogout()`, `handle401()`, `newSession()` und `loadSession()` zurückgesetzt.
+
+---
+
+### Patch 68: Login-Bug + RAG-Cleanup
+
+**Stand:** 2026-04-10
+
+**Ziel:** Vier Bugfixes aus Patch 67 – Login, Passwort-Auge, RAG-Orchestrator-Chunks, Encoding.
+
+**Bugfixes:**
+
+1. **BUG 1+2 (KRITISCH) – Login + Passwort-Auge** (`nala.py`):
+   - **Ursache:** `crypto.randomUUID()` schlägt in HTTP-Non-Secure-Kontexten (z.B. Zugriff von mobilem Gerät im LAN via `http://192.168.x.x:5000`) mit `TypeError` fehl, weil die Web Crypto API nur in Secure Contexts (HTTPS oder localhost) verfügbar ist. Da der Aufruf auf der obersten Skript-Ebene steht, bricht das gesamte `<script>`-Tag ab — kein Event-Handler wird registriert, kein Button reagiert.
+   - **Fix:** Neue Funktion `generateUUID()` mit Fallback auf `Math.random()`-basierte UUID. Alle `crypto.randomUUID()`-Aufrufe ersetzt.
+   - **Zusätzlich:** `keypress` → `keydown` für Login-Felder (konsistent mit Textarea-Änderung aus Patch 67); `type="button"` am Submit-Button (defensiv).
+
+2. **BUG 3 – Orchestrator-Chunks im RAG-Index** (`orchestrator.py`):
+   - **Ursache:** `_run_pipeline()` ruft nach jeder LLM-Antwort `_rag_index_background()` auf und schreibt die User-Nachricht mit `source: "orchestrator"` in den RAG-Index. Nach einem manuellen Clear + Reupload erscheinen nach dem nächsten Chat-Austausch sofort wieder „orchestrator – 2 Chunks".
+   - **Fix:** Auto-Indexing in Schritt 5 der Pipeline deaktiviert. Die Hilfsfunktionen `_rag_index_sync()` und `_rag_index_background()` bleiben im Code (für evtl. spätere Reaktivierung als Config-Option).
+
+3. **BUG 4 – Fragezeichen vor Dateinamen** (`hel.py`):
+   - **Ursache:** RAG-Quellenliste rendert das 📄-Emoji als JavaScript-Surrogatpaar `\uD83D\uDCC4`. In bestimmten Umgebungen/Encodings erscheint dies als `??`.
+   - **Fix:** Icon durch `[doc]` ersetzt — kein Unicode, keine Encoding-Abhängigkeit.
+
+4. **Bonus – `import io` fehlend** (`nala.py`):
+   - Export-Endpoint (`POST /nala/export`) nutzt `io.BytesIO()`, aber `import io` fehlte. Würde bei jedem PDF/DOCX-Export mit `NameError` scheitern. Ergänzt.
+
+*Stand: 2026-04-10, Patch 68.*
+
+---
+
+## Patch 69a – Bug-Fixes (2026-04-11)
+
+### BUG 1 – Whisper-Cleaner: `$1` → `\1` (`whisper_cleaner.json`)
+- **Problem:** Pattern `(?i)\\b(\\w{2,})\\s+\\1\\b` (Duplikat-Wort-Entfernung) hatte `"replacement": "$1"`.
+  `$1` ist JavaScript-Regex-Syntax; Python's `re.sub` erwartet `\1`. Der Match wurde nicht korrekt durch die erste Capture-Gruppe ersetzt.
+- **Fix:** `"replacement": "$1"` → `"replacement": "\\1"` (nur diesen Eintrag, alle anderen `$1`-Einträge im Cleanup-Abschnitt unverändert).
+
+### BUG 2 – Hel: Kostenanzeige auf Pro-Million-Format (`hel.py`)
+- **Problem:** Kosten wurden als rohe Dezimalzahl angezeigt (z.B. `0.000042`), schwer lesbar.
+- **Fix:** Beide Render-Stellen auf `$X.XX / 1M Tokens` umgestellt (Formel: `cost * 1_000_000`):
+  - „Letzte Anfrage"-Label in `loadDashboard()` (Zeile ~570)
+  - Kostenspalte in der Metriktabelle `#messagesTable` (Zeile ~705)
+- Backend-Werte bleiben unverändert.
+
+### BUG 3 – Patch-67-Endpunkte Verifikation (`nala.py`, `archive.py`)
+- Alle vier Endpunkte aus Patch 67 verifiziert — vollständig implementiert, keine Fixes nötig:
+  - `GET /nala/greeting`: vorhanden, liest Charaktername via Regex aus System-Prompt-Datei ✓
+  - `GET /archive/sessions`: in `archive.py` implementiert, JS-Frontend sendet `profileHeaders()` ✓
+  - `GET /archive/session/{id}`: in `archive.py` implementiert, JS-Frontend sendet `profileHeaders()` ✓
+  - `POST /nala/export`: vollständig für `txt`, `md`, `docx`, `pdf` (reportlab A4) ✓
+
+*Stand: 2026-04-11, Patch 69a.*
+
+---
+
+## Patch 69b – Dokumentations-Restrukturierung (2026-04-11)
+
+- `lessons.md` neu angelegt: zentrales Dokument für alle Gotchas, Fallstricke und hart gelernte Lektionen (Konfiguration, Datenbank, Frontend/JS, RAG, Security, Deployment, Pacemaker)
+- `CLAUDE.md` bereinigt: alle Patch-Changelog-Blöcke (Patch 57–68) entfernt — Archiv verbleibt vollständig in `PROJEKTDOKUMENTATION.md`; CLAUDE.md enthält jetzt nur operative Abschnitte + Verweis auf `lessons.md`
+- `HYPERVISOR.md`: zwei neue Roadmap-Ideen im Backlog ergänzt
+- `PROJEKTDOKUMENTATION.md`: neuer Abschnitt `## 13. Roadmap & Feature-Ideen` angehängt
+
+*Stand: 2026-04-11, Patch 69b.*
+
+---
+
+## 13. Roadmap & Feature-Ideen
+
+### Metriken: Interaktive Auswertung
+Vorbild: Sleep as Android Statistik-Screen.
+- Zeiträume frei wählbar (Tag / Woche / Monat / custom)
+- LLM-Auswertung auf Knopfdruck: Zusammenfassung der Sprachmetriken als Klartext
+- Vektorieller Zoom (SVG/Canvas/D3), Mobile-first
+- Erweiterte Metriken (MATTR, Hapax, Hedging, Selbstreferenz, Kausalität)
+Konzept noch nicht final — erst ausarbeiten wenn Metrik-Engine stabil läuft.
+
+### RAG: Automatisiertes Evaluation-Skript
+- Claude Code schreibt Testskript: N Fragen → RAG-Antworten → automatische Bewertung
+- Bewertungsframework: RAGAS oder eigene Scoring-Logik
+- Benchmark-Docs als Grundlage + eigene Testfragen
+Voraussetzung: RAG-Mobile-Upload-Bug muss zuerst behoben sein.
+
+### Patch 70 – Nala UI/UX Overhaul (geplant)
+
+**Bugs zu fixen:**
+- Textarea-Collapse: bleibt groß nach erstem Blur — soll nach Blur auf 1 Zeile kollabieren
+- Begrüßungstext: abgerissener Satz → einfachere Begrüßung + tageszeit-abhängig (Morgen/Tag/Abend/Nacht)
+- Whisper-Insert: Transkript überschreibt immer alles → Logik: Selektion=ersetzen, Cursor=einfügen, leer=anfügen
+
+**Features:**
+- Ladeindikator (Spinner/Sanduhr) während Whisper + LLM-Antwort läuft
+- Archiv-Sidebar: nur Titel + 2-Zeilen-Preview statt Volltext
+- Archiv-Volltextsuche: Suche in Chat-Inhalten, nicht nur Titeln
+- Pin-Funktion: Chats anpinnen (Icon bereits vorhanden, Funktion fehlt)
+- Theme-Editor pro User: alle Oberflächenfarben einstellbar, bis zu 3 Favoriten, später Hintergrundbild-Upload
+
+**Design-Overhaul:**
+- Moderne Optik: Tiefeneffekt auf Buttons, leicht metallisch/texturiert
+- Weniger klobig, feingliedriger, zeitgemäßes UI
+
+---
+
+### Patch 71 – Jojo Login Fix (2026-04-12)
+
+**Problem:** `user2` (Jojo) hatte `password_hash: ''` — leerer String. Beim Login-Versuch schlug der bcrypt-Vergleich lautlos fehl, der Button reagierte nicht.
+
+**Änderung:**
+- `config.yaml`: `profiles.user2.password_hash` mit gültigem bcrypt-Hash belegt (`rounds=12`, Passwort: `jojo123`)
+
+**Betroffene Dateien:**
+- `config.yaml` (einzige Änderung)
+
+---
+
+### Patch 72 – Nala Begrüßung Fix (2026-04-12)
+
+**Problem:** `GET /nala/greeting` gab „Hallo! Ich bin ein. Wie kann ich dir helfen?" zurück. Ursache: Regex `(?:du bist|ich bin)\s+(\w+)` mit `re.IGNORECASE` traf auf „Du bist ein präziser..." und extrahierte den Artikel „ein" als Namen.
+
+**Änderungen in `zerberus/app/routers/nala.py`:**
+
+1. **Regex-Fix:** Nach dem Regex-Match wird `candidate[0].isupper()` geprüft. Nur großgeschriebene Wörter werden als Name übernommen — Artikel wie „ein", „eine", „der" werden damit zuverlässig ausgeschlossen.
+
+2. **Tageszeit-abhängige Begrüßung:**
+   - 06:00–11:59 → „Guten Morgen, [Name]! Wie kann ich dir helfen?"
+   - 12:00–17:59 → „Hallo, [Name]! Wie kann ich dir helfen?"
+   - 18:00–21:59 → „Guten Abend, [Name]! Wie kann ich dir helfen?"
+   - 22:00–05:59 → „Hallo, [Name]! Wie kann ich dir helfen?"
+
+3. **Greeting-Format:** Von „Hallo! Ich bin [Name]. Wie kann ich dir helfen?" auf „[Prefix], [Name]! Wie kann ich dir helfen?" umgestellt.
+
+4. **Sauberer Fallback:** Kein Name gefunden → „[Prefix]! Wie kann ich dir helfen?" (kein abgerissener Satzteil mehr).
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/nala.py` (Funktion `get_greeting`)
+
+---
+
+### Patch 73 – Self-Service Passwort-Reset (2026-04-12)
+
+**Ziel:** Nala-User können ihr eigenes Passwort direkt in der App ändern, ohne Admin-Eingriff über Hel.
+
+**Backend – `zerberus/app/routers/nala.py`:**
+
+Neuer Endpunkt `POST /nala/change-password`:
+1. Profil-Key wird ausschließlich aus dem JWT-Token gelesen (`request.state.profile_name`) — kein User kann fremde Passwörter ändern.
+2. Altes Passwort wird per `bcrypt.checkpw` gegen den in `config.yaml` gespeicherten Hash verifiziert.
+3. Bei falschem altem Passwort: HTTP 401 `{ "detail": "Altes Passwort falsch" }`.
+4. Neues Passwort wird mit `bcrypt.hashpw(..., bcrypt.gensalt(rounds=12))` gehasht.
+5. `_save_profile_hash(profile_key, new_hash)` schreibt den neuen Hash in `config.yaml`.
+6. `reload_settings()` aktiviert den neuen Hash sofort ohne Server-Neustart.
+7. Rückgabe: HTTP 200 `{ "detail": "Passwort geändert" }`.
+
+Neues Pydantic-Modell `ChangePasswordRequest`:
+```python
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+```
+
+**Frontend – Sidebar + Modal:**
+
+- Neuer Button „🔑 Passwort ändern" in der Nala-Sidebar (unter „Neue Session" / „Exportieren").
+- Grüne Status-Meldung `✓ Passwort gespeichert` erscheint in der Sidebar nach Erfolg (3 s sichtbar).
+- Klick öffnet Modal (gleicher Stil wie das Vollbild-Modal aus Patch 67) mit drei Feldern:
+  - Aktuelles Passwort (`type=password`)
+  - Neues Passwort (`type=password`)
+  - Neues Passwort wiederholen (`type=password`)
+- Clientseitige Validierung vor dem API-Call:
+  - Neue Passwörter müssen übereinstimmen → rote Fehlermeldung im Modal
+  - Mindestlänge 6 Zeichen → rote Fehlermeldung im Modal
+- Bei API-Fehler (z. B. falsches altes PW): `detail` aus der JSON-Antwort wird im Modal angezeigt.
+- JS-Funktionen: `openPwModal()`, `closePwModal()`, `submitPwChange()`.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/nala.py` (Modell `ChangePasswordRequest`, Endpunkt `/change-password`, Sidebar-HTML, Modal-HTML, JS-Funktionen)
+
+---
+
+### Patch 76 – Nala UI: Bug-Fixes + Ladeindikator (2026-04-12)
+
+**Ziel:** Drei UI-Verbesserungen: Textarea-Collapse-Bug, Whisper-Insert-Logik, Ladeindikator für Whisper + LLM.
+
+**Bug 1 – Textarea kollabiert nicht nach Blur:**
+
+- `textInput.addEventListener('blur', ...)`: Wenn `textInput.value.trim() === ''`, wird `textInput.style.height` jetzt auf `''` zurückgesetzt (CSS-Default, 1 Zeile via `min-height`).
+- Vorher: explizites `'48px'` hatte dasselbe Ziel, schlug aber bei bestimmten Zuständen fehl.
+
+**Bug 2 – Whisper-Insert überschrieb immer den gesamten Inhalt:**
+
+In `mediaRecorder.onstop` neue Insert-Logik (statt blindem `textInput.value = transcript`):
+1. Textarea leer → `textInput.value = transcript` (bisheriges Verhalten)
+2. Cursor ohne Selektion (`selectionStart === selectionEnd`) → Transkript an Cursorposition einfügen
+3. Aktive Textauswahl (`selectionStart !== selectionEnd`) → Auswahl durch Transkript ersetzen
+
+**Feature – Ladeindikator Whisper:**
+
+- Neue CSS-Klasse `.mic-btn.processing` + `@keyframes pulseGold`: Mikrofon-Button pulsiert gold während der Whisper-API-Call läuft.
+- Button wird `disabled` gesetzt während Verarbeitung, `finally`-Block stellt Zustand wieder her.
+
+**Feature – Typing-Indicator bei LLM-Antwort:**
+
+- Neue CSS-Klasse `.typing-indicator` + `.typing-dot` + `@keyframes typingBounce`: drei springende Gold-Punkte in einer Bot-Bubble.
+- JS-Funktionen `showTypingIndicator()` / `removeTypingIndicator()`.
+- SSE-Handler: bei Event `llm_start` → `showTypingIndicator()`.
+- `sendMessage()`: vor `addMessage(reply, 'bot')` → `removeTypingIndicator()`; ebenso im `catch`-Branch.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/nala.py` (CSS, JS-Inline-Sektion)
+
+### Patch 78 – Login-Fix + config.json Cleanup + Profil-Key Rename (2026-04-14)
+
+**Ziel:** Login-Robustheit erhöhen, verwaiste config.json entfernen, Profil-Key bereinigen.
+
+**Block A – Login case-insensitive:**
+- `nala.py` `POST /nala/profile/login`: statt `req.profile.lower() not in profiles` iteriert die Funktion jetzt über alle Profile und vergleicht den Eingabewert case-insensitive sowohl mit dem Key als auch mit `display_name`. Login mit „Jojo", „JOJO", „jojo" oder „user2" (solange Key existiert) funktioniert.
+
+**Block B – config.json gelöscht:**
+- `config.json` im Projektroot existierte als Überbleibsel — gelöscht. `config.yaml` bleibt die einzige Konfigurationsquelle (CLAUDE.md Regel 4).
+
+**Block C – Profil-Key user2 → jojo:**
+- DB-Check: `user2` nirgendwo in `interactions.profile_name` → Umbenennung sicher.
+- `config.yaml` + `config.yaml.example`: Key `user2` → `jojo` (display_name, password_hash, alle anderen Felder unverändert).
+- Keine Codestellen hatten den Key hardcodiert.
+
+---
+
+### Patch 77 – Nala UI Overhaul: Archiv + Design + Theme-Editor (2026-04-12)
+
+**Ziel:** Drei Bereiche überarbeitet: Archiv-Sidebar Darstellung + Suche + Pin, visuelles Design, Theme-Editor.
+
+**Block A – Archiv-Sidebar:**
+
+A1 – Session-Darstellung neu:
+- `.session-item` erhält `border-left: 3px solid transparent` + Transition → Gold-Border auf hover.
+- Neues Render-System `renderSessionList()` statt direktem DOM-Aufbau in `loadSessions()`.
+- Jeder Eintrag zeigt: Titel (erste User-Nachricht, max 40 Zeichen + „…"), Timestamp (klein, rechts), optionalen Preview-Text (bis 80 Zeichen aus derselben Nachricht).
+
+A2 – Volltextsuche:
+- `<input type="search" class="archive-search" id="archive-search">` über der Session-Liste.
+- `input`-Event → `renderSessionList()` filtert `window._lastSessions` client-seitig. Kein Backend-Call.
+
+A3 – Pin-Funktion:
+- `getPinnedIds()` / `setPinnedIds()` lesen/schreiben `sessionStorage('pinned_sessions')` als JSON-Array.
+- `togglePin(sid, btn)` togglet Pin-Status, ruft `renderSessionList()` neu auf.
+- Gepinnte Sessions immer oben in der Liste, ausgefülltes 📌-Icon.
+
+**Block B – Visuelles Design:**
+
+B1 – Buttons: `box-shadow: 0 2px 8px rgba(240,180,41,0.3)`, hover `scale(1.05)` + intensiverer Schatten. `transition: all 0.15s ease`.
+
+B2 – Chat-Bubbles: User `border-radius: 18px 18px 4px 18px` + Gold-Glow. Bot `border-radius: 18px 18px 18px 4px`. Padding 13px/18px, Schriftgröße 15px.
+
+B3 – Input-Textarea: `border: 1px solid rgba(240,180,41,0.3)`, focus `box-shadow: 0 0 0 2px rgba(240,180,41,0.15)`.
+
+B4 – Sidebar-Header: Neue `.sidebar-header`-Div mit `border-bottom: 1px solid rgba(240,180,41,0.2)`. Buttons `border-radius: 8px`.
+
+B5 – Input-Area: `backdrop-filter: blur(8px)`.
+
+**Block C – Theme-Editor:**
+
+C1 – Einstiegspunkt: Button „🎨 Theme" neben „🔑 Passwort" in Sidebar-Header.
+
+C2 – Modal: 4 `<input type="color">` für `--color-primary`, `--color-primary-mid`, `--color-gold`, `--color-text-light`. `oninput="themePreview()"` → Live-Vorschau via `document.documentElement.style.setProperty()`.
+
+C3 – Persistenz: „Speichern" → `localStorage('nala_theme')` als JSON. Früher Load-Block im `<head>` setzt CSS-Variablen vor dem ersten Render. „Zurücksetzen" → Defaults, löscht localStorage-Eintrag.
+
+C4 – 3 Favoriten-Slots: `saveFav(n)` / `loadFav(n)` in `localStorage('nala_theme_fav_1/2/3')`.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/nala.py` (CSS, HTML, JS-Inline-Sektion)
+
+---
+
+### Patch 78b – RAG/History-Kontext-Fix (2026-04-14)
+
+**Ziel:** LLM soll Session-History nicht als aktiven Dialog behandeln, RAG nur bei echten Wissensfragen triggern, und bei fehlenden Dokumentinfos auf Allgemeinwissen zurückgreifen dürfen.
+
+**Block A – Session-History als Tonreferenz:**
+- `_run_pipeline()` in `orchestrator.py`: History-Messages werden nicht mehr als separate user/assistant-Turns in die `messages`-Liste eingefügt, sondern als gelabelter Textblock (`[VERGANGENE SESSION ... ENDE VERGANGENE SESSION]`) in den System-Prompt injiziert.
+- Dadurch behandelt das LLM alte Nachrichten als Kontext/Tonreferenz, nicht als laufendes Gespräch.
+
+**Block B – RAG nur bei echten Wissensfragen:**
+- Neue `skip_rag`-Logik vor dem RAG-Call: RAG wird übersprungen wenn `intent == "CONVERSATION"` oder wenn die Nachricht weniger als 15 Wörter hat und kein Fragezeichen enthält.
+- Bei Skip: kein `_rag_search()`-Aufruf, keine RAG-Ergebnisse im Prompt, direkter LLM-Call.
+
+**Block C – System-Prompt Fallback-Permission:**
+- Nach dem Laden des Profil-System-Prompts wird geprüft ob der Text bereits eine Formulierung enthält die Allgemeinwissen erlaubt (Keywords: "allgemein", "wissen", "smalltalk").
+- Wenn nicht vorhanden: Fallback-Satz wird ans Ende des System-Prompts angehängt: „Wenn keine spezifischen Dokumentinformationen verfügbar sind, beantworte allgemeine Fragen aus deinem Allgemeinwissen und führe normale Gespräche."
+- Bestehender System-Prompt wird nie überschrieben, nur ergänzt.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/orchestrator.py` (`_run_pipeline()`: History-Injection, RAG-Skip, Fallback-Permission)
+
+*Stand: 2026-04-14, Patch 78b.*
+
+---
+
+## Patch 79 – start.bat + Theme-Editor + Export-Timestamp (2026-04-14)
+
+**Block A – start.bat: Terminal sichtbar:**
+- `start.bat` verifiziert: `uvicorn` läuft im Vordergrund (kein `start /B`), Terminal bleibt offen, Scrollback erhalten. `pause` am Ende verhindert Schließen nach Ctrl+C. Keine Änderungen nötig.
+
+**Block B – Theme-Editor: hardcodierte Farbe tokenisiert:**
+- Neues CSS-Token `--color-accent: #ec407a` im `:root`-Block angelegt.
+- `.header` und `.user-message` verwenden jetzt `var(--color-accent)` statt hardcodiertem Wert / JS-Override.
+- Login-Handler setzt `--color-accent` via `setProperty()` statt direktem `style.background`.
+- Direkte Farbzuweisung auf User-Bubbles (`msgDiv.style.background = color`) entfernt — CSS übernimmt.
+- Theme-Editor-Modal: 5. Color-Picker „Akzent / Header" (`#tc-accent`) ergänzt.
+- `openThemeModal()`, `themePreview()`, `saveTheme()`, `resetTheme()`, `saveFav()`, `loadFav()`: `accent`-Feld integriert.
+- Early-Load im `<head>`: `v.accent` wird aus `nala_theme` geladen.
+
+**Block C – Export: Timestamp im Dateinamen:**
+- `exportChat()`: Dateiname von `nala_chat_YYYY-MM-DD.txt` auf `nala_export_YYYY-MM-DD_HH-MM.txt` geändert (ISO-Slice + Replace).
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/nala.py` (CSS `:root`, `.header`, `.user-message`, Theme-Editor-Modal, alle Theme-JS-Funktionen, `exportChat()`)
+
+*Stand: 2026-04-14, Patch 79.*

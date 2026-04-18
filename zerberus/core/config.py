@@ -1,5 +1,6 @@
 """
 Zentrale Konfiguration mit Pydantic und YAML.
+Patch 61: ProfileConfig mit temperature-Feld (Per-User Temperatur-Override).
 """
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -85,6 +86,25 @@ class ModuleConfig(BaseModel):
 class AuthConfig(BaseModel):
     token_secret: str = "CHANGE_ME"
     token_expire_minutes: int = 480
+    static_api_key: str = ""  # Patch 59: X-API-Key Header als Alternative zu Bearer
+
+class OpenRouterConfig(BaseModel):
+    """Patch 63: OpenRouter Provider-Blacklist."""
+    provider_blacklist: List[str] = []
+
+
+class ProfileConfig(BaseModel):
+    """Patch 61: Profil-Konfiguration mit optionalem Temperatur-Override."""
+    display_name: str = ""
+    password_hash: str = ""
+    system_prompt_file: str = "system_prompt.json"
+    theme_color: str = "#ec407a"
+    permission_level: str = "guest"
+    allowed_model: Optional[str] = None
+    temperature: Optional[float] = None  # null = globale Einstellung aus legacy.settings.ai_temperature
+
+    class Config:
+        extra = "allow"
 
 class Settings(BaseSettings):
     environment: str = "development"
@@ -99,6 +119,8 @@ class Settings(BaseSettings):
     dialects: Dict[str, DialectConfig] = {}
     whisper_cleaner: WhisperCleanerConfig
     modules: Dict[str, Any] = {}
+    profiles: Dict[str, Any] = {}  # Patch 61: ProfileConfig-Einträge (raw Dict, da nala.py direkt yaml liest)
+    openrouter: OpenRouterConfig = OpenRouterConfig()  # Patch 63: Provider-Blacklist
 
     class Config:
         env_file = ".env"
