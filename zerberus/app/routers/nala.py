@@ -2353,8 +2353,8 @@ async def voice_endpoint(
             logger.info(f"🗣️ Dialekt erkannt: {dialect_name}")
             session_id = request.headers.get("X-Session-ID") or "nala-default"
             try:
-                await store_interaction("user", cleaned, session_id=session_id, profile_name=profile_name or "")
-                await store_interaction("assistant", dialect_response, session_id=session_id, profile_name=profile_name or "")
+                await store_interaction("user", cleaned, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
+                await store_interaction("assistant", dialect_response, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
             except Exception as e:
                 logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")
             # Transkript zurückgeben – kein Auto-Send im Browser
@@ -2369,7 +2369,7 @@ async def voice_endpoint(
         # 5. Whisper-Roheingabe speichern (voice-spezifisch)
         # ------------------------------------------------------------------
         try:
-            await store_interaction("whisper_input", raw_transcript, integrity=0.9, profile_name=profile_name or "")
+            await store_interaction("whisper_input", raw_transcript, integrity=0.9, profile_name=profile_name or "", profile_key=profile_name or None)
         except Exception as e:
             logger.warning(f"⚠️ store_interaction (whisper_input) fehlgeschlagen (non-fatal): {e}")
 

@@ -495,8 +495,8 @@ async def _run_pipeline(
     # ------------------------------------------------------------------
     if session_id:
         try:
-            await store_interaction("user", message, session_id=session_id, profile_name=profile_name or "")
-            await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "")
+            await store_interaction("user", message, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
+            await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
             await save_cost(session_id, model, p_tok, c_tok, cost)
         except Exception as e:
             logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")

@@ -2461,3 +2461,44 @@ C4 – 3 Favoriten-Slots: `saveFav(n)` / `loadFav(n)` in `localStorage('nala_the
 - Hel öffnen → Metriken-Akkordeon → Chart mit dünnen Linien, Zeitraum-Chips schalten, Metrik-Pills togglen, Pinch-Zoom auf Touch.
 
 *Stand: 2026-04-18, Patch 91.*
+
+---
+
+### Patch 92 – DB-Fix: `profile_key` in `interactions` + Alembic-Setup (2026-04-18)
+
+**Ziel:** Zuverlässige User-Zuordnung in `interactions` (bisher nur per clientseitiger Session-ID, unzuverlässig). Parallel das Migrations-Tooling (Alembic) etablieren, damit künftige Schema-Änderungen versioniert laufen.
+
+**Block A – `profile_key`-Spalte:**
+- Neue Spalte `profile_key TEXT DEFAULT NULL` in `interactions` (zusätzlich zur bestehenden `profile_name`-Spalte aus Patch 60, die bleibt für Rückwärtskompatibilität).
+- Migration in `database.py::init_db` (idempotent, PRAGMA-Check): ALTER TABLE nur wenn Spalte fehlt, danach `UPDATE interactions SET profile_key = profile_name WHERE profile_name IS NOT NULL AND profile_name != ''`.
+- Index `idx_interactions_profile_key(profile_key, timestamp DESC)` per `CREATE INDEX IF NOT EXISTS`.
+- SQLAlchemy-Model `Interaction` bekommt `profile_key = Column(String(100), nullable=True, index=True)`.
+- `store_interaction()` bekommt optionalen `profile_key`-Parameter (Fallback auf `profile_name`). Call-Sites in `legacy.py`, `orchestrator.py`, `nala.py` geben `profile_key=profile_name or None` mit.
+- `GET /hel/metrics/history` nutzt die Spalte ab jetzt tatsächlich (Patch 91 hatte den Parameter vorsorglich eingebaut).
+- Migrations-Ergebnis auf der bestehenden DB: 76/4667 Zeilen haben `profile_key` (alle, die bisher eine `profile_name` hatten — typisch `'chris'`; Rest bleibt `NULL`, weil pre-Patch-60-Daten keinen User-Tag hatten).
+- Backup vor der Migration: `bunker_memory_backup_patch92.db`.
+
+**Block B – Alembic:**
+- `alembic init alembic` im Projektroot — erzeugt `alembic.ini`, `alembic/env.py`, `alembic/versions/`.
+- `alembic.ini`: `sqlalchemy.url = sqlite:///bunker_memory.db`.
+- Baseline-Revision `7feab49e6afe_baseline_patch92_profile_key.py`:
+  - `_has_column(conn, table, column)`-Helper per PRAGMA.
+  - `upgrade()`: legt `profile_key`-Spalte + Daten-Migration + Index an, alles idempotent. Läuft auf frischen DBs wie auf bereits migrierten.
+  - `downgrade()`: Index droppen, Spalte per `batch_alter_table` entfernen.
+- `alembic stamp head` — markiert die Baseline als „schon angewandt", da die Migration bereits manuell lief.
+- **Kein Auto-Upgrade beim Serverstart.** Migrations-Anwendung kontrolliert per `alembic upgrade head`.
+
+**Betroffene Dateien:**
+- `zerberus/core/database.py` (Model + `init_db` + `store_interaction`)
+- `zerberus/app/routers/legacy.py`, `orchestrator.py`, `nala.py` (Call-Sites)
+- `alembic.ini`, `alembic/env.py`, `alembic/script.py.mako`, `alembic/versions/7feab49e6afe_baseline_patch92_profile_key.py` (neu)
+- `CLAUDE.md`, `HYPERVISOR.md`, `lessons.md`, `.gitignore`, `docs/PROJEKTDOKUMENTATION.md` (Pflicht-Updates)
+- `bunker_memory_backup_patch92.db` (Backup, nicht ins Git)
+
+**Verifikation:**
+- `PRAGMA table_info(interactions)` → `profile_key` in Spaltenliste
+- `SELECT COUNT(*) FROM interactions WHERE profile_key IS NOT NULL` → 76
+- `alembic current` → `7feab49e6afe (head)`
+- Neuer Chat → Eintrag hat `profile_key` gesetzt (nach Server-Restart)
+
+*Stand: 2026-04-18, Patch 92.*

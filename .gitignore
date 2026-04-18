@@ -8,6 +8,7 @@ config.yaml
 
 # Datenbank
 bunker_memory.db
+bunker_memory_backup_*.db
 
 # Python
 venv/

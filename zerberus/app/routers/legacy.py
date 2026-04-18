@@ -130,8 +130,8 @@ async def chat_completions(
     dialect_response = check_dialect_shortcut(last_user_msg, settings)
     if dialect_response:
         try:
-            await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "")
-            await store_interaction("assistant", dialect_response, session_id=session_id, profile_name=profile_name or "")
+            await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
+            await store_interaction("assistant", dialect_response, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
             await update_interaction()
         except Exception as e:
             logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")
@@ -148,8 +148,8 @@ async def chat_completions(
         if intent not in allowed_intents:
             logger.info(f"🔒 Permission-Block (legacy): '{permission_level}' darf '{intent}' nicht ausführen")
             try:
-                await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "")
-                await store_interaction("assistant", _HITL_MESSAGE, session_id=session_id, profile_name=profile_name or "")
+                await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
+                await store_interaction("assistant", _HITL_MESSAGE, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
                 await update_interaction()
             except Exception:
                 pass
@@ -258,8 +258,8 @@ async def chat_completions(
         answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
 
     try:
-        await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "")
-        await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "")
+        await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
+        await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
         await update_interaction()
     except Exception as e:
         logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")

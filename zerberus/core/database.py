@@ -47,7 +47,8 @@ class Interaction(Base):
 
     id = Column(Integer, primary_key=True)
     session_id = Column(String(36), index=True, nullable=True)
-    profile_name = Column(String(100), nullable=True, default="")  # Patch 60: User-Tag
+    profile_name = Column(String(100), nullable=True, default="")  # Patch 60: User-Tag (legacy)
+    profile_key = Column(String(100), nullable=True, index=True)   # Patch 92: zuverlässiger User-Schlüssel
     timestamp = Column(DateTime, default=datetime.utcnow)
     role = Column(String(50))
     content = Column(Text)
@@ -112,6 +113,20 @@ async def init_db():
         if "profile_name" not in existing_cols:
             await conn.execute(text("ALTER TABLE interactions ADD COLUMN profile_name TEXT DEFAULT ''"))
             logger.info("✅ interactions.profile_name Spalte hinzugefügt (Patch 60)")
+        # Patch 92: profile_key Spalte hinzufügen (zuverlässiger User-Schlüssel, JWT-bound)
+        if "profile_key" not in existing_cols:
+            await conn.execute(text("ALTER TABLE interactions ADD COLUMN profile_key TEXT DEFAULT NULL"))
+            # Bestehende Daten migrieren: profile_name → profile_key wenn vorhanden
+            await conn.execute(text(
+                "UPDATE interactions SET profile_key = profile_name "
+                "WHERE profile_name IS NOT NULL AND profile_name != ''"
+            ))
+            logger.warning("✅ [PATCH-92] interactions.profile_key Spalte hinzugefügt + profile_name migriert")
+        # Patch 92: Index für schnelle Per-User-Queries
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_interactions_profile_key "
+            "ON interactions(profile_key, timestamp DESC)"
+        ))
     logger.info("✅ Datenbank bereit")
 
 async def get_db() -> AsyncSession:
@@ -123,15 +138,20 @@ async def store_interaction(
     content: str,
     session_id: str = None,
     integrity: float = 1.0,
-    profile_name: str = "",  # Patch 60: User-Tag für DB-Level-Trennung
+    profile_name: str = "",    # Patch 60: User-Tag (legacy, bleibt für Rückwärtskompatibilität)
+    profile_key: str = None,   # Patch 92: zuverlässiger User-Schlüssel aus JWT
 ):
     sentiment = _compute_sentiment(content)
     word_count = len(content.split())
+
+    # Patch 92: profile_key fällt auf profile_name zurück wenn nicht gesetzt
+    effective_profile_key = profile_key if profile_key else (profile_name or None)
 
     async with _async_session_maker() as session:
         interaction = Interaction(
             session_id=session_id,
             profile_name=profile_name or "",
+            profile_key=effective_profile_key,
             role=role,
             content=content,
             sentiment=sentiment,
@@ -143,7 +163,7 @@ async def store_interaction(
         # Metriken berechnen und speichern
         metrics = compute_metrics(content)
         await save_metrics(interaction.id, metrics)
-    logger.debug(f"💾 Gespeichert: {role}, {word_count} Wörter, Sentiment {sentiment:.2f}, profile={profile_name or '–'}")
+    logger.debug(f"💾 Gespeichert: {role}, {word_count} Wörter, Sentiment {sentiment:.2f}, profile={effective_profile_key or '–'}")
 
 async def get_all_sessions(limit: int = 50) -> list:
     async with _async_session_maker() as session:

@@ -81,3 +81,9 @@
 - Chart.js `new Chart()` mehrfach auf dasselbe Canvas → Memory-Leak. IMMER `metricsChart.destroy()` vor dem Neu-Rendern, UND Referenz auf `null` setzen (Patch 91).
 - Für responsives Chart-Layout braucht der Container eine feste Höhe (`position: relative; height: 280px`) — ohne explizite Höhe rendert Chart.js mit `responsive: true` entweder 0-Pixel oder bläht sich unkontrolliert auf (Patch 91).
 - Dünne Linien (`borderWidth: 1.5`) + `pointRadius: 0` + `pointHitRadius: 12` ist der sauberste Look für viele parallel laufende Metriken: keine Punkte-Wolke, aber großzügige Touch-Zone für Tooltips (Patch 91).
+
+## DB-Migrationen
+- DB-Migrationen IMMER idempotent schreiben: `PRAGMA table_info`-Check vor `ALTER TABLE`, `CREATE INDEX IF NOT EXISTS`. Das erlaubt parallele Startup-Hook-Migration UND Alembic-Revisionen ohne Konflikt (Patch 92).
+- Vor jeder Schema-Änderung an `bunker_memory.db`: manuelles Backup (`cp bunker_memory.db bunker_memory_backup_patch{N}.db`). Die DB ist heilig und darf nicht durch eine fehlerhafte Migration sterben (Patch 92).
+- Alembic-Baseline-Revision NACH manueller Spalten-Migration erstellen + `alembic stamp head` — sonst versucht `alembic upgrade head` beim nächsten Lauf, die Spalte nochmal anzulegen. Idempotente Migrationen (`_has_column`-Check) verzeihen das, aber sauberer ist stamp (Patch 92).
+- Wenn der Server bereits läuft und `init_db` die neue Spalte beim Start hätte anlegen sollen: die laufende Session hat noch das alte Schema. Entweder manuell `ALTER TABLE` + Server-Restart, oder Server-Restart allein (dann greift init_db). Nur Code-Änderung reicht nicht (Patch 92).

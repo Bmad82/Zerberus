@@ -45,6 +45,15 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 
 - `config.yaml` → `auth.static_api_key` — wenn gesetzt, akzeptiert die JWT-Middleware den `X-API-Key` Header als Alternative zu Bearer
 
+## Datenbank-Migrationen (Alembic, seit Patch 92)
+
+- Alembic-Config: `alembic.ini` im Projektroot, Revisionen unter `alembic/versions/`
+- Manueller Aufruf — **kein Auto-Upgrade beim Serverstart**
+- Anwenden: `alembic upgrade head`
+- Neue Revision: `alembic revision -m "beschreibung"`, dann manuell in upgrade/downgrade editieren
+- Migrationen IMMER idempotent schreiben (`PRAGMA table_info`-Check, `IF NOT EXISTS`)
+- Vor jeder Schema-Änderung: DB-Backup (`cp bunker_memory.db bunker_memory_backup_patch{N}.db`)
+
 ## Weiterführende Doku
 
 - **Fallstricke & Lektionen:** `lessons.md` — Gotchas, gelernte Fehler, Plattform-Eigenheiten

@@ -1,8 +1,14 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 91 (2026-04-18)*
+*Letzte Aktualisierung: Patch 92 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 92** – DB-Fix: `profile_key` in `interactions` + Alembic-Setup (2026-04-18)
+- Block A: Neue Spalte `profile_key TEXT DEFAULT NULL` in `interactions` per `ALTER TABLE`. Migration idempotent in `database.py::init_db` (PRAGMA-Check). Altdaten: `profile_name → profile_key` für 76/4667 Zeilen kopiert. Index `idx_interactions_profile_key(profile_key, timestamp DESC)` angelegt. `store_interaction()` bekommt optionalen `profile_key`-Parameter (Fallback auf `profile_name`). Alle Call-Sites in `legacy.py`, `orchestrator.py`, `nala.py` schreiben jetzt `profile_key=profile_name or None`.
+- Block B: Alembic 1.12.1 initialisiert — `alembic.ini` mit `sqlite:///bunker_memory.db`, Baseline-Revision `7feab49e6afe_baseline_patch92_profile_key` dokumentiert den IST-Zustand (idempotent: `_has_column`-Check + `CREATE INDEX IF NOT EXISTS`). Head per `alembic stamp head` gesetzt. **Kein Auto-Upgrade beim Serverstart** — kontrolliert per `alembic upgrade head`.
+- Hel-API `/hel/metrics/history` kann `profile_key` jetzt tatsächlich filtern (Patch 91 hatte es schon vorbereitet).
+- Backup: `bunker_memory_backup_patch92.db` vor der Migration gezogen.
+
 **Patch 91** – Metriken-Dashboard Overhaul (Chart.js + Zeiträume + Metrik-Toggles) (2026-04-18)
 - Block A: `GET /hel/metrics/history` erweitert um `from_date`/`to_date` (ISO, optional inkl. Tagesende), `profile_key` (nur wirksam wenn Patch-92-Spalte existiert — graceful PRAGMA-Check), Default-Limit 50 → 200. Response-Envelope: `{meta: {from,to,count,profile_key,profile_key_supported}, results: [...]}`. Zusätzliche Frontend-Metriken berechnet: `hapax_ratio`, `avg_word_length`, `created_at`-Alias.
 - Block B: Chart.js 4.4.7 + `chartjs-plugin-zoom` 2.0.1 + hammer.js 2.0.8 via CDN eingebunden (Pinch-Zoom Touch). Neue UI: 5 Zeitraum-Chips (7/30/90 Tage, Alles, Custom mit Date-Picker), 5 Metrik-Toggle-Pills (BERT Sentiment, Rolling-TTR, Shannon Entropy, Hapax Ratio, Ø Wortlänge) mit Info-Icons (ⓘ) + Alert-Erklärung, Zoom-Reset-Button. Chart dünne Linien (1.5 px), keine Punkte, Tooltips mit dunkler Hel-Optik.
@@ -184,7 +190,7 @@
 ## Offene Items (Backlog)
 1. Manuell getippter Text → DB-Speicherung verifizieren
 2. [Patch 89] RAG-Qualität nach R-03-Fix: **10/11 JA, 1/11 TEILWEISE, 0 NEIN**. Q4 + Q10 geheilt. Offen: **Q11** (Aggregat-Query „Nenn alle Momente wo…") — Reranker liefert Glossar-Definition, konkrete Szenen bleiben über mehrere Chunks verteilt. **Nächster Kandidat: R-04 (Query-Expansion) oder LLM-seitige Multi-Chunk-Aggregation**, nicht mehr Retrieval-Qualität. R-02 (Embedding-Upgrade) nach hinten verschoben — Reranker kompensiert MiniLM-Schwäche ausreichend. Reports: `rag_eval_delta_patch89.md`.
-3. Alembic-Setup (Dauerläufer)
+3. ~~Alembic-Setup (Dauerläufer)~~ ✅ Patch 92 — `alembic.ini` + Baseline-Revision `7feab49e6afe`. **Manueller Aufruf** per `alembic upgrade head` (kein Auto-Upgrade beim Start).
 4. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
 5. [IDEE] Metriken: Interaktive Auswertung (Zeiträume, LLM-Auswertung, D3/Canvas-Zoom, Mobile-first) — **Grundlage implementiert in Patch 91** (Chart.js, Zeitraum-Chips, 5 Metriken, Pinch-Zoom). Offen: Per-User-Filter-UI (Dropdown in Hel), LLM-Auswertung („Wie haben sich meine Formulierungen in den letzten 30 Tagen verändert?").
 6. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl) — TODO in hel.py eingetragen
@@ -194,7 +200,7 @@
 10. [H-F01] Hel: Sticky Tab-Leiste (statt Akkordeon Wisch-Tabs) — Konzept offen.
 
 ## Architektur-Warnungen
-- `interactions`-Tabelle hat keine User-Spalte — User-Trennung nur per Session-ID (unzuverlässig)
+- ~~`interactions`-Tabelle hat keine User-Spalte~~ ✅ Patch 92 behoben: `profile_key` jetzt als indizierte Spalte. Altdaten: 76/4667 migriert (Rest ohne profile_name).
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung
 - JWT blockiert externe Clients komplett — static_api_key ist der einzige Workaround
 - Chart.js, zoom-plugin, hammer.js via CDN — bei Air-Gap ist das Metriken-Dashboard tot. Lokales Bundling als späterer Optimierungs-Patch denkbar.
