@@ -10,6 +10,7 @@ import tempfile
 import asyncio
 import io
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -170,7 +171,10 @@ ADMIN_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <title>&#9889; Hel – Zerberus Admin</title>
     <link rel="icon" href="/static/favicon.ico">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Patch 91: Chart.js 4.4.7 + Zoom-Plugin + hammerjs (für Touch-Pinch-Zoom) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <script>
         // Patch 90 (N-F09b): Schriftgröße früh laden, vermeidet FOUC
         (function () {
@@ -360,7 +364,85 @@ ADMIN_HTML = """<!DOCTYPE html>
             justify-content: space-between;
         }
         .session-item:hover, .session-item:active { background: #4d4d4d; }
-        #chart-container { height: 300px; margin-top: 20px; }
+        /* Patch 91: Zeitraum-Chips */
+        .metric-timerange { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+        .time-chip {
+            padding: 6px 14px; border-radius: 16px;
+            border: 1px solid rgba(240,180,41,0.3);
+            background: transparent; color: #c8ccd0;
+            font-size: 13px; cursor: pointer; min-height: 36px;
+            transition: all 0.15s ease;
+        }
+        .time-chip:active, .time-chip.active {
+            background: #f0b429; color: #1a1a2e; border-color: #f0b429;
+        }
+        .custom-range-picker {
+            display: none; gap: 6px; align-items: center; margin-bottom: 10px;
+            padding: 8px; background: rgba(255,255,255,0.03); border-radius: 8px;
+        }
+        .custom-range-picker.open { display: flex; }
+        .custom-range-picker input[type="date"] {
+            padding: 4px 8px; border: 1px solid #555; border-radius: 6px;
+            background: #1a1a2e; color: #c8ccd0; font-size: 13px; min-height: 36px;
+        }
+        .custom-range-picker button {
+            padding: 6px 12px; border-radius: 6px; border: 1px solid #f0b429;
+            background: transparent; color: #f0b429; cursor: pointer; min-height: 36px;
+        }
+        .zoom-reset-btn {
+            padding: 4px 10px; border-radius: 6px; border: 1px solid #555;
+            background: transparent; color: #aaa; cursor: pointer;
+            font-size: 12px; margin-left: auto;
+        }
+        .zoom-reset-btn:active { background: #333; color: #fff; }
+        .metric-chart-header {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+        }
+
+        /* Patch 91: Neue Metrik-Toggles (Pill-Style) */
+        .metric-toggle-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+        .metric-toggle-pill {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 5px 10px; border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: transparent; color: #888;
+            font-size: 12px; cursor: pointer; min-height: 34px;
+            transition: all 0.15s ease;
+        }
+        .metric-toggle-pill.active { color: #c8ccd0; }
+        .metric-toggle-pill:not(.active) { opacity: 0.4; }
+        .toggle-dot {
+            width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+        }
+        .toggle-info {
+            font-size: 14px; opacity: 0.5; padding: 2px 4px; cursor: help;
+        }
+        .toggle-info:active { opacity: 1; }
+
+        /* Patch 91: Tabellen-Fix */
+        #messagesTable {
+            table-layout: fixed; width: 100%;
+            font-size: var(--hel-font-size-base, 15px);
+        }
+        #messagesTable td {
+            max-width: 200px; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap;
+        }
+        .metric-table-scroll {
+            overflow-x: auto; -webkit-overflow-scrolling: touch;
+        }
+        .metric-details { margin-top: 10px; }
+        .metric-details summary {
+            cursor: pointer; color: #f0b429;
+            padding: 8px 0; font-size: 14px;
+            list-style: none;
+        }
+        .metric-details summary::before { content: '▸ '; }
+        .metric-details[open] summary::before { content: '▾ '; }
+
+        .chart-container-p91 {
+            position: relative; height: 280px; width: 100%;
+        }
         .slider-row { display: flex; align-items: center; gap: 15px; }
         .slider-row input { flex: 1; }
         .value-display { min-width: 50px; text-align: center; background: #252525; padding: 8px; border-radius: 8px; }
@@ -402,29 +484,39 @@ ADMIN_HTML = """<!DOCTYPE html>
           </div>
           <div class="hel-section-body" id="body-metrics">
             <div class="card">
-                <h2>Letzte Nachrichten</h2>
-                <table id="messagesTable">
-                    <thead><tr><th>Zeit</th><th>Rolle</th><th>Inhalt</th><th>W&#246;rter</th><th>Sentiment</th><th>Kosten (USD)</th></tr></thead>
-                    <tbody></tbody>
-                </table>
-            </div>
-            <div class="card">
                 <h2>Metrik-Verlauf</h2>
-                <div class="metric-toggles">
-                    <div class="metric-toggle">
-                        <label><input type="checkbox" id="tog-bert" checked onchange="updateChart()"> <span style="color:#ff6b6b;">&#9632;</span> BERT Sentiment</label>
-                    </div>
-                    <div class="metric-toggle">
-                        <label><input type="checkbox" id="tog-wc" onchange="updateChart()"> <span style="color:#4ecdc4;">&#9632;</span> Word Count</label>
-                    </div>
-                    <div class="metric-toggle">
-                        <label><input type="checkbox" id="tog-ttr" onchange="updateChart()"> <span style="color:#ffd700;">&#9632;</span> TTR</label>
-                    </div>
-                    <div class="metric-toggle">
-                        <label><input type="checkbox" id="tog-entropy" onchange="updateChart()"> <span style="color:#a29bfe;">&#9632;</span> Shannon Entropy</label>
-                    </div>
+                <!-- Patch 91: Zeitraum-Chips -->
+                <div class="metric-timerange">
+                  <button class="time-chip active" data-days="7">7 Tage</button>
+                  <button class="time-chip" data-days="30">30 Tage</button>
+                  <button class="time-chip" data-days="90">90 Tage</button>
+                  <button class="time-chip" data-days="0">Alles</button>
+                  <button class="time-chip" data-days="-1" id="customRangeBtn">Custom</button>
                 </div>
-                <div id="chart-container"><canvas id="sentimentChart"></canvas></div>
+                <div class="custom-range-picker" id="customRangePicker">
+                  <input type="date" id="metricFrom">
+                  <span>&ndash;</span>
+                  <input type="date" id="metricTo">
+                  <button onclick="applyCustomRange()">Anwenden</button>
+                </div>
+                <div class="metric-chart-header">
+                  <span id="metricCountLabel" style="color:#888;font-size:12px;"></span>
+                  <button class="zoom-reset-btn" onclick="if(metricsChart) metricsChart.resetZoom()">Zoom Reset</button>
+                </div>
+                <div class="chart-container-p91">
+                    <canvas id="metricsCanvas"></canvas>
+                </div>
+                <div class="metric-toggle-pills" id="metricToggles"></div>
+
+                <details class="metric-details">
+                  <summary>Datentabelle anzeigen</summary>
+                  <div class="metric-table-scroll">
+                    <table id="messagesTable">
+                      <thead><tr><th>Zeit</th><th>Rolle</th><th>Inhalt</th><th>W&#246;rter</th><th>Sentiment</th><th>Kosten (USD)</th></tr></thead>
+                      <tbody></tbody>
+                    </table>
+                  </div>
+                </details>
             </div>
             <div class="card">
                 <h2>Gespeicherte Sessions</h2>
@@ -1066,35 +1158,181 @@ ADMIN_HTML = """<!DOCTYPE html>
             }
         }
 
-        async function loadMetrics() {
-            const [res, histRes] = await Promise.all([
-                fetch('/hel/metrics/latest_with_costs?limit=20'),
-                fetch('/hel/metrics/history?limit=50')
-            ]);
-            const data = await res.json();
-            _chartHistory = histRes.ok ? await histRes.json() : [];
+        // ========== Patch 91: Chart.js Metriken-Dashboard ==========
+        let metricsChart = null;
+        let _currentTimeRange = 7;
 
-            const tbody = document.querySelector('#messagesTable tbody');
-            tbody.innerHTML = '';
-            data.forEach((msg) => {
-                const tr = document.createElement('tr');
-                // H-03: Erster Satz, max 80 Zeichen
-                const raw = (msg.content || '');
-                const sentenceEnd = raw.search(/[.!?]/);
-                const firstSentence = sentenceEnd > 0 ? raw.substring(0, sentenceEnd + 1) : raw;
-                const truncated = firstSentence.length > 80 ? firstSentence.substring(0, 80) + '\u2026' : firstSentence;
-                const ts = new Date(msg.timestamp);
-                const timeStr = ts.toLocaleDateString('de-DE') + ' ' + ts.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
-                tr.innerHTML = `<td>${timeStr}</td>
-                                  <td>${msg.role}</td>
-                                  <td title="${raw.substring(0,200).replace(/"/g,'&quot;')}">${truncated}</td>
-                                  <td>${msg.word_count ?? ''}</td>
-                                  <td>${msg.vader_compound ?? ''}</td>
-                                  <td>${msg.cost !== null && msg.cost !== undefined ? `$${(msg.cost * 1_000_000).toFixed(2)} / 1M` : ''}</td>`;
-                tbody.appendChild(tr);
+        const METRIC_DEFS = {
+            bert_sentiment: { label: 'BERT Sentiment', color: '#f0b429', info: 'Stimmungsanalyse per German BERT (0=negativ, 0.5=neutral, 1=positiv)' },
+            rolling_ttr:    { label: 'TTR (Rolling-50)', color: '#4fc3f7', info: 'Type-Token-Ratio über 50 Nachrichten — misst lexikalische Vielfalt (0–1)' },
+            shannon_entropy:{ label: 'Shannon Entropy', color: '#81c784', info: 'Informationsdichte der Wortwahl — höher = vielfältigere Sprache' },
+            hapax_ratio:    { label: 'Hapax Ratio', color: '#e57373', info: 'Anteil einmalig verwendeter Wörter — höher = mehr einzigartige Begriffe' },
+            avg_word_length:{ label: 'Ø Wortlänge', color: '#ba68c8', info: 'Durchschnittliche Wortlänge in Zeichen — Indikator für Wortkomplexität' }
+        };
+
+        function renderMetricToggles() {
+            const container = document.getElementById('metricToggles');
+            if (!container) return;
+            container.innerHTML = Object.entries(METRIC_DEFS).map(([key, def]) => `
+                <button class="metric-toggle-pill active" id="toggle_${key}" onclick="toggleMetric('${key}')">
+                  <span class="toggle-dot" style="background:${def.color}"></span>
+                  ${def.label}
+                  <span class="toggle-info" onclick="event.stopPropagation(); showMetricInfo('${key}')" title="${def.info}">&#9432;</span>
+                </button>
+            `).join('');
+        }
+
+        function toggleMetric(key) {
+            const btn = document.getElementById('toggle_' + key);
+            if (btn) btn.classList.toggle('active');
+            rebuildChart();
+        }
+
+        function showMetricInfo(key) {
+            alert(METRIC_DEFS[key].label + '\n\n' + METRIC_DEFS[key].info);
+        }
+
+        function buildChart(data) {
+            const canvas = document.getElementById('metricsCanvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            if (metricsChart) { metricsChart.destroy(); metricsChart = null; }
+
+            const labels = data.map(r => {
+                const d = new Date(r.created_at || r.timestamp);
+                return d.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'}) + ' '
+                     + d.toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'});
             });
 
-            updateChart();
+            const activeMetrics = Object.keys(METRIC_DEFS).filter(k => {
+                const toggle = document.getElementById('toggle_' + k);
+                return toggle ? toggle.classList.contains('active') : true;
+            });
+
+            const datasets = activeMetrics.map(key => ({
+                label: METRIC_DEFS[key].label,
+                data: data.map(r => r[key] ?? null),
+                borderColor: METRIC_DEFS[key].color,
+                backgroundColor: 'transparent',
+                borderWidth: 1.5,
+                pointRadius: 0,
+                pointHitRadius: 12,
+                tension: 0.3,
+                spanGaps: true
+            }));
+
+            metricsChart = new Chart(ctx, {
+                type: 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(26,26,46,0.95)',
+                            titleColor: '#f0b429', bodyColor: '#c8ccd0',
+                            padding: 10, cornerRadius: 8, displayColors: true,
+                            callbacks: {
+                                label: function(ctx) {
+                                    const v = ctx.parsed.y;
+                                    return ctx.dataset.label + ': ' + (v == null ? '–' : v.toFixed(3));
+                                }
+                            }
+                        },
+                        zoom: {
+                            pan: { enabled: true, mode: 'x' },
+                            zoom: {
+                                pinch: { enabled: true },
+                                wheel: { enabled: true },
+                                mode: 'x'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#888', maxRotation: 45, maxTicksLimit: 12, font: { size: 11 } },
+                            grid: { color: 'rgba(255,255,255,0.05)' }
+                        },
+                        y: {
+                            min: 0,
+                            ticks: { color: '#888', font: { size: 11 } },
+                            grid: { color: 'rgba(255,255,255,0.08)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function rebuildChart() {
+            if (!_chartHistory || !_chartHistory.length) { buildChart([]); return; }
+            buildChart(_chartHistory);
+        }
+
+        async function loadMetricsChart(days) {
+            if (days === undefined) days = _currentTimeRange;
+            _currentTimeRange = days;
+
+            let url = '/hel/metrics/history?limit=500';
+            if (days === -1) {
+                const from = document.getElementById('metricFrom').value;
+                const to = document.getElementById('metricTo').value;
+                if (from) url += '&from_date=' + encodeURIComponent(from);
+                if (to) url += '&to_date=' + encodeURIComponent(to);
+            } else if (days > 0) {
+                const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+                url += '&from_date=' + from;
+            }
+
+            const res = await fetch(url);
+            if (!res.ok) return;
+            const body = await res.json();
+            const data = (body && body.results) ? body.results : (Array.isArray(body) ? body : []);
+            _chartHistory = data;
+
+            const countLabel = document.getElementById('metricCountLabel');
+            if (countLabel && body && body.meta) {
+                countLabel.textContent = body.meta.count + ' Einträge';
+            }
+
+            buildChart(data);
+
+            document.querySelectorAll('.time-chip').forEach(c => c.classList.remove('active'));
+            const activeChip = document.querySelector('.time-chip[data-days="' + days + '"]');
+            if (activeChip) activeChip.classList.add('active');
+        }
+
+        function applyCustomRange() { loadMetricsChart(-1); }
+
+        async function loadMetrics() {
+            // Tabelle (Letzte Nachrichten) — unverändert über latest_with_costs
+            const res = await fetch('/hel/metrics/latest_with_costs?limit=20');
+            const data = res.ok ? await res.json() : [];
+
+            const tbody = document.querySelector('#messagesTable tbody');
+            if (tbody) {
+                tbody.innerHTML = '';
+                data.forEach((msg) => {
+                    const tr = document.createElement('tr');
+                    const raw = (msg.content || '');
+                    const sentenceEnd = raw.search(/[.!?]/);
+                    const firstSentence = sentenceEnd > 0 ? raw.substring(0, sentenceEnd + 1) : raw;
+                    const truncated = firstSentence.length > 80 ? firstSentence.substring(0, 80) + '\u2026' : firstSentence;
+                    const ts = new Date(msg.timestamp);
+                    const timeStr = ts.toLocaleDateString('de-DE') + ' ' + ts.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
+                    tr.innerHTML = '<td>' + timeStr + '</td>' +
+                                   '<td>' + msg.role + '</td>' +
+                                   '<td title="' + raw.substring(0,200).replace(/"/g,'&quot;') + '">' + truncated + '</td>' +
+                                   '<td>' + (msg.word_count ?? '') + '</td>' +
+                                   '<td>' + (msg.vader_compound ?? '') + '</td>' +
+                                   '<td>' + (msg.cost !== null && msg.cost !== undefined ? '$' + (msg.cost * 1_000_000).toFixed(2) + ' / 1M' : '') + '</td>';
+                    tbody.appendChild(tr);
+                });
+            }
+
+            // Chart über neuen Pfad laden
+            await loadMetricsChart(_currentTimeRange);
 
             const sessionsRes = await fetch('/hel/admin/sessions');
             const sessions = await sessionsRes.json();
@@ -1111,72 +1349,25 @@ ADMIN_HTML = """<!DOCTYPE html>
             `).join('');
         }
 
-        function updateChart() {
-            const rows = [..._chartHistory].reverse();
-            const labels = rows.map((_, i) => i + 1);
-            const datasets = [];
+        // updateChart als Kompatibilitäts-Alias (alte Aufrufe)
+        function updateChart() { rebuildChart(); }
 
-            if (document.getElementById('tog-bert')?.checked) {
-                datasets.push({
-                    label: 'BERT Sentiment',
-                    data: rows.map(r => r.bert_sentiment_score ?? null),
-                    borderColor: '#ff6b6b',
-                    backgroundColor: 'rgba(255,107,107,0.08)',
-                    tension: 0.3,
-                    spanGaps: true,
-                    yAxisID: 'y',
-                    pointRadius: 3,
-                    borderWidth: 2,
-                });
-            }
-            if (document.getElementById('tog-wc')?.checked) {
-                datasets.push({
-                    label: 'Word Count',
-                    data: rows.map(r => r.word_count ?? null),
-                    borderColor: '#4ecdc4',
-                    backgroundColor: 'rgba(78,205,196,0.08)',
-                    tension: 0.3,
-                    spanGaps: true,
-                    yAxisID: 'y2',
-                });
-            }
-            if (document.getElementById('tog-ttr')?.checked) {
-                datasets.push({
-                    label: 'TTR (Rolling-50)',
-                    data: rows.map(r => r.rolling_ttr ?? r.ttr ?? null),
-                    borderColor: '#ffd700',
-                    backgroundColor: 'rgba(255,215,0,0.08)',
-                    tension: 0.3,
-                    spanGaps: true,
-                });
-            }
-            if (document.getElementById('tog-entropy')?.checked) {
-                datasets.push({
-                    label: 'Shannon Entropy',
-                    data: rows.map(r => r.shannon_entropy ?? null),
-                    borderColor: '#a29bfe',
-                    backgroundColor: 'rgba(162,155,254,0.08)',
-                    tension: 0.3,
-                    spanGaps: true,
-                });
-            }
-
-            if (window.chart) window.chart.destroy();
-            const ctx = document.getElementById('sentimentChart').getContext('2d');
-            window.chart = new Chart(ctx, {
-                type: 'line',
-                data: { labels, datasets },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
-                    scales: {
-                        y: { position: 'left', min: 0, max: 1, title: { display: true, text: 'Sentiment (0=neg · 0.5=neutral · 1=pos) / TTR / Entropy' } },
-                        y2: { position: 'right', title: { display: true, text: 'Word Count' }, grid: { drawOnChartArea: false } }
+        // Zeitraum-Chip-Handler
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.time-chip').forEach(function(chip) {
+                chip.addEventListener('click', function() {
+                    const days = parseInt(chip.dataset.days);
+                    const picker = document.getElementById('customRangePicker');
+                    if (days === -1) {
+                        if (picker) picker.classList.toggle('open');
+                    } else {
+                        if (picker) picker.classList.remove('open');
+                        loadMetricsChart(days);
                     }
-                }
+                });
             });
-        }
+            renderMetricToggles();
+        });
 
         async function exportSession(sessionId) {
             window.location.href = `/hel/admin/export/session/${sessionId}`;
@@ -2049,12 +2240,21 @@ async def post_provider_blacklist(request: Request):
 # ============================================================
 
 @router.get("/metrics/history")
-async def metrics_history(limit: int = 50):
+async def metrics_history(
+    limit: int = 200,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    profile_key: Optional[str] = None,
+):
     """
-    Gibt die letzten N ausgewerteten Messages zurück inkl. aller Chart-Metriken:
-    word_count, ttr, shannon_entropy, vader_compound, bert_sentiment_score.
-    Spalten bert_sentiment_* werden graceful behandelt – falls noch nicht angelegt,
-    wird null zurückgegeben.
+    Gibt N ausgewertete Messages zurück inkl. aller Chart-Metriken.
+
+    Patch 91: Optional Zeitraum-Filter (ISO-Dates) und `profile_key`-Filter.
+    `profile_key` wird nur angewendet wenn die Spalte existiert (Patch 92 legt sie an);
+    sonst wird der Parameter ignoriert.
+
+    Response: {"meta": {...}, "results": [...]} — results ist das alte Array
+    (abwärtskompatibel: Frontend kann body.results oder body direkt lesen).
     """
     from zerberus.core.database import _async_session_maker
     from sqlalchemy import text
@@ -2065,9 +2265,12 @@ async def metrics_history(limit: int = 50):
         cols = {row[1] for row in col_result.fetchall()}
         has_bert = "bert_sentiment_label" in cols and "bert_sentiment_score" in cols
 
+        # Patch 92-ready: profile_key-Filter nur wenn Spalte existiert
+        int_cols_result = await session.execute(text("PRAGMA table_info(interactions)"))
+        int_cols = {row[1] for row in int_cols_result.fetchall()}
+        has_profile_key = "profile_key" in int_cols
+
         # Patch 64: BERT-Score als gerichteter Wert (0=negativ, 0.5=neutral, 1=positiv).
-        # Vor Patch 64 war bert_sentiment_score die rohe Konfidenz (0.5–1.0, immer hoch),
-        # was die Linie im Chart unsichtbar machte. Jetzt: positive→score, negative→(1-score).
         bert_cols = (
             """, mm.bert_sentiment_label,
     CASE
@@ -2080,6 +2283,22 @@ async def metrics_history(limit: int = 50):
             else ", NULL as bert_sentiment_label, (i.sentiment + 1.0) / 2.0 as bert_sentiment_score"
         )
 
+        where_clauses = ["i.role = 'user'"]
+        params: dict = {"limit": limit}
+
+        if from_date:
+            where_clauses.append("i.timestamp >= :from_date")
+            params["from_date"] = from_date
+        if to_date:
+            # inklusive Tagesende
+            where_clauses.append("i.timestamp <= :to_date")
+            params["to_date"] = to_date + " 23:59:59" if len(to_date) == 10 else to_date
+        if profile_key and has_profile_key:
+            where_clauses.append("i.profile_key = :profile_key")
+            params["profile_key"] = profile_key
+
+        where_sql = " AND ".join(where_clauses)
+
         try:
             result = await session.execute(text(f"""
                 SELECT i.id, i.timestamp, i.role, i.session_id, i.content,
@@ -2087,18 +2306,19 @@ async def metrics_history(limit: int = 50):
                        {bert_cols}
                 FROM interactions i
                 JOIN message_metrics mm ON i.id = mm.message_id
-                WHERE i.role = 'user'
+                WHERE {where_sql}
                 ORDER BY i.timestamp DESC
                 LIMIT :limit
-            """), {"limit": limit})
+            """), params)
             rows = result.fetchall()
         except Exception as e:
             logger.warning(f"[metrics/history] Fehler: {e}")
-            return []
+            return {
+                "meta": {"from": from_date, "to": to_date, "count": 0, "profile_key": profile_key, "error": str(e)},
+                "results": [],
+            }
 
-        # Patch 64: Rolling-Window-TTR über die letzten ROLLING_WINDOW Nachrichten.
-        # Per-Nachrichten-TTR ist bei kurzen Sätzen immer 1.0 (alle Tokens einmalig).
-        # Rolling TTR akkumuliert Tokens über das Fenster → aussagekräftigere Kurve.
+        # Rolling-Window-TTR (Patch 64)
         import re as _re
         ROLLING_WINDOW = 50
         raw_rows = [dict(row._mapping) for row in rows]
@@ -2107,6 +2327,7 @@ async def metrics_history(limit: int = 50):
             _re.findall(r'\b\w+\b', (r.get("content") or "").lower())
             for r in chron
         ]
+        # Zusätzliche Metriken: hapax_ratio + avg_word_length (für Patch 91 Chart)
         for i, row in enumerate(chron):
             start = max(0, i - ROLLING_WINDOW + 1)
             window_tokens: list = []
@@ -2116,5 +2337,33 @@ async def metrics_history(limit: int = 50):
                 row["rolling_ttr"] = round(len(set(window_tokens)) / len(window_tokens), 3)
             else:
                 row["rolling_ttr"] = row.get("ttr")
-            row.pop("content", None)              # content nicht ans Frontend senden
-        return list(reversed(chron))
+
+            # Per-Message hapax + avg_word_length
+            msg_tokens = token_lists[i]
+            if msg_tokens:
+                from collections import Counter
+                counts = Counter(msg_tokens)
+                hapax = sum(1 for _, c in counts.items() if c == 1)
+                row["hapax_ratio"] = round(hapax / len(msg_tokens), 3)
+                row["avg_word_length"] = round(sum(len(t) for t in msg_tokens) / len(msg_tokens), 2)
+            else:
+                row["hapax_ratio"] = None
+                row["avg_word_length"] = None
+
+            # Alias bert_sentiment (ohne _score) für Frontend-Kompakt-Key
+            row["bert_sentiment"] = row.get("bert_sentiment_score")
+            # created_at-Alias (Frontend erwartet created_at)
+            row["created_at"] = row.get("timestamp")
+            row.pop("content", None)
+
+        results = list(reversed(chron))
+        return {
+            "meta": {
+                "from": from_date,
+                "to": to_date,
+                "count": len(results),
+                "profile_key": profile_key,
+                "profile_key_supported": has_profile_key,
+            },
+            "results": results,
+        }

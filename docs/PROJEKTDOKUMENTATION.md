@@ -2420,3 +2420,44 @@ C4 – 3 Favoriten-Slots: `saveFav(n)` / `loadFav(n)` in `localStorage('nala_the
 - Manueller Server-Restart empfohlen (Hel-HTML wird beim Modul-Load gebaut).
 
 *Stand: 2026-04-18, Patch 90.*
+
+---
+
+### Patch 91 – Metriken-Dashboard Overhaul: Chart.js + Zeiträume + Metrik-Toggles (2026-04-18)
+
+**Ziel:** Hel-Metriken interaktiv machen — Zeiträume filterbar, mehr Metriken, Pinch-Zoom auf Mobile. Der bisherige Canvas-Chart wird durch Chart.js ersetzt, das API-Backend um Zeitraum-Filter erweitert.
+
+**Block A – Backend:**
+- `GET /hel/metrics/history` bekommt optionale Query-Parameter `from_date`, `to_date` (ISO `YYYY-MM-DD`), `profile_key` (vorbereitet für Patch 92), Default-`limit` 50 → 200.
+- SQL-WHERE-Clauses werden dynamisch zusammengesetzt; `to_date` wird auf Tagesende (`23:59:59`) ergänzt.
+- `profile_key`-Filter wird nur angewendet wenn die Spalte in `interactions` existiert (PRAGMA-Check zur Laufzeit).
+- Response ist jetzt ein Envelope: `{"meta": {"from", "to", "count", "profile_key", "profile_key_supported"}, "results": [...]}`. Frontend liest `body.results || body` (abwärtskompatibel).
+- Pro Eintrag neue Frontend-Felder: `hapax_ratio` (Hapax/Gesamt-Tokens), `avg_word_length` (Ø Zeichen/Wort), `bert_sentiment`-Alias, `created_at`-Alias.
+
+**Block B – Frontend (Chart.js):**
+- CDN-Dependencies im `<head>`: `chart.js@4.4.7/dist/chart.umd.min.js` + `hammerjs@2.0.8/hammer.min.js` + `chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js`. `hammerjs` ist zwingende Voraussetzung für Touch-Pinch-Zoom.
+- Neue UI-Sektionen:
+  - `.metric-timerange` (Chip-Leiste: 7 / 30 / 90 Tage, Alles, Custom) — `min-height: 36px`, `:active`-State für Touch.
+  - `.custom-range-picker` — zwei Date-Inputs + Anwenden-Button, wird per JS umgeklappt.
+  - `.chart-container-p91` — `position: relative; height: 280px` (Pflicht für `responsive: true`).
+  - `.metric-toggle-pills` — 5 Pills (BERT Sentiment, TTR Rolling-50, Shannon Entropy, Hapax Ratio, Ø Wortlänge), jede mit Farbkreis und ⓘ-Info-Icon.
+- JS-State: `metricsChart` (Chart.js-Instanz), `_currentTimeRange` (Tage), `METRIC_DEFS` (Label/Color/Info).
+- `loadMetricsChart(days)` baut URL mit Zeitraum-Filter, holt Daten, ruft `buildChart()`.
+- `buildChart(data)` zerstört alten Chart (`metricsChart.destroy()`), generiert Datasets dynamisch aus den aktiven Toggle-Pills, konfiguriert Chart.js mit `borderWidth: 1.5`, `pointRadius: 0`, `pointHitRadius: 12`, `tension: 0.3`, Zoom-Plugin mit `pan + pinch + wheel (mode: x)`, dunkle Hel-Tooltips.
+- `toggleMetric(key)` + `renderMetricToggles()` + `showMetricInfo(key)` für die Pill-Interaktion.
+
+**Block C – Aufräumen:**
+- Alter manueller Canvas-Chart (`#sentimentChart` + `updateChart()`-Body) komplett entfernt. Neuer Canvas heißt `#metricsCanvas`.
+- Metriken-Datentabelle (`#messagesTable`) in `<details>` eingeklappt (per Default geschlossen), `table-layout: fixed` + `text-overflow: ellipsis` gegen Overflow, Horizontal-Scroll-Wrapper für Mobile.
+- `updateChart()` als Kompatibilitäts-Alias erhalten (ruft `rebuildChart()`).
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/hel.py` (alle drei Blöcke)
+- `HYPERVISOR.md`, `lessons.md`, `backlog_nach_patch83.md`, `docs/PROJEKTDOKUMENTATION.md`
+
+**Verifikation:**
+- `python -c "from zerberus.app.routers import hel; print('ok')"` → ok
+- Server-Restart + `curl -k -u <admin> "https://127.0.0.1:5000/hel/metrics/history?from_date=2026-04-15&to_date=2026-04-18&limit=200"` → Envelope-JSON
+- Hel öffnen → Metriken-Akkordeon → Chart mit dünnen Linien, Zeitraum-Chips schalten, Metrik-Pills togglen, Pinch-Zoom auf Touch.
+
+*Stand: 2026-04-18, Patch 91.*

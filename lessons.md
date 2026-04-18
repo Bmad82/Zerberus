@@ -75,3 +75,9 @@
 - Das Nala-Frontend routet über /v1/chat/completions (legacy.py), NICHT über den Orchestrator. Fixes die nur in orchestrator.py landen wirken nicht auf den Haupt-Chat-Pfad.
 - Bei jedem Pipeline-Fix: alle drei Pfade prüfen — legacy.py, orchestrator.py, nala.py /voice
 - Änderungen in legacy.py betreffen auch externe Clients (Dictate, SillyTavern) — immer prüfen ob /v1/audio/transcriptions und der Static-API-Key-Bypass intakt sind (Patch 82)
+
+## Frontend-Charts
+- Chart.js CDN-Integration: chart.umd.min.js allein reicht NICHT für Touch-Pinch-Zoom. Das `chartjs-plugin-zoom` benötigt zwingend `hammerjs` (Touch-Gesten-Library) — Reihenfolge im `<head>`: chart.umd → hammer → zoom-plugin. Ohne hammerjs failed das Plugin silent, nur `wheel`-Zoom funktioniert (Patch 91).
+- Chart.js `new Chart()` mehrfach auf dasselbe Canvas → Memory-Leak. IMMER `metricsChart.destroy()` vor dem Neu-Rendern, UND Referenz auf `null` setzen (Patch 91).
+- Für responsives Chart-Layout braucht der Container eine feste Höhe (`position: relative; height: 280px`) — ohne explizite Höhe rendert Chart.js mit `responsive: true` entweder 0-Pixel oder bläht sich unkontrolliert auf (Patch 91).
+- Dünne Linien (`borderWidth: 1.5`) + `pointRadius: 0` + `pointHitRadius: 12` ist der sauberste Look für viele parallel laufende Metriken: keine Punkte-Wolke, aber großzügige Touch-Zone für Tooltips (Patch 91).

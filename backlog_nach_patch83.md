@@ -53,8 +53,9 @@ Tabs oben, immer sichtbar, per Wischgeste wechselbar.
 ~~Scrollbare Liste statt JSON-Editor. Strukturiertes Formular.~~
 WhisperCleaner: Karten-Liste mit Pattern/Replacement/Kommentar pro Regel, Sektion-Header für Comment-Only-Einträge, Add/Trash-Buttons, JS-Regex-Validierung blockiert Save bei ungültigem Pattern. **Dialekt-JSON-Teil offen** — gleiche Behandlung sinnvoll, aber bisher nicht umgesetzt.
 
-**H-F03 — Mehr Metriken-Auswahl + feineres Design**
-Konzept noch offen. Chris will explizit erinnert werden.
+**H-F03 — Mehr Metriken-Auswahl + feineres Design** ✅ GRUNDLAGE IMPLEMENTIERT in Patch 91
+~~Konzept noch offen. Chris will explizit erinnert werden.~~
+Chart.js 4.4.7 ersetzt den manuellen Canvas-Chart. 5 Metriken (BERT, Rolling-TTR, Shannon Entropy, Hapax Ratio, Ø Wortlänge), Toggle-Pills mit Info-Icons. Zeitraum-Chips (7/30/90 Tage, Alles, Custom-Range). Pinch-to-Zoom (Touch), Wheel-Zoom (Desktop), Zoom-Reset. Feineres Design: dünne Linien 1.5 px, keine Punkte, Tooltips im Hel-Dark-Theme. Datentabelle in `<details>` ausgeklappt, `table-layout: fixed`. Backend-API `/hel/metrics/history` bekommt `{meta, results}`-Envelope + Zeitraum-Filter. Offen als Folge-Backlog: Per-User-Filter-UI, LLM-Auswertung.
 
 ---
 

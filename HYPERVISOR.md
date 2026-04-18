@@ -1,8 +1,13 @@
 # HYPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Hypervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 90 (2026-04-18)*
+*Letzte Aktualisierung: Patch 91 (2026-04-18)*
 
 ## Aktueller Patch
+**Patch 91** – Metriken-Dashboard Overhaul (Chart.js + Zeiträume + Metrik-Toggles) (2026-04-18)
+- Block A: `GET /hel/metrics/history` erweitert um `from_date`/`to_date` (ISO, optional inkl. Tagesende), `profile_key` (nur wirksam wenn Patch-92-Spalte existiert — graceful PRAGMA-Check), Default-Limit 50 → 200. Response-Envelope: `{meta: {from,to,count,profile_key,profile_key_supported}, results: [...]}`. Zusätzliche Frontend-Metriken berechnet: `hapax_ratio`, `avg_word_length`, `created_at`-Alias.
+- Block B: Chart.js 4.4.7 + `chartjs-plugin-zoom` 2.0.1 + hammer.js 2.0.8 via CDN eingebunden (Pinch-Zoom Touch). Neue UI: 5 Zeitraum-Chips (7/30/90 Tage, Alles, Custom mit Date-Picker), 5 Metrik-Toggle-Pills (BERT Sentiment, Rolling-TTR, Shannon Entropy, Hapax Ratio, Ø Wortlänge) mit Info-Icons (ⓘ) + Alert-Erklärung, Zoom-Reset-Button. Chart dünne Linien (1.5 px), keine Punkte, Tooltips mit dunkler Hel-Optik.
+- Block C: Alter Canvas-`sentimentChart`-Code komplett entfernt. Metriken-Datentabelle in `<details>` eingeklappt, `table-layout: fixed` + `text-overflow: ellipsis` gegen Overflow. Mobile-first: `min-height: 36px` Touch-Targets auf Chips, `:active`-Fallback für Touch.
+
 **Patch 90** – Aufräum-Sammelpatch: rag_eval HTTPS + Hel-Backlog (2026-04-18)
 - Block A (Backlog 7): `rag_eval.py` auf HTTPS umgestellt — `BASE_URL` default `https://127.0.0.1:5000`, Self-Signed-Cert via `_SSL_CTX` (Hostname-Check + Verify aus), SSL-Context wird in `_query_rag()` an `urlopen()` durchgereicht. `BASE_URL` und `API_KEY` per Env-Var (`RAG_EVAL_URL`, `RAG_EVAL_API_KEY`) override-bar. Eval läuft jetzt ohne inline-Workaround.
 - Block B (N-F09b): Hel bekommt Schriftgrößen-Wahl analog Nala — neue CSS-Var `--hel-font-size-base` (Default 15 px), 4 Presets (13/15/17/19) als 44 px-Touch-Buttons unter `<h1>`. Persistenz via `localStorage('hel_font_size')`, Early-Load-IIFE im `<head>` verhindert FOUC.
@@ -181,16 +186,18 @@
 2. [Patch 89] RAG-Qualität nach R-03-Fix: **10/11 JA, 1/11 TEILWEISE, 0 NEIN**. Q4 + Q10 geheilt. Offen: **Q11** (Aggregat-Query „Nenn alle Momente wo…") — Reranker liefert Glossar-Definition, konkrete Szenen bleiben über mehrere Chunks verteilt. **Nächster Kandidat: R-04 (Query-Expansion) oder LLM-seitige Multi-Chunk-Aggregation**, nicht mehr Retrieval-Qualität. R-02 (Embedding-Upgrade) nach hinten verschoben — Reranker kompensiert MiniLM-Schwäche ausreichend. Reports: `rag_eval_delta_patch89.md`.
 3. Alembic-Setup (Dauerläufer)
 4. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
-5. [IDEE] Metriken: Interaktive Auswertung (Zeiträume, LLM-Auswertung, D3/Canvas-Zoom, Mobile-first) — Konzept noch nicht final
+5. [IDEE] Metriken: Interaktive Auswertung (Zeiträume, LLM-Auswertung, D3/Canvas-Zoom, Mobile-first) — **Grundlage implementiert in Patch 91** (Chart.js, Zeitraum-Chips, 5 Metriken, Pinch-Zoom). Offen: Per-User-Filter-UI (Dropdown in Hel), LLM-Auswertung („Wie haben sich meine Formulierungen in den letzten 30 Tagen verändert?").
 6. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl) — TODO in hel.py eingetragen
 7. ~~[BACKLOG] `rag_eval.py` hardcoded auf `http://127.0.0.1:5000`~~ ✅ Patch 90 — HTTPS-Default + `_SSL_CTX` + `RAG_EVAL_URL`-Env-Override.
 8. [N-F02/N-F03/N-F04] Nala Bubble-Tooling (Wiederholen / Bearbeiten / Lade-Indikator-Upgrade) — siehe `backlog_nach_patch83.md`. Nicht akut.
-9. [H-F01/H-F03] Hel: Sticky Tab-Leiste (statt Akkordeon Wisch-Tabs) und mehr Metriken-Auswahl — Konzepte offen.
+9. ~~[H-F03] Hel: mehr Metriken-Auswahl~~ ✅ Patch 91 — 5 Metriken im Chart (BERT, TTR, Entropy, Hapax, Ø Wortlänge), Toggle-Pills.
+10. [H-F01] Hel: Sticky Tab-Leiste (statt Akkordeon Wisch-Tabs) — Konzept offen.
 
 ## Architektur-Warnungen
 - `interactions`-Tabelle hat keine User-Spalte — User-Trennung nur per Session-ID (unzuverlässig)
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung
 - JWT blockiert externe Clients komplett — static_api_key ist der einzige Workaround
+- Chart.js, zoom-plugin, hammer.js via CDN — bei Air-Gap ist das Metriken-Dashboard tot. Lokales Bundling als späterer Optimierungs-Patch denkbar.
 
 ## Langfrist-Vision
 Metric Engine = kognitives Tagebuch + Frühwarnsystem für Denkmuster-Drift.
