@@ -1,7 +1,7 @@
 # Zerberus Pro 4.0 – Projektdokumentation
 
-**Stand:** 2026-04-18
-**Version:** 4.0 (Patch 99 – Hel Sticky Tab-Leiste)
+**Stand:** 2026-04-19
+**Version:** 4.0 (Patch 100 – Meilenstein: Hel-Hotfix + JS-Integrity + Easter Egg)
 **Status:** Aktiv in Entwicklung
 
 ---
@@ -2784,3 +2784,49 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 - `scrollIntoView({ inline: 'center' })` auf dem aktiven Tab ist ein nettes UX-Detail für Mobile, das beim Tab-Wechsel den neu gewählten Tab in die Mitte der Leiste scrollt — ohne diese Zeile müssten Nutzer zwischen Tab-Wechsel und Sektion hin- und her-scrollen.
 
 *Stand: 2026-04-18, Patch 96.*
+
+---
+
+### Patch 100 – Meilenstein: Hel-Hotfix + JS-Integrity-Tests + Easter Egg (2026-04-19)
+
+**Ziel:** Drei-Teile-Patch anlässlich des 100. Patches:
+1. **Hotfix** für den SyntaxError im Hel-Frontend (kaputt seit Patch 91, erst nach Patch 99 akut sichtbar).
+2. **JS-Integrity-Tests** als Playwright-Pageerror-Listener — damit dieser Bug-Typ künftig im CI-Grün nicht versehentlich durchrutscht.
+3. **Easter Egg** zum Meilenstein: KI-generiertes Entwicklerbild versteckt hinter dem Trigger "Rosendornen" / "Patch 100" in Nala und als About-Tab in Hel.
+
+**Teil 1 – Hotfix SyntaxError:**
+- Diagnose: `Uncaught SyntaxError: '' string literal contains an unescaped line break` → bricht das gesamte `<script>` ab → weder `activateTab` noch `setFontSize` werden definiert, Hel-Frontend tot.
+- Root Cause: `hel.py:1290` enthielt seit Patch 91 (`showMetricInfo`) den Ausdruck `alert(METRIC_DEFS[key].label + '\n\n' + METRIC_DEFS[key].info);`. Innerhalb eines plain Python-`"""..."""`-Strings interpretiert Python `\n` als echtes Newline — der Browser sieht ein JS-String-Literal mit hartem Zeilenumbruch und verweigert das Parsing.
+- Fix: `'\n\n'` → `'\\n\\n'` (zwei Zeichen Python-Escape, damit im Output literal `\n\n` steht).
+- Latenz-Erklärung: Der Bug war seit Patch 91 im Code, fiel aber erst auf, als `activateTab` in Patch 99 zur kritischen Init-Funktion wurde. Davor war das Akkordeon per initialer Inline-CSS schon sichtbar, und die meisten Lazy-Loads hatten eigene try/catch-Rettungen.
+- Lesson in `lessons.md` ergänzt: „Python-HTML-Strings mit JS — immer `\\n`."
+
+**Teil 2 – JavaScript-Integrity-Tests:**
+- Neue Test-Klasse `TestJavaScriptIntegrity` in `zerberus/tests/test_loki.py`.
+- Zwei Tests: `test_hel_no_js_errors` (Hel via Basic-Auth-Context), `test_nala_no_js_errors` (Nala ohne Auth-Wall).
+- **Wichtiges Pattern:** `page.on("pageerror", …)` MUSS VOR `page.goto(...)` registriert werden, sonst werden initiale Parse-Errors verschluckt. Dafür eigene Browser-Contexts (nicht die `hel_page`/`nala_page`-Fixtures, die schon navigiert haben).
+- `page.wait_for_timeout(2000)` gibt dem Frontend Zeit, alle deferred-Loads anzustoßen.
+- Test verifiziert den Hotfix: vor dem Fix schlägt `test_hel_no_js_errors` mit der SyntaxError-Meldung fehl; nach dem Fix grün.
+- **Full-Test-Suite: 34 passed in 54 s** (32 bestehende + 2 neue).
+
+**Teil 3 – Easter Egg (Meilenstein-Feature):**
+- Bild: `docs/pics/Architekt_und_Sonnenblume.png` (1.5 MB PNG, KI-generiert, zeigt Rosa-Architektur auf Bildschirm + Kintsugi-Gehirn + Jojo + Motorblock + Gisela-approves-Post-it).
+- Static-Serving: Neues Unterverzeichnis `zerberus/static/pics/`, Bild dorthin kopiert. FastAPI served es über das bestehende `/static`-Mount (`zerberus/main.py:219`) — kein neuer Mount nötig. Kein Base64-Inlining (würde den HTML-Output um 2 MB aufblähen).
+- **Nala-Trigger:** `sendMessage(text)` fängt `text.trim().toLowerCase() === 'rosendornen' || === 'patch 100'` ab BEVOR der Chat-Request rausgeht. Das Overlay öffnet sich statt einer LLM-Antwort.
+- **Nala-Overlay:** `#ee-modal` als Vollbild-Fixed-Layer (`rgba(0,0,0,0.88)`, z-index 9999). `.ee-inner`-Card (88 vw, max-720 px, gold-Border `#DAA520`, Glow-Shadow). Fade-In via `opacity 0→1, transition 1.5s ease`. Bild (`max-height: 60vh`), Titel ("🏺 Patch 100 – Zerberus Pro 4.0 🏺"), Zitat („Das Gebrochene sichtbar machen."), Body-Text, Emoji-Liste der Services, Schließen-Button. Klick außerhalb der Inner-Card schließt ebenfalls.
+- **Sternenregen im Hintergrund:** `setInterval` spawned alle 400 ms 4 Sterne in der oberen Bildschirmhälfte (recycling von `spawnStars` aus Patch 83). Interval wird beim Schließen via Interval-Clear + `!modal.classList.contains('open')`-Check gestoppt.
+- **Hel-About-Tab:** Neuer 12. Tab `ℹ️ About` in der Sticky-Nav (`hel.py:543`). Eigene `.hel-section[data-tab="about"]` am Ende. Inhalt: dasselbe Bild, derselbe Titel/Quote/Text, plus Version-Block (`Patch 100`, Architektur, Tests, RAG) und Entwickler-Credits („Entwickelt von Chris mit Claude (Supervisor + Claude Code) / Für Jojo und Nala 🐱"). Kein Overlay — direkt als Tab-Content. `toggleSection`/`activateTab`-Integration automatisch über das bestehende `data-tab`-Pattern.
+
+**Betroffene Dateien:**
+- `zerberus/app/routers/hel.py` (Hotfix Z. 1290, neuer About-Tab + Section)
+- `zerberus/app/routers/nala.py` (Easter-Egg-Modal: HTML + CSS + JS-Trigger + open/close-Helpers)
+- `zerberus/static/pics/Architekt_und_Sonnenblume.png` (neues Asset)
+- `zerberus/tests/test_loki.py` (neue Klasse `TestJavaScriptIntegrity`)
+- `SUPERVISOR.md`, `README.md`, `backlog_nach_patch83.md`, `lessons.md`, `docs/PROJEKTDOKUMENTATION.md`
+
+**Lessons:**
+- **Latenter Bug durch Code-Pfadänderung sichtbar:** Der SyntaxError existierte seit Patch 91 und wurde 9 Patches lang nicht bemerkt, weil `showMetricInfo` nur per Info-Button-Klick erreichbar war und der Pfad nie getestet wurde. Der Lernpunkt: Tests müssen **das JS-Parsing** prüfen, nicht nur einzelne DOM-Interaktionen. Ein `pageerror`-Listener hätte das sofort gefangen.
+- **Playwright `pageerror` nur VOR `goto`:** Frisch gelernt — wenn man einen Listener auf einer Page registriert, die bereits geladen ist, fängt er nur zukünftige Errors. Für initiale Parse-Errors: neuer Context, neue Page, Listener anhängen, erst dann `goto`. Diese Reihenfolge ist nicht-trivial und verdient einen expliziten Kommentar im Test.
+- **Easter Egg als Meilenstein-Dokumentation:** Der About-Tab in Hel ist gleichzeitig das Kolophon dieses Projekts — Architektur, Tests, RAG-Stand, alles auf einer Seite. Das ist die ehrlichste Form einer Version-Anzeige. Kein separates `/version`-Endpoint nötig, kein README-Abschnitt der veraltet — der About-Tab zeigt den aktuellen Stand aus der Quelle.
+
+*Stand: 2026-04-19, Patch 100 — Meilenstein 🏺.*

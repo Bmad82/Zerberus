@@ -537,6 +537,92 @@ NALA_HTML = """<!DOCTYPE html>
         }
         .expand-btn:hover, .expand-btn:active { color: var(--color-gold); border-color: var(--color-gold); }
 
+        /* ── Easter Egg Overlay (Patch 100) ── */
+        #ee-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.88);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 1.5s ease;
+        }
+        #ee-modal.open { display: flex; opacity: 1; }
+        .ee-inner {
+            position: relative;
+            width: 88vw;
+            max-width: 720px;
+            max-height: 80vh;
+            overflow-y: auto;
+            background: rgba(10, 22, 40, 0.92);
+            border: 2px solid #DAA520;
+            border-radius: 16px;
+            padding: 28px 24px 22px;
+            text-align: center;
+            color: #f0f0f0;
+            font-family: inherit;
+            box-shadow: 0 0 60px rgba(218, 165, 32, 0.35);
+        }
+        .ee-close {
+            position: absolute;
+            top: 10px;
+            right: 14px;
+            background: transparent;
+            color: #DAA520;
+            border: none;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            min-width: 44px;
+            min-height: 44px;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .ee-close:active { color: #ffd700; }
+        .ee-img {
+            display: block;
+            max-width: 100%;
+            max-height: 60vh;
+            margin: 0 auto 18px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+        }
+        .ee-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #DAA520;
+            margin-bottom: 10px;
+        }
+        .ee-quote {
+            font-style: italic;
+            color: #ffd700;
+            margin: 6px 0 16px;
+            font-size: 1.05em;
+        }
+        .ee-body {
+            color: #e0e8f8;
+            line-height: 1.6;
+            margin-bottom: 14px;
+        }
+        .ee-emojis {
+            color: #DAA520;
+            line-height: 1.8;
+            margin-bottom: 16px;
+        }
+        .ee-close-btn {
+            padding: 10px 28px;
+            background: #DAA520;
+            color: #0a1628;
+            border: none;
+            border-radius: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 15px;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .ee-close-btn:active, .ee-close-btn:hover { background: #ffd700; }
+
         /* ── Fullscreen-Modal (Patch 67) ── */
         #fullscreen-modal {
             display: none;
@@ -947,6 +1033,27 @@ NALA_HTML = """<!DOCTYPE html>
         </div>
     </div>
 
+</div>
+
+<!-- Patch 100: Easter-Egg-Overlay (Trigger: "Rosendornen" / "Patch 100") -->
+<div id="ee-modal" aria-hidden="true">
+    <div class="ee-inner">
+        <button class="ee-close" onclick="closeEasterEgg()" aria-label="Schließen">&times;</button>
+        <img src="/static/pics/Architekt_und_Sonnenblume.png" alt="Architekt und Sonnenblume" class="ee-img">
+        <div class="ee-title">🏺 Patch 100 – Zerberus Pro 4.0 🏺</div>
+        <div class="ee-quote">„Das Gebrochene sichtbar machen."</div>
+        <div class="ee-body">
+            Kein Code wurde von Hand geschrieben.<br>
+            Jede Zeile entstand im Dialog zwischen<br>
+            Architekt und Maschine.<br><br>
+            Von Patch 1 bis Patch 100.
+        </div>
+        <div class="ee-emojis">
+            🐕‍🦺 Zerberus · 🐱 Nala · 👑 Hel · 🌹 Rosa<br>
+            🦊 Loki · 🐺 Fenrir · 🐿️ Ratatoskr · 🌈 Heimdall
+        </div>
+        <button class="ee-close-btn" onclick="closeEasterEgg()">Schließen</button>
+    </div>
 </div>
 
 <!-- Patch 67: Vollbild-Modal -->
@@ -1387,6 +1494,13 @@ NALA_HTML = """<!DOCTYPE html>
     }
 
     async function sendMessage(text) {
+        // Patch 100: Easter-Egg-Trigger — "Rosendornen" oder "Patch 100" zeigen Meilenstein-Overlay
+        const _eeTrigger = (text || '').trim().toLowerCase();
+        if (_eeTrigger === 'rosendornen' || _eeTrigger === 'patch 100') {
+            textInput.value = '';
+            openEasterEgg();
+            return;
+        }
         addMessage(text, 'user');
         textInput.value = '';
         // Status-Bar zurücksetzen bei neuem Chat
@@ -2069,6 +2183,29 @@ NALA_HTML = """<!DOCTYPE html>
         const text = _chatLines().join('\\n');
         const ok = await copyToClipboard(text);
         showToast(ok ? 'Chat in Zwischenablage kopiert.' : 'Kopieren fehlgeschlagen.');
+    }
+
+    /* Patch 100: Easter-Egg-Overlay */
+    function openEasterEgg() {
+        const modal = document.getElementById('ee-modal');
+        if (!modal) return;
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        // Sternenregen im Hintergrund (Patch 83): mehrere Wellen während der Overlay offen ist
+        const starsInterval = setInterval(function () {
+            if (!modal.classList.contains('open')) { clearInterval(starsInterval); return; }
+            const x = Math.random() * window.innerWidth;
+            const y = Math.random() * window.innerHeight * 0.3;
+            spawnStars(x, y, 4);
+        }, 400);
+        // Klick auf leeren Bereich (außer .ee-inner) schließt ebenfalls
+        modal.onclick = function (e) { if (e.target === modal) closeEasterEgg(); };
+    }
+    function closeEasterEgg() {
+        const modal = document.getElementById('ee-modal');
+        if (!modal) return;
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
     }
 
     /* Patch 83: Sternenregen bei Tap */

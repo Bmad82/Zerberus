@@ -1,8 +1,14 @@
 # SUPERVISOR.md – Zerberus Pro 4.0
 *Strategischer Stand für Supervisor-Claude (claude.ai Chat-Instanz)*
-*Letzte Aktualisierung: Patch 99 (2026-04-18)*
+*Letzte Aktualisierung: Patch 100 (2026-04-19) — Meilenstein 🏺*
 
 ## Aktueller Patch
+**Patch 100** – Meilenstein: Hel-Hotfix + JS-Integrity-Tests + Easter Egg (2026-04-19)
+- **Teil 1 — Hotfix SyntaxError:** `hel.py:1290` enthielt seit Patch 91 `'\n\n'` in einem plain Python-`"""..."""`-String → Python rendert echtes Newline → JS-String-Literal bricht, gesamtes Hel-Script tot. Fix: `'\n\n'` → `'\\n\\n'`. Seit Patch 99 akut sichtbar, weil `activateTab` zur kritischen Init-Funktion wurde.
+- **Teil 2 — TestJavaScriptIntegrity:** Neue Testklasse in `test_loki.py` mit `pageerror`-Listener VOR `goto` (sonst werden Parse-Errors verschluckt). Zwei Tests für /hel/ + /nala. **Full-Suite: 34 passed in 54 s** (32 + 2 neue).
+- **Teil 3 — Easter Egg:** `Architekt_und_Sonnenblume.png` nach `zerberus/static/pics/` kopiert. In Nala: `sendMessage` fängt `rosendornen`/`patch 100` ab und öffnet `#ee-modal` (gold-Border, Sternenregen-Hintergrund via `spawnStars` + 400ms-Interval, fade-in 1.5s). In Hel: neuer 12. Tab `ℹ️ About` mit demselben Bild + Version-Block (`Patch 100`, Tests 34/34, RAG 10/11) + Entwickler-Credits.
+- Bekannter Bug-Typ (Lesson Patch 69c): `\n` in JS-Strings innerhalb Python-HTML-Strings IMMER als `\\n` schreiben. `lessons.md` um Abschnitt „Frontend / JS in Python-Strings" erweitert.
+
 **Patch 99** – Hel Sticky Tab-Leiste (H-F01) (2026-04-18)
 - Block A: Neue `.hel-tab-nav` (`position: sticky; top:0; z-index:100`) direkt unter `<h1>` mit 11 Tabs (📊 Metriken, 🤖 LLM, 💬 Prompt, 📚 RAG, 🔧 Cleaner, 👥 User, 🧪 Tests, 🗣 Dialekte, 💗 Sysctl, ❌ Provider, 🔗 Links). Horizontal scrollbar auf Mobile (`overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none`), 44 px Touch-Targets, Unterstrich-Highlight in `#ffd700` für aktiven Tab.
 - Block B: Neue `activateTab(id)`-Funktion ersetzt das alte `toggleSection` (als Alias belassen für Altcode). Versteckt/zeigt Sections via `data-tab`-Attribut + `.active`-Klasse. Lazy-Loads (loadMetrics / loadSystemPrompt / loadRagStatus / loadPacemakerConfig / loadProviderBlacklist) laufen genau einmal pro Sektion (`_HEL_LAZY_LOADED`-Set). Aktiver Tab in `localStorage('hel_active_tab')` persistiert. Early-Load-IIFE im `<head>` vermeidet FOUC + Default auf 'metrics'.
@@ -125,10 +131,10 @@
 ## Offene Items (Backlog)
 1. Manuell getippter Text → DB-Speicherung verifizieren
 2. [Patch 97] RAG Q11 bleibt offen — Retrieval ausgereizt. Nächster Kandidat: **R-07 Multi-Chunk-Aggregation** (LLM-seitig: Top-8+ in Kontext, System-Prompt-Hint „alle Treffer aufzählen").
-3. ~~Alembic-Setup~~ ✅ Patch 92 — `alembic.ini` + Baseline. **Manueller Aufruf** per `alembic upgrade head`.
-4. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
-5. [IDEE] Metriken: LLM-Auswertung („Wie haben sich meine Formulierungen verändert?") — Grundlage vorhanden (Patch 91+95)
-6. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl)
+3. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
+4. [IDEE] Metriken: LLM-Auswertung („Wie haben sich meine Formulierungen verändert?") — Grundlage vorhanden (Patch 91+95)
+5. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl)
+6. [Patch 100] Pre-Commit-Hook / CI-Schritt: `node --check` auf alle `<script>`-Blöcke in hel.py + nala.py (schnellere Variante der `TestJavaScriptIntegrity`-Runtime-Tests)
 
 ## Architektur-Warnungen
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung

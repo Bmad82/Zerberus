@@ -540,6 +540,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             <button type="button" class="hel-tab" data-tab="sysctl" onclick="activateTab('sysctl')">&#128147; Sysctl</button>
             <button type="button" class="hel-tab" data-tab="provider" onclick="activateTab('provider')">&#10060; Provider</button>
             <button type="button" class="hel-tab" data-tab="nav" onclick="activateTab('nav')">&#128279; Links</button>
+            <button type="button" class="hel-tab" data-tab="about" onclick="activateTab('about')">&#8505;&#65039; About</button>
         </nav>
 
         <!-- Metriken (offen) -->
@@ -819,6 +820,42 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <input type="text" id="resetPassword" placeholder="Neues Passwort (mind. 4 Zeichen)">
                 <button onclick="resetProfilePassword()" style="margin-top:12px;">&#128190; Passwort setzen</button>
                 <div id="resetResult" style="margin-top:12px; font-size:1.1em; font-weight:bold;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Patch 100: About / Meilenstein -->
+        <div class="hel-section" data-tab="about" id="section-about">
+          <div class="hel-section-header" onclick="toggleSection('about')">
+            <span class="section-arrow">&#9654;</span> &#8505;&#65039; About
+          </div>
+          <div class="hel-section-body" id="body-about">
+            <div class="card" style="text-align:center;">
+                <img src="/static/pics/Architekt_und_Sonnenblume.png" alt="Architekt und Sonnenblume"
+                     style="max-width:100%; max-height:60vh; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.6); margin-bottom:18px;">
+                <h2 style="color:#DAA520; margin-top:0;">&#127995; Patch 100 &ndash; Zerberus Pro 4.0 &#127995;</h2>
+                <p style="font-style:italic; color:#ffd700; margin:6px 0 16px;">&bdquo;Das Gebrochene sichtbar machen."</p>
+                <p style="line-height:1.6;">
+                    Kein Code wurde von Hand geschrieben.<br>
+                    Jede Zeile entstand im Dialog zwischen<br>
+                    Architekt und Maschine.<br><br>
+                    Von Patch 1 bis Patch 100.
+                </p>
+                <p style="color:#DAA520; line-height:1.8;">
+                    &#128021;&#8205;&#129466; Zerberus &middot; &#128049; Nala &middot; &#128081; Hel &middot; &#127801; Rosa<br>
+                    &#129418; Loki &middot; &#128058; Fenrir &middot; &#128063;&#65039; Ratatoskr &middot; &#127752; Heimdall
+                </p>
+                <hr style="border:none; border-top:1px solid #c8941f; margin:22px auto; max-width:60%;">
+                <div style="text-align:left; font-family:monospace; color:#c8ccd0; line-height:1.7; display:inline-block;">
+                    Version: Patch 100<br>
+                    Architektur: FastAPI + SQLite + FAISS + Whisper + Ollama<br>
+                    Tests: 34/34 (Loki &amp; Fenrir)<br>
+                    RAG: 10/11
+                </div>
+                <p style="margin-top:18px; color:#aaa; font-size:0.9em;">
+                    Entwickelt von Chris mit Claude (Supervisor + Claude Code)<br>
+                    F&uuml;r Jojo und Nala &#128049;
+                </p>
             </div>
           </div>
         </div>
@@ -1287,7 +1324,7 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
 
         function showMetricInfo(key) {
-            alert(METRIC_DEFS[key].label + '\n\n' + METRIC_DEFS[key].info);
+            alert(METRIC_DEFS[key].label + '\\n\\n' + METRIC_DEFS[key].info);
         }
 
         function buildChart(data) {

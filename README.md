@@ -361,8 +361,9 @@ pytest zerberus/tests/test_fenrir.py -v
 
 Reports landen in `zerberus/tests/report/`. Patch 94 hat den Erstlauf gegen den
 live Server gefahren — **32 passed, 0 skipped** in 47 s, kein 500er auf den 14
-Chaos-Payloads.
+Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
+`pageerror`-Listener gegen Hel/Nala): **34 passed** in 54 s.
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-18, Patch 99*
+*Zerberus Pro 4.0 – Stand: 2026-04-19, Patch 100 (Meilenstein 🏺)*

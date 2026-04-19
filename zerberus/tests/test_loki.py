@@ -133,6 +133,60 @@ class TestHel:
 #  PATCH 91: METRIKEN-API
 # ═══════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════
+#  PATCH 100: JAVASCRIPT-INTEGRITY
+# ═══════════════════════════════════════════════════════════
+
+class TestJavaScriptIntegrity:
+    """Patch 100: Frontend-Seiten dürfen keine JS-Parse/-Laufzeitfehler werfen.
+
+    `pageerror` wird VOR dem `goto` registriert — sonst werden initiale
+    Script-Parse-Errors verschluckt. Hintergrund: Patch 99 hat einen
+    SyntaxError in hel.py eingeführt (`'\\n'` in JS-String-Literal), der
+    von den bestehenden DOM-Tests nicht gefangen wurde.
+    """
+
+    def test_hel_no_js_errors(self, browser):
+        import os
+        admin_user = os.getenv("ADMIN_USER", "admin")
+        admin_pw = os.getenv("ADMIN_PASSWORD", "admin")
+        context = browser.new_context(
+            ignore_https_errors=True,
+            viewport={"width": 390, "height": 844},
+            http_credentials={"username": admin_user, "password": admin_pw},
+        )
+        page = context.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda err: errors.append(str(err)))
+        try:
+            page.goto("https://127.0.0.1:5000/hel/")
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(2000)
+        finally:
+            context.close()
+        assert not errors, f"JS-Fehler auf /hel/: {errors}"
+
+    def test_nala_no_js_errors(self, browser):
+        context = browser.new_context(
+            ignore_https_errors=True,
+            viewport={"width": 390, "height": 844},
+        )
+        page = context.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda err: errors.append(str(err)))
+        try:
+            page.goto("https://127.0.0.1:5000/nala")
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(2000)
+        finally:
+            context.close()
+        assert not errors, f"JS-Fehler auf /nala: {errors}"
+
+
+# ═══════════════════════════════════════════════════════════
+#  PATCH 91: METRIKEN-API
+# ═══════════════════════════════════════════════════════════
+
 class TestMetricsAPI:
     """Loki prüft den erweiterten /hel/metrics/history Endpoint."""
 

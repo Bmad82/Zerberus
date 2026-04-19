@@ -51,3 +51,8 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Das Nala-Frontend routet über /v1/chat/completions (legacy.py), NICHT über den Orchestrator. Fixes die nur in orchestrator.py landen wirken nicht auf den Haupt-Chat-Pfad.
 - Bei jedem Pipeline-Fix: alle drei Pfade prüfen — legacy.py, orchestrator.py, nala.py /voice
 - Änderungen in legacy.py betreffen auch externe Clients (Dictate, SillyTavern) — immer prüfen ob /v1/audio/transcriptions und der Static-API-Key-Bypass intakt sind (Patch 82)
+
+## Frontend / JS in Python-Strings
+- **Python-HTML-Strings mit JS:** `'\n'` in einem Python-String der HTML/JS enthält wird als echtes Newline gerendert und bricht JS-String-Literale (`SyntaxError: unterminated string literal`). Innerhalb `ADMIN_HTML = """..."""`/`NALA_HTML = """..."""` immer `'\\n'` (bzw. `\\r`, `\\t`) schreiben. Betrifft jeden String in nala.py und hel.py der JavaScript-Code enthält. Erstmals Patch 69c (`exportChat`), erneut sichtbar Patch 100 (`showMetricInfo` — seit Patch 91 latent).
+- **JS-Syntax immer mit `node --check` verifizieren:** Nach jedem Patch der das `<script>`-Block in hel.py/nala.py ändert, HTML aus dem Router rendern, `<script>`-Blöcke extrahieren, einzeln durch `node --check` jagen. Der Test `TestJavaScriptIntegrity` (Patch 100) fängt den Fehler im Playwright-Browser — `node --check` ist die schnelle Pre-Commit-Variante.
+- DOM-/API-Level-Tests (Playwright ohne `pageerror`-Listener) fangen JS-Parse-Errors NICHT. `page.on("pageerror", ...)` MUSS VOR `page.goto()` registriert werden, sonst werden initiale Script-Errors verschluckt.
