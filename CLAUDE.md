@@ -1,11 +1,18 @@
 # CLAUDE.md – Zerberus Pro 4.0 / Rosa
 
+## Globale Wissensbasis
+Repository: https://github.com/Bmad82/Claude
+- Vor Arbeitsbeginn: `lessons/`-Ordner auf relevante Einträge prüfen
+- Nach Abschluss: Neue universelle Erkenntnisse dort eintragen
+
+⚠️ **Das globale Repo ist PUBLIC.** Keine Secrets, Keys, IPs, interne URLs.
+
 ## Pflicht nach jedem Patch
-Nach Abschluss jedes Patches HYPERVISOR.md aktualisieren:
+Nach Abschluss jedes Patches SUPERVISOR.md aktualisieren:
 - Aktueller Patch: Nummer, Datum, 3-5 Zeilen was gemacht wurde
 - Offene Items: Liste aktuell halten (erledigte raus, neue rein)
 - Architektur-Warnungen: nur wenn sich etwas geändert hat
-HYPERVISOR.md ist die einzige Datei die Hypervisor-Claude beim Session-Start liest.
+SUPERVISOR.md ist die einzige Datei die Supervisor-Claude beim Session-Start liest.
 PROJEKTDOKUMENTATION.md bleibt das vollständige Archiv — wird nur bei Bedarf konsultiert.
 
 **Vollständige Projektdokumentation:** `docs/PROJEKTDOKUMENTATION.md`
@@ -63,5 +70,6 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 
 ## Weiterführende Doku
 
-- **Fallstricke & Lektionen:** `lessons.md` — Gotchas, gelernte Fehler, Plattform-Eigenheiten
+- **Fallstricke & Lektionen (projektspezifisch):** `lessons.md`
+- **Globale Lessons:** https://github.com/Bmad82/Claude/lessons/
 - **Vollständiges Patch-Archiv:** `docs/PROJEKTDOKUMENTATION.md`
