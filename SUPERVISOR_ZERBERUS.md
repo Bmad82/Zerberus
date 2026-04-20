@@ -1,8 +1,16 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 100 (2026-04-19) — Meilenstein 🏺*
+*Letzte Aktualisierung: Patch 101 (2026-04-21)*
 
 ## Aktueller Patch
+**Patch 101** – Template-Konsolidierung + R-07 Multi-Chunk-Aggregation (2026-04-21)
+- **Block A (Zerberus):** CLAUDE_ZERBERUS.md Header-Cleanup (`/ Rosa` raus), neue Regel 6 (Dateinamen `CLAUDE_ZERBERUS.md`/`SUPERVISOR_ZERBERUS.md` FINAL, inkl. Ratatoskr-Kopien), neue Regel 7 (Mobile-first: `:active`-Fallback, 44px-Touch-Targets, `keydown` statt `keypress`, `type="button"` auf Non-Submit-Buttons). Neue Sektionen „Supervisor-Patch-Prompts" (immer als .md, nie inline) und „Ratatoskr-Sync" (Copy-Liste + PowerShell-Rezept, Pfade `C:\Users\chris\Python\Rosa\Nala_Rosa\Ratatoskr\` und `C:\Users\chris\Python\Claude\`).
+- **Block B (Ratatoskr):** Alte `CLAUDE.md`/`HYPERVISOR.md` waren seit Patch 100-Fix bereits entfernt. Neue CLAUDE_ZERBERUS.md gespiegelt, gepusht (Commit `ad7bec2`).
+- **Block C (Bmad82/Claude globales Repo):** Vorhandene Templates (CLAUDE.md, SUPERVISOR.md) NICHT überschrieben — sind bereits umfangreicher als der Patch-Prompt vorgab (inkl. Bug-Tracker-Integration, Handy-First-Sektion, Whisper-Hinweis). Stattdessen zwei universelle Patch-100-Lessons in die passenden thematischen Dateien eingetragen: `lessons/frontend-js.md` + node-`--check`-Pre-Commit, `lessons/testing.md` + `pageerror`-Listener-vor-`goto`. Gepusht (Commit `aa3293c`).
+- **Block D (R-07 Multi-Chunk-Aggregation):** `_RAG_TOP_K` in orchestrator.py von 3 auf **8** erhöht (wirkt via Import auch auf legacy.py). Aggregation-Hint nach dem `context_lines`-Block in BEIDEN Pfaden (legacy.py + orchestrator.py): „WICHTIG: Wenn die Frage nach Aufzählung/Liste/Zusammenfassung über MEHRERE Abschnitte fragt, nutze ALLE oben stehenden Kontext-Abschnitte." `[AGG-101]` Debug-Logging auf WARNING-Level. `rag_eval.py TOP_K 5→8`.
+- **RAG-Eval post-Restart:** Alle 11 Fragen liefern jetzt je 8 Chunks. **Q11 (Aufzählungs-Query „alle Momente wo Annes Verhalten als unkontrollierbarer Impuls beschrieben wird"):** Chunk 4 mit der exakten Phrase „ein unkontrollierbarer Impuls" (Score 0.417) ist jetzt stabil im Top-8-Output — bei TOP_K=5 vorher rausgefallen, weil der Reranker das Glossar-Chunk (0.575) favorisiert. **Retrieval-Engpass ist gelöst.** Der Aggregation-Hint wirkt nur im Live-Chat (nicht im Eval, da rag_eval.py nur Retrieval misst). **Live-Verifikation Q11 steht bei Chris aus.**
+- Dateinamen-Bestätigung: `CLAUDE.md`/`HYPERVISOR.md` existieren nirgends mehr (Zerberus, Ratatoskr sauber). HYPERVISOR-Referenzen in `docs/PROJEKTDOKUMENTATION.md` sind historische Patch-Einträge — bewusst nicht geändert (keine Geschichts-Revision).
+
 **Patch 100** – Meilenstein: Hel-Hotfix + JS-Integrity-Tests + Easter Egg (2026-04-19)
 - **Teil 1 — Hotfix SyntaxError:** `hel.py:1290` enthielt seit Patch 91 `'\n\n'` in einem plain Python-`"""..."""`-String → Python rendert echtes Newline → JS-String-Literal bricht, gesamtes Hel-Script tot. Fix: `'\n\n'` → `'\\n\\n'`. Seit Patch 99 akut sichtbar, weil `activateTab` zur kritischen Init-Funktion wurde.
 - **Teil 2 — TestJavaScriptIntegrity:** Neue Testklasse in `test_loki.py` mit `pageerror`-Listener VOR `goto` (sonst werden Parse-Errors verschluckt). Zwei Tests für /hel/ + /nala. **Full-Suite: 34 passed in 54 s** (32 + 2 neue).
@@ -130,11 +138,12 @@
 
 ## Offene Items (Backlog)
 1. Manuell getippter Text → DB-Speicherung verifizieren
-2. [Patch 97] RAG Q11 bleibt offen — Retrieval ausgereizt. Nächster Kandidat: **R-07 Multi-Chunk-Aggregation** (LLM-seitig: Top-8+ in Kontext, System-Prompt-Hint „alle Treffer aufzählen").
-3. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
-4. [IDEE] Metriken: LLM-Auswertung („Wie haben sich meine Formulierungen verändert?") — Grundlage vorhanden (Patch 91+95)
-5. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl)
-6. [Patch 100] Pre-Commit-Hook / CI-Schritt: `node --check` auf alle `<script>`-Blöcke in hel.py + nala.py (schnellere Variante der `TestJavaScriptIntegrity`-Runtime-Tests)
+2. [Patch 101] R-07 Live-Chat-Verifikation für Q11: Aggregation-Hint im echten Nala-Chat testen (z.B. „Nenn alle Momente wo Annes Verhalten als unkontrollierbarer Impuls beschrieben wird"). Wenn LLM jetzt mehrere Treffer aufzählt statt nur das Glossar zusammenzufassen → R-07 abgeschlossen. Wenn nicht → Reranker-Tuning (Glossar-Chunk bekommt zu hohen Score).
+3. [Patch 101] Globale Lessons pflegen — nach jedem Patch prüfen ob eine Erkenntnis universell ist (→ Bmad82/Claude/lessons/), oder projektspezifisch (→ Zerberus/lessons.md).
+4. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
+5. [IDEE] Metriken: LLM-Auswertung („Wie haben sich meine Formulierungen verändert?") — Grundlage vorhanden (Patch 91+95)
+6. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl)
+7. [Patch 100] Pre-Commit-Hook / CI-Schritt: `node --check` auf alle `<script>`-Blöcke in hel.py + nala.py (schnellere Variante der `TestJavaScriptIntegrity`-Runtime-Tests)
 
 ## Architektur-Warnungen
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung
@@ -150,3 +159,6 @@ Telegram-Bot als Zero-Friction-Frontend für Dritte (keine Tailscale-Installatio
 - PROJEKTDOKUMENTATION.md NICHT vollständig laden (1900+ Zeilen = Kontextverschwendung)
 - Memory-Edits max 500 Zeichen pro Eintrag
 - Session-ID ≠ User-Trennung — Metriken pro User erst nach DB-Architektur-Fix vertrauenswürdig
+- Patch-Prompts IMMER als `.md`-Datei generieren — NIE inline im Chat. Claude Code erhält den Inhalt per Copy-Paste aus der Datei (Patch 101).
+- Dateinamen `CLAUDE_ZERBERUS.md` und `SUPERVISOR_ZERBERUS.md` sind FINAL — in Patch-Prompts nie mit alten Namen (`CLAUDE.md`, `HYPERVISOR.md`) referenzieren (Patch 100/101).
+- Lokale Pfade: Ratatoskr liegt unter `C:\Users\chris\Python\Rosa\Nala_Rosa\Ratatoskr\` (nicht `Rosa\Ratatoskr\`), Bmad82/Claude unter `C:\Users\chris\Python\Claude\` (nicht `Rosa\Claude\`). Patch-Prompts mit falschen Pfaden → immer erst verifizieren, nicht raten.
