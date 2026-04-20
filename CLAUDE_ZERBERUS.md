@@ -1,4 +1,4 @@
-# CLAUDE_ZERBERUS.md – Zerberus Pro 4.0 / Rosa
+# CLAUDE_ZERBERUS.md – Zerberus Pro 4.0
 
 ## Globale Wissensbasis
 Repository: https://github.com/Bmad82/Claude
@@ -38,6 +38,8 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 3. `.env` niemals nach außen leaken oder in Logs ausgeben
 4. `config.yaml` ist die einzige Konfigurationsquelle – `config.json` nicht als Konfig-Quelle verwenden
 5. Module mit `enabled: false` in `config.yaml` nicht anfassen
+6. Dateinamen `CLAUDE_ZERBERUS.md` und `SUPERVISOR_ZERBERUS.md` sind FINAL — nicht umbenennen, nicht verschieben, nicht durch alte Namen ersetzen. Gilt auch für die Kopien in Ratatoskr.
+7. Mobile-first: Nala/Hel/Admin-UIs werden primär auf iOS Safari + Android Chrome genutzt. Jede UI-Änderung muss mobile-kompatibel sein (`:active` statt nur `:hover`, Mindest-Touch-Target 44px, `keydown` statt `keypress`, `type="button"` auf allen Form-Buttons die kein submit sind).
 
 ## RAG-Upload
 
@@ -79,3 +81,29 @@ Projektspezifische Anweisungen: `CLAUDE_ZERBERUS.md` (diese Datei)
 Supervisor-Briefing: `SUPERVISOR_ZERBERUS.md`
 Patch-Prompts referenzieren IMMER den vollen Dateinamen mit Projektsuffix.
 NIEMALS mit der globalen CLAUDE.md verwechseln oder zusammenführen.
+
+## Supervisor-Patch-Prompts
+Patch-Prompts werden vom Supervisor (claude.ai Chat) immer als `.md`-Datei generiert — nie als inline Chat-Text. Claude Code erhält den Inhalt per Copy-Paste aus der Datei.
+
+## Ratatoskr-Sync (nach JEDEM Patch)
+Folgende Dateien nach `C:\Users\chris\Python\Rosa\Nala_Rosa\Ratatoskr\` kopieren und pushen:
+- `CLAUDE_ZERBERUS.md`
+- `SUPERVISOR_ZERBERUS.md` (wird vom Supervisor separat aktualisiert — nur kopieren wenn im Zerberus-Repo vorhanden)
+- `lessons.md`
+- `PROJEKTDOKUMENTATION.md`
+- `backlog_nach_patch83.md`
+- `README.md`
+
+```powershell
+$src = "C:\Users\chris\Python\Rosa\Nala_Rosa\Zerberus"
+$dst = "C:\Users\chris\Python\Rosa\Nala_Rosa\Ratatoskr"
+Copy-Item "$src\CLAUDE_ZERBERUS.md" "$dst\" -Force
+Copy-Item "$src\lessons.md" "$dst\" -Force
+Copy-Item "$src\PROJEKTDOKUMENTATION.md" "$dst\" -Force
+Copy-Item "$src\backlog_nach_patch83.md" "$dst\" -Force
+Copy-Item "$src\README.md" "$dst\" -Force
+cd $dst
+git add -A; git commit -m "Sync nach Patch [NR]"; git push
+```
+
+Universelle Lessons zusätzlich nach `C:\Users\chris\Python\Claude\lessons\` spiegeln (nur wenn die Erkenntnis projektübergreifend gilt).

@@ -208,12 +208,20 @@ async def chat_completions(
 
             if rag_hits:
                 context_lines = "\n".join(f"[Gedächtnis]: {h['text']}" for h in rag_hits)
-                enriched_content = f"[Intent: {intent}]\n{context_lines}\n\n{snippet}\n{last_user_msg}" if snippet else f"[Intent: {intent}]\n{context_lines}\n\n{last_user_msg}"
+                # Patch 101 (R-07): Aggregation-Hint für Listen-/Aufzählungs-Fragen
+                agg_hint = (
+                    "\n\nWICHTIG: Wenn die Frage nach einer Aufzählung, Liste oder "
+                    "Zusammenfassung über MEHRERE Abschnitte fragt, nutze ALLE oben "
+                    "stehenden Kontext-Abschnitte. Zähle alle relevanten Treffer auf, "
+                    "nicht nur den ersten."
+                )
+                enriched_content = f"[Intent: {intent}]\n{context_lines}{agg_hint}\n\n{snippet}\n{last_user_msg}" if snippet else f"[Intent: {intent}]\n{context_lines}{agg_hint}\n\n{last_user_msg}"
                 # Letzte User-Nachricht in der Kopie anreichern
                 for i in range(len(messages_for_llm) - 1, -1, -1):
                     if messages_for_llm[i]["role"] == "user":
                         messages_for_llm[i] = {"role": "user", "content": enriched_content}
                         break
+                logger.warning(f"[AGG-101] Chunks in Prompt: {len(rag_hits)} | Aggregation-Hint: aktiv")
                 logger.info(f"🧠 RAG lieferte {len(rag_hits)} Treffer für Legacy-Chat")
             elif snippet:
                 # Auch ohne RAG: Intent-Snippet einfügen

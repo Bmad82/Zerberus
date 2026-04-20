@@ -27,7 +27,7 @@ API_KEY    = os.environ.get(
     "RAG_EVAL_API_KEY",
     "ca55f7c73d68e45abfdae92dbba67c209cdc0eac5d483275118efd34d2e2b868",
 )
-TOP_K      = 5
+TOP_K      = 8  # Patch 101 (R-07): von 5 auf 8 für Multi-Chunk-Aggregation
 QUESTIONS  = Path("rag_eval_questions.txt")
 RESULTS    = Path("rag_eval_results.txt")
 

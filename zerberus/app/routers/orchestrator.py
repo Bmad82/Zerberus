@@ -58,7 +58,11 @@ except Exception:
 
 # L2-Distanz-Schwellwert: nur Treffer unterhalb dieser Grenze gelten als relevant
 _RAG_L2_THRESHOLD = 1.5
-_RAG_TOP_K = 3
+# Patch 101 (R-07): top_k von 3 auf 8 erhöht, damit Aggregat-Queries
+# (Aufzählungen, Zusammenfassungen über mehrere Abschnitte) genug Kontext
+# bekommen. Bei ~12 Chunks im Index ist das 2/3 des Korpus — für
+# Multi-Chunk-Aggregation genau richtig.
+_RAG_TOP_K = 8
 
 llm = LLMService()
 
@@ -417,7 +421,17 @@ async def _run_pipeline(
     if rag_hits:
         modules_used.append("rag")
         context_lines = "\n".join(f"[Gedächtnis]: {h['text']}" for h in rag_hits)
-        user_content = f"[Intent: {intent}]\n{context_lines}\n\n{snippet}\n{sandbox_block}{message}" if snippet else f"[Intent: {intent}]\n{context_lines}\n\n{sandbox_block}{message}"
+        # Patch 101 (R-07): Aggregation-Hint — bei Aufzählungs-/Listen-/
+        # Zusammenfassungs-Fragen soll der LLM ALLE Kontext-Abschnitte nutzen,
+        # nicht nur den ersten.
+        agg_hint = (
+            "\n\nWICHTIG: Wenn die Frage nach einer Aufzählung, Liste oder "
+            "Zusammenfassung über MEHRERE Abschnitte fragt, nutze ALLE oben "
+            "stehenden Kontext-Abschnitte. Zähle alle relevanten Treffer auf, "
+            "nicht nur den ersten."
+        )
+        user_content = f"[Intent: {intent}]\n{context_lines}{agg_hint}\n\n{snippet}\n{sandbox_block}{message}" if snippet else f"[Intent: {intent}]\n{context_lines}{agg_hint}\n\n{sandbox_block}{message}"
+        logger.warning(f"[AGG-101] Chunks in Prompt: {len(rag_hits)} | Aggregation-Hint: aktiv")
         logger.info(f"🧠 RAG lieferte {len(rag_hits)} relevante Treffer (L2 < {_RAG_L2_THRESHOLD})")
     else:
         user_content = f"[Intent: {intent}]\n{snippet}\n{sandbox_block}{message}" if snippet else f"[Intent: {intent}]\n{sandbox_block}{message}"
