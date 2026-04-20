@@ -1,4 +1,4 @@
-# CLAUDE.md – Zerberus Pro 4.0 / Rosa
+# CLAUDE_ZERBERUS.md – Zerberus Pro 4.0 / Rosa
 
 ## Globale Wissensbasis
 Repository: https://github.com/Bmad82/Claude
@@ -8,11 +8,11 @@ Repository: https://github.com/Bmad82/Claude
 ⚠️ **Das globale Repo ist PUBLIC.** Keine Secrets, Keys, IPs, interne URLs.
 
 ## Pflicht nach jedem Patch
-Nach Abschluss jedes Patches SUPERVISOR.md aktualisieren:
+Nach Abschluss jedes Patches SUPERVISOR_ZERBERUS.md aktualisieren:
 - Aktueller Patch: Nummer, Datum, 3-5 Zeilen was gemacht wurde
 - Offene Items: Liste aktuell halten (erledigte raus, neue rein)
 - Architektur-Warnungen: nur wenn sich etwas geändert hat
-SUPERVISOR.md ist die einzige Datei die Supervisor-Claude beim Session-Start liest.
+SUPERVISOR_ZERBERUS.md ist die einzige Datei die Supervisor-Claude beim Session-Start liest.
 PROJEKTDOKUMENTATION.md bleibt das vollständige Archiv — wird nur bei Bedarf konsultiert.
 
 **Vollständige Projektdokumentation:** `docs/PROJEKTDOKUMENTATION.md`
@@ -73,3 +73,9 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - **Fallstricke & Lektionen (projektspezifisch):** `lessons.md`
 - **Globale Lessons:** https://github.com/Bmad82/Claude/lessons/
 - **Vollständiges Patch-Archiv:** `docs/PROJEKTDOKUMENTATION.md`
+
+## ⚠️ Dateinamen-Konvention
+Projektspezifische Anweisungen: `CLAUDE_ZERBERUS.md` (diese Datei)
+Supervisor-Briefing: `SUPERVISOR_ZERBERUS.md`
+Patch-Prompts referenzieren IMMER den vollen Dateinamen mit Projektsuffix.
+NIEMALS mit der globalen CLAUDE.md verwechseln oder zusammenführen.

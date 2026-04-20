@@ -1,5 +1,5 @@
-# SUPERVISOR.md – Zerberus Pro 4.0
-*Strategischer Stand für Supervisor-Claude (claude.ai Chat-Instanz)*
+# SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
+*Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
 *Letzte Aktualisierung: Patch 100 (2026-04-19) — Meilenstein 🏺*
 
 ## Aktueller Patch
