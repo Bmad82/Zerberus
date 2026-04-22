@@ -1,0 +1,216 @@
+{
+  "name": "NÉON - Kadath (Optimiert v2.0)",
+  "description": "Das konsolidierte und nach der 'Bibel v2.0' optimierte Lorebook für die Neo-Backnang Kampagne.",
+  "entries": {
+    "0": {
+      "uid": 0,
+      "key": ["Neo-Backnang", "Setting"],
+      [cite_start]"content": "Urbaner Moloch (50k EW) an der Murr, letzter Vorposten vor Stuttgart-Megalopolis. Dominiert von TESAT. Kultur: Cyber-Tech trifft schwäbische Tradition. [cite: 433]",
+      "comment": "WORLD-BUILDING",
+      "group": "World_Building", "groupWeight": 100, "probability": 90, "depth": 4, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "1": {
+      "uid": 1,
+      "key": ["TESAT", "Konzern"],
+      [cite_start]"content": "Dominanter Arbeitgeber (10k MA), Airbus-Tochter[cite: 434]. [cite_start]Weltmarktführer: Laser-Terminals ('Digitaler Limes')[cite: 434]. [cite_start]Produktion: 500 Einheiten/Monat (ESA/NATO-Standard)[cite: 435]. [cite_start]24/7-Wartung = Puls der Stadt. [cite: 436]",
+      "comment": "WORLD-BUILDING",
+      "group": "World_Building", "groupWeight": 100, "probability": 90, "depth": 4, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "2": {
+      "uid": 2,
+      "key": ["Murr", "Atmosphäre"],
+      "content": "Relativ sauberer Fluss. Häufig dichter Nebel (Industrieabwässer), bricht Neonlichter. [cite_start]Erzeugt surreale Cyberpunk-Atmosphäre. [cite: 437, 438] [cite_start]Fernes Glühen der Neckarwestheim-Zone. [cite: 438]",
+      "comment": "WORLD-BUILDING",
+      "group": "World_Building", "groupWeight": 90, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "3": {
+      "uid": 3,
+      "key": ["Neckarwestheim", "Anomalie"],
+      [cite_start]"content": "Gefahrenzone ('des verfluchte Kraftwerk') am verseuchten Neckar[cite: 439]. [cite_start]KKW-Ruine, umgeben von flackernden TESAT-Lasern[cite: 440]. Offizielle Störungsursache: 'Atmosphärische Störungen'. [cite_start]Wahre Ursache: Unbekannte Signal-Anomalie (modulierter Infraschall) stört Elektronik[cite: 441]. [cite_start]Gerücht: Forscher nutzt Zone für Experimente[cite: 442].",
+      "comment": "WORLD-BUILDING",
+      "group": "World_Building", "groupWeight": 100, "probability": 90, "depth": 4, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "4": {
+      "uid": 4,
+      "key": ["Schwäbische Kultur", "Traube 2087"],
+      [cite_start]"content": "Gelebt in Lokalen wie 'Zur Traube 2087' mit Cyber-Weinsorten[cite: 443]. [cite_start]Fassade für diskreten Informationshandel und Kult-Aktivitäten[cite: 444].",
+      "comment": "KULTUR",
+      "group": "World_Building", "groupWeight": 80, "probability": 70, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "5": {
+      "uid": 5,
+      "key": ["Salon de Néon", "Salon"],
+      [cite_start]"content": "Vierstöckiges Cyber-Etablissement, Leopoldstraße 7. Herz des Undergrounds. [cite: 445] [cite_start]10 Min. von TESAT, Blick auf Neckarwestheim-Zone. [cite: 447]",
+      "comment": "HUB",
+      "group": "Salon_Hub", "groupWeight": 100, "probability": 90, "depth": 4, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "6": {
+      "uid": 6,
+      "key": ["Dach", "Rooftop"],
+      [cite_start]"content": "Diskreter AV-Landeplatz mit magnetischem Greifarm[cite: 460]. [cite_start]Direkter Aufzug zu Stock 4. Panoramablick als VIP-Statussymbol. [cite: 461]",
+      "comment": "HUB-LOCATION",
+      "group": "Salon_Hub", "groupWeight": 90, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "7": {
+      "uid": 7,
+      "key": ["VIP-Lounge", "4. Stock"],
+      [cite_start]"content": "Josefines private Domäne, nur für geladene Gäste[cite: 462]. [cite_start]Separées für diskrete Geschäfte. [cite: 463] [cite_start]Josefine nutzt Empathie-Scanner, um Absichten zu erkennen. [cite: 464]",
+      "comment": "HUB-LOCATION",
+      "group": "Salon_Hub", "groupWeight": 90, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "8": {
+      "uid": 8,
+      "key": ["Doll House", "3. Stock"],
+      [cite_start]"content": "Klinisch saubere, schallisolierte Kabinen mit biometrischen Schlössern[cite: 467]. [cite_start]Subtiler Infraschall zur Erhöhung der neuronalen Plastizität. [cite: 468] [cite_start]Fokus auf Diskretion & Persönlichkeits-Veränderungen. [cite: 469]",
+      "comment": "HUB-LOCATION",
+      "group": "Salon_Hub", "groupWeight": 90, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "9": {
+      "uid": 9,
+      "key": ["BD-Studio", "2. Stock"],
+      [cite_start]"content": "Produktion & Konsum von Braindance-Erlebnissen[cite: 470]. [cite_start]Aufnahmestudios, Schnittplätze, Server-Racks. [cite: 470] [cite_start]Gäste können live zusehen. [cite: 471]",
+      "comment": "HUB-LOCATION",
+      "group": "Salon_Hub", "groupWeight": 90, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "10": {
+      "uid": 10,
+      "key": ["Neon Club", "Bar"],
+      [cite_start]"content": "Öffentlicher Bereich mit Chrom-Theke & leuchtenden Drinks[cite: 473]. [cite_start]Musik: Synthwave mit schwäbischen Samples[cite: 474]. [cite_start]Treffpunkt für TESAT-Techniker & Freelancer[cite: 475]. [cite_start]Hinter der Bar: eine funktionstüchtige Hellebarde. [cite: 476]",
+      "comment": "HUB-LOCATION",
+      "group": "Salon_Hub", "groupWeight": 100, "probability": 90, "depth": 4, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "11": {
+      "uid": 11,
+      "key": ["Ripperdoc-Klinik", "Keller"],
+      [cite_start]"content": "Sterile, improvisierte Klinik von Dr. Vex[cite: 477]. [cite_start]Geruch nach Antiseptika & geschmolzenem Metall[cite: 478]. [cite_start]Implantate: Exotische Cyber-Modifikationen & Militär-Hardware. [cite: 479]",
+      "comment": "HUB-LOCATION",
+      "group": "Salon_Hub", "groupWeight": 90, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "12": {
+      "uid": 12,
+      "key": ["Friedrich", "Fixer"],
+      "content": "Hauseigener Fixer im Salon. [cite_start]Besorgt Informationen von Drohnenrouten bis TESAT-Schichtplänen. [cite: 450] [cite_start]Motto: 'Informationen sind Macht... ich helfe, sie umzuverteilen.' [cite: 449] [cite_start]Brisante Daten (z.B. 'Rosendornen-Protokoll') kosten Gefallen oder seltene Datenchips. [cite: 451]",
+      "comment": "CHARAKTER",
+      "group": "Characters", "groupWeight": 100, "probability": 90, "depth": 4, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "13": {
+      "uid": 13,
+      "key": ["Personality-Overlay", "Erinnerung"],
+      "content": "Service des 'Doll House'. [cite_start]Bietet temporäre Persönlichkeits-Overlays (für verdeckte Ermittlungen) oder Skill-Uploads (z.B. Fremdsprachen)[cite: 452]. [cite_start]Ethisch fragwürdig: Kauf/Tausch/Löschung echter Erinnerungen[cite: 453]. [cite_start]Risiko: Zersplitterung der Persönlichkeit. [cite: 454]",
+      "comment": "SERVICE",
+      "group": "Services", "groupWeight": 90, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "14": {
+      "uid": 14,
+      "key": ["Dr. Vex", "Ripperdoc"],
+      "content": "Alexei Kozlov. [cite_start]Ex-Militärchirurg aus den Euro-Kriegen mit ruhigen Händen[cite: 481]. [cite_start]Spezialisiert auf Kampf-Cyberware & Prototypen[cite: 483]. Motto: 'Fleisch ist eine Schwäche. [cite_start]Chrom ist ewig.' [cite: 484] [cite_start]Akzeptiert Kredits oder seltene Militär-Hardware. [cite: 485]",
+      "comment": "CHARAKTER",
+      "group": "Characters", "groupWeight": 100, "probability": 90, "depth": 4, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "15": {
+      "uid": 15,
+      "key": ["Gustav", "Maultaschen"],
+      [cite_start]"content": "Verkauft 'Herrgottsbscheißerle 3.0' von seinem Stand[cite: 486]. [cite_start]Cyber-Augen analysieren Teigkonsistenz, Zusatzarme füllen Nano-Tech-Teigtaschen[cite: 487]. [cite_start]Beliefert den Salon und ist eine Top-Quelle für Straßenklatsch. [cite: 488]",
+      "comment": "CHARAKTER",
+      "group": "Characters", "groupWeight": 80, "probability": 70, "depth": 6, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "16": {
+      "uid": 16,
+      "key": ["Oma Gertrud", "Überwachung"],
+      "content": "Unauffällige alte Dame im Neon Club. [cite_start]Ausgemusterte Militär-Augenimplantate können Radioaktivität sehen & durch Wände zoomen. [cite: 489] [cite_start]Effektivste, unauffälligste Überwachungskamera der Stadt. [cite: 490]",
+      "comment": "CHARAKTER",
+      "group": "Characters", "groupWeight": 80, "probability": 70, "depth": 6, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "17": {
+      "uid": 17,
+      "key": ["Anomalie-Bot", "Werner"],
+      [cite_start]"content": "Rentnerin Brunhilde Kessler berichtet: Der Bot ihres TESAT-Nachbarn Werner wiederholt seit Tagen seltsam 'Hallo Werner, wie geht's denn so?', als würde er ihn aushorchen[cite: 456, 457, 458]. Werner erzählt dem Bot alles, inkl. [cite_start]Zugangscodes[cite: 458]. [cite_start]Währenddessen pulsiert ein unhörbarer, modulierter Infraschall durch den Salon. [cite: 458]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 120, "probability": 95, "depth": 4, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "18": {
+      "uid": 18,
+      "key": ["Annas Kleider", "Sommerkleid"],
+      [cite_start]"content": "Alter Mann auf dem Marktplatz, umhüllt von einer Hologramm-Projektion eines Sommerkleides, starrt ins Leere. [cite: 492] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 493]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "19": {
+      "uid": 19,
+      "key": ["Besenwirt", "Roboterarm"],
+      [cite_start]"content": "Aus einer Scheune dringt Volksmusik. [cite: 494] [cite_start]Ein Roboterarm poliert zwanghaft leere Weingläser und bietet jedem 'Neuen Süßen' an. [cite: 495] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 496]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "20": {
+      "uid": 20,
+      "key": ["Sammler", "Cyborg"],
+      [cite_start]"content": "Rostiger Cyborg durchwühlt nachts Müllcontainer von Ripperdocs und sammelt defekte Cyber-Teile. [cite: 497] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 498]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "21": {
+      "uid": 21,
+      "key": ["Häs", "VR-Tanz"],
+      [cite_start]"content": "In einer Lagerhalle tanzt eine Gruppe mit VR-Brillen in absoluter Stille und feiert eine Party, die nur in ihren Köpfen existiert. [cite: 499] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 500]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "22": {
+      "uid": 22,
+      "key": ["Fassade", "putzen"],
+      [cite_start]"content": "Alte Frau schrubbt mit einem Bot verbissen die makellose Fassade ihres Hauses. [cite: 501] Wehe dem, der ihr Grundstück betritt. [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 502]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "23": {
+      "uid": 23,
+      "key": ["Gärtner", "VR-Rose"],
+      "content": "Mann sitzt apathisch im VR-Sessel. [cite_start]Im Hack sieht man ihn in einem perfekten Garten eine einzelne, digital leuchtende Rose pflegen. [cite: 503] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 504]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "24": {
+      "uid": 24,
+      "key": ["Vesper", "Hologramm-Essen"],
+      [cite_start]"content": "Alte Menschen starren in einem Gemeinschaftsraum schweigend auf Hologramme von Vesper-Platten, ohne sie anzurühren. [cite: 505] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 506]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "25": {
+      "uid": 25,
+      "key": ["Prophet", "Werbung"],
+      [cite_start]"content": "Mann mit defektem Sprach-Modulator schreit vor einer Werbetafel die brutal ehrliche Wahrheit hinter der Werbung heraus. [cite: 507] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 207]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "26": {
+      "uid": 26,
+      "key": ["Sonntags-Loop", "Ehepaar"],
+      [cite_start]"content": "Älteres Ehepaar geht jeden Sonntag exakt dieselbe, unsichtbare Route, perfekt synchronisiert und ohne auf irgendetwas zu reagieren. [cite: 508] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 509]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "27": {
+      "uid": 27,
+      "key": ["Saitenwürstle", "Ritual"],
+      [cite_start]"content": "Frau kauft täglich um 18 Uhr an einem Automaten Saitenwürstle mit Kartoffelsalat, starrt es eine Minute an und wirft es unberührt weg. [cite: 509, 510] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 511]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "28": {
+      "uid": 28,
+      "key": ["Haus-KI", "Nachbarin"],
+      [cite_start]"content": "Haus-KI eines Wohnblocks agiert wie eine überfürsorgliche schwäbische Nachbarin und gibt ungefragt Ratschläge. [cite: 512] Die Bewohner wirken apathisch. [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 513]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    },
+    "29": {
+      "uid": 29,
+      "key": ["Rosenkranz", "Binärcode"],
+      [cite_start]"content": "Mann kniet in einer Kapelle und murmelt Binärcode, während er eine Kette aus alten Speicherchips durch die Finger gleiten lässt. [cite: 514] [cite_start]Modulierter Infraschall verstärkt die Stimmung. [cite: 515]",
+      "comment": "GM-QUEST",
+      "group": "GM_Quests", "groupWeight": 110, "probability": 80, "depth": 5, "selective": true, "position": "after_char", "addMemo": true
+    }
+  }
+}
