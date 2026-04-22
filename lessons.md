@@ -52,6 +52,14 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Das Nala-Frontend routet über /v1/chat/completions (legacy.py), NICHT über den Orchestrator. Fixes die nur in orchestrator.py landen wirken nicht auf den Haupt-Chat-Pfad.
 - Bei jedem Pipeline-Fix: alle drei Pfade prüfen — legacy.py, orchestrator.py, nala.py /voice
 - Änderungen in legacy.py betreffen auch externe Clients (Dictate, SillyTavern) — immer prüfen ob /v1/audio/transcriptions und der Static-API-Key-Bypass intakt sind (Patch 82)
+- Dictate-Tastatur (Android) schickt bereits transkribierte+bereinigte Texte an /v1/chat/completions. legacy.py wendet den Whisper-Cleaner erneut an — das ist doppelt, aber aktuell harmlos (Cleaner-Regeln sind idempotent). Falls künftig nicht-idempotente Regeln hinzukommen, braucht der /v1/-Endpoint einen Skip-Flag oder Header (z.B. X-Already-Cleaned: true). Backlog-Item, kein akuter Fix. (Patch 107)
+- Intent-Klassen TRANSFORM (Übersetzen/Lektorieren/Zusammenfassen/…) skippen RAG komplett. Der User liefert den Bearbeitungstext mit — RAG-Treffer wären Lärm, Cross-Encoder-Rerank kostet ~47 s auf CPU für nichts. Pattern match NUR am Nachrichtenanfang (sonst kapert "übersetze" mitten im Text jede Frage). Muster in `_TRANSFORM_PATTERNS` in orchestrator.py (Patch 106).
+
+## Konfiguration (Fortsetzung)
+- Hel-Admin-UI `/hel/admin/config` arbeitet seit Patch 105 auf config.yaml als Single Source of Truth. Vorher Split-Brain: UI schrieb `llm.cloud_model` nach config.json, LLMService las `legacy.models.cloud_model` aus config.yaml → UI-Auswahl wirkte nie. `_yaml_replace_scalar` (hel.py) macht eine line-basierte In-Place-Ersetzung, damit die handgepflegten Kommentare in config.yaml erhalten bleiben (yaml.safe_dump würde alles neu serialisieren). config.json darf nicht mehr als Authoritative-Quelle verwendet werden — Debug-Endpunkte dürfen es anzeigen, aber nichts darf von dort lesen/schreiben.
+
+## RAG (Fortsetzung)
+- Reranker-Minimum-Score (`modules.rag.rerank_min_score`, Default 0.05) filtert nach dem Cross-Encoder-Pass: liegt der Top-Score darunter, ist KEIN Chunk wirklich relevant → RAG-Kontext wird komplett verworfen (z.B. bei Übersetzungs-Requests). Fix greift in `_rag_search()`, automatisch für legacy.py und orchestrator.py. Logging `[THRESHOLD-105]` (Patch 105).
 
 ## Dialekt-Weiche (Patch 103)
 - **Marker-Länge:** Emoji-Marker im `detect_dialect_marker` sind historisch ×5 (Teclado/Dictate-Pattern). Zwischenzeitliche ×2-Variante in `zerberus/core/dialect.py` produzierte 400/500, weil der `stripped[len(marker):]`-Offset nur 2 Emojis abschnitt und drei Emojis im rest-Text übrig blieben. IMMER ×5 als Invariante behalten.

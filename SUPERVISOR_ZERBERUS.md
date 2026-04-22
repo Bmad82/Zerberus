@@ -1,8 +1,24 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 104 (2026-04-22)*
+*Letzte Aktualisierung: Patches 105-107 (2026-04-22)*
 
 ## Aktueller Patch
+**Patch 107** – Smoke-Tests Phase 1 + Pipeline-Deduplizierung-Doku (2026-04-22)
+- **Doku:** `lessons.md` erweitert um (a) Pipeline-Dedup (Dictate cleaned Text bereits vor dem Upload, legacy.py cleaned nochmal — aktuell idempotent-harmlos, Backlog-Item), (b) Hel-Admin-UI Split-Brain-Lektion aus Patch 105, (c) Reranker-Minimum-Score-Lektion aus Patch 105, (d) TRANSFORM-Intent-Regel aus Patch 106.
+- **Backlog:** drei neue Items (Pipeline-Dedup-Skip-Flag, DB-Dedup Overnight, Projekt-Workspace als Langzeit-Vision).
+- **Tests:** Unit-Level detect_intent-Matrix (17/18, Uebersetze-ohne-Umlaut-Edge absichtlich nach Patch-Fix getestet → 18/18). Playwright-Suite + curl-Smoke-Tests benötigen laufenden Server — wurden NICHT automatisch gestartet, Chris führt sie nach Server-Start manuell aus (Commands stehen im Patch-Prompt).
+
+**Patch 106** – RAG-Skip für TRANSFORM-Intent (2026-04-22)
+- **Root Cause:** Jeder /v1/chat/completions-Request durchlief die komplette RAG-Pipeline inkl. Query-Expansion (OpenRouter-Call) und Cross-Encoder-Rerank (~47 s auf CPU). Bei Textverarbeitungs-Aufgaben (Übersetzen/Lektorieren/Zusammenfassen) liefert der User den Kontext selbst mit — RAG-Index hat nichts Passendes, der 16k-Token-Monster-Prompt ist reine Latenz.
+- **Fix:** Neuer Intent TRANSFORM mit höchster Prio-Reihenfolge (vor COMMAND_TOOL) in [orchestrator.py](zerberus/app/routers/orchestrator.py). `_TRANSFORM_PATTERNS` matched nur am Nachrichtenanfang (`^übersetze|lektoriere|fasse\s+zusammen|stichpunkte|schreib\s+um|kürze|erweitere` + englische Pendants + ue/oe/ae-Transliterationen). Permission-Matrix erweitert: TRANSFORM für alle Rollen (Text-only, kein Tool-Use). RAG-Skip-Logik in BEIDEN Pfaden (orchestrator._run_pipeline + legacy.chat_completions) ergänzt um `skip_rag_transform`. Query Expansion wird automatisch mit ausgelassen, weil sie nur in `_rag_search()` läuft. `[TRANSFORM-106]`-WARNING-Log markiert den Skip.
+- **Entfernt:** "übersetze", "zusammenfass(e)" aus `_COMMAND_SAFE_WORDS` (kollidierten mit dem neuen Intent).
+
+**Patch 105** – Hel-Split-Brain-Fix + RAG-Reranker-Threshold (2026-04-22)
+- **Root Cause (Split-Brain):** Der im Prompt vermutete Llama-Hardcode in legacy.py existierte nicht — `LLMService.call()` liest sauber aus `settings.legacy.models.cloud_model`. Die ECHTE Fehlerquelle lag in [hel.py](zerberus/app/routers/hel.py): `GET/POST /hel/admin/config` arbeiteten auf `config.json` (`llm.cloud_model`), aber `LLMService` zog aus `config.yaml` (`legacy.models.cloud_model`). Hel-UI zeigte DeepSeek, LLMService rief Llama. Klassischer Split-Brain, eigentlich schon Patch 34 adressiert, in der UI aber nicht nachgezogen.
+- **Fix (Split-Brain):** GET liefert jetzt YAML-Werte im gewohnten `{llm: {cloud_model, temperature, threshold}}`-Wrapper (UI-JS unverändert). POST schreibt via `_yaml_replace_scalar()` — line-basierte In-Place-Ersetzung für `legacy.models.cloud_model`, `legacy.settings.ai_temperature`, `legacy.settings.threshold_length`. Kommentare in config.yaml bleiben vollständig erhalten (yaml.safe_dump würde sie zerstören, ruamel.yaml ist nicht installiert). config.yaml manuell auf `deepseek/deepseek-v3.2` gesetzt, config.yaml.example auch. config.json zur Konsistenz mitgezogen (wird aber nicht mehr authoritativ gelesen).
+- **Root Cause (Reranker):** Cross-Encoder liefert bei irrelevanten Queries (z.B. "Übersetze …") Top-Scores von 0.003, trotzdem wurden alle 8 Chunks ins Prompt gepumpt. Kein Minimum-Schwellwert.
+- **Fix (Reranker):** Neuer Config-Key `modules.rag.rerank_min_score: 0.05` (in config.yaml + config.yaml.example). `_rag_search()` in [orchestrator.py](zerberus/app/routers/orchestrator.py) prüft nach dem Rerank den Top-Score — liegt er unter der Schwelle, wird `[]` zurückgegeben statt 8 Noise-Chunks. Automatisch für legacy.py wirksam (importiert `_rag_search`). `[THRESHOLD-105]`-WARNING-Log beides — behalten und verworfen.
+
 **Patch 104** – HITL-Guard Scope + B-24 Overnight-Sentiment + Patch-102-Nachtrag (2026-04-22)
 - **Block 1 – Patch-102-Nachtrag:** Fehlender Patch-102-Eintrag in `SUPERVISOR_ZERBERUS.md` zwischen Patch 103 und Patch 101 nachgetragen (Cluster 1 Session-Isolation/B-02/B-06, Cluster 2 Zustandsanzeige/B-03/B-08/B-09/B-11/B-17, Cluster 3 Whisper RepFilter/B-01, Cluster 4 LLM-Fallback/B-20, Cluster 5 Begrüßung/B-05, Cluster 6 Input/B-07, Tests 44/45 grün). Markiert mit „(Eintrag nachgetragen in Patch 104)".
 - **Block 2 – HITL-Guard Scope (Root Cause):** Der Permission-Check (`_PERMISSION_MATRIX` aus Patch 47) feuerte unconditional in `_run_pipeline` ([orchestrator.py:349](zerberus/app/routers/orchestrator.py:349)) und im `/v1/chat/completions`-Handler ([legacy.py:148](zerberus/app/routers/legacy.py:148)). Defaultmäßig läuft Dictate ohne JWT → `permission_level="guest"`, das nur QUESTION + CONVERSATION erlaubt. Englische Texte mit Wörtern wie „download", „script", „tool" wurden als COMMAND_TOOL klassifiziert und mit der HitL-Antwort geblockt — obwohl der Guard ursprünglich nur externe Bot-Channels (Telegram/WhatsApp) absichern sollte. **Fix:** Neue Konstante `_HITL_PROTECTED_CHANNELS = {"telegram","whatsapp"}` in [orchestrator.py](zerberus/app/routers/orchestrator.py), `_run_pipeline` bekam neuen `channel: str | None = None`-Parameter — Permission-Check läuft jetzt nur noch wenn `channel in _HITL_PROTECTED_CHANNELS`. `legacy.py /v1/chat/completions` ruft den Block gar nicht mehr auf (Dictate-only), behält aber `detect_intent()` für die nachgelagerte RAG-Skip-Logik. `[HITL-104]`-WARNING-Log markiert das Skip an beiden Stellen. Telegram/WhatsApp-Router müssen beim späteren Einbau `channel="telegram"`/`"whatsapp"` an `_run_pipeline()` übergeben — dann greift der Guard wieder.
@@ -171,6 +187,14 @@
 5. [IDEE] Metriken: LLM-Auswertung („Wie haben sich meine Formulierungen verändert?") — Grundlage vorhanden (Patch 91+95)
 6. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl)
 7. [Patch 100] Pre-Commit-Hook / CI-Schritt: `node --check` auf alle `<script>`-Blöcke in hel.py + nala.py (schnellere Variante der `TestJavaScriptIntegrity`-Runtime-Tests)
+8. [Patch 107] Doppelte Pipeline-Verarbeitung: Dictate-Tastatur schickt bereits gecleanten Text, legacy.py cleaned nochmal. Aktuell harmlos (idempotent), aber bei nicht-idempotenten Regeln problematisch. Lösung: `X-Already-Cleaned`-Header oder Channel-basierter Skip in [legacy.py](zerberus/app/routers/legacy.py) `clean_transcript`-Aufruf.
+9. [Patch 107] DB-Deduplizierung: Tastatur-Retries bei schlechtem Empfang erzeugen identische aufeinanderfolgende Messages in `bunker_memory.db`. Overnight-Job soll Duplikate erkennen und markieren/entfernen. Kriterium: gleicher `profile_key` + gleicher `content` + `timestamp` innerhalb von 60 Sekunden.
+10. [Langzeit] Projekt-Oberfläche in Nala: Eigener Workspace pro Projekt mit Dateien, eigenem RAG-Index, Code-Execution in Docker-Sandbox mit Sancho-Panza-Veto (Multi-Agent-Prüfung vor Execution). War von Anfang an geplant, aus Scope rausgefallen. Abhängigkeit: Rosa/Heimdall für Execution Oversight.
+
+### Erledigt in Patches 105-107
+- Llama-Hardcode-Verdacht (Patch 105 — kein Hardcode, stattdessen Split-Brain in Hel gefixt)
+- Reranker-Threshold fehlt (Patch 105)
+- RAG-Skip für Textverarbeitung (Patch 106)
 
 ## Architektur-Warnungen
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung
