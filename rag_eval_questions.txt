@@ -9,3 +9,20 @@
 9. Welche Phasen der Heilung beschreibt er im Epilog, wie lange hat jede gedauert?
 10. Was meint er mit "verkaufsoffener Sonntag in Ulm"?
 11. Nenn alle Momente wo Annes Verhalten als unkontrollierbarer Impuls beschrieben wird.
+
+# --- Patch 108b: Neue Fragen zur Verifikation Category-Tag-Retrieval ---
+
+# Codex Heroicus I-III (category: narrative) — Fakten / Aggregation / Dialekt
+12. Wer ist der "Eiserne Architekt" und bei welchem Schmied hat er sein Handwerk erlernt?
+13. Nenn die drei Dämonen der Konfiguration mit ihren Zahlenwerten.
+14. Welchen Schrei stieß Siegfried aus, bevor er den finalen Befehl ausführte, und wie lautete der Befehl?
+
+# NÉON - Kadath (category: lore) — World-Building / NPC / Orte
+15. Wie viele Einwohner hat Neo-Backnang, und welcher Konzern dominiert die Stadt mit wie vielen Mitarbeitern?
+16. Wer ist Dr. Alexei Kozlov, wie lautet sein Spitzname, und was ist sein Motto über Fleisch und Chrom?
+17. In welcher Straße und Hausnummer liegt der Salon de Néon, und wer ist der hauseigene Fixer?
+18. Was verkauft Gustav, wie nennt er seine Produkte, und wie alt ist er?
+
+# Cross-Document (narrative × lore × Anne-Material) — Retrieval-Breite
+19. In welchen Dokumenten taucht "Infraschall" oder "modulierter Infraschall" auf, und in welchem Kontext jeweils?
+20. Welche schwäbischen Ortsnamen (Backnang, Sonnenbühl, Ulm, ...) werden in welchen Dokumenten genannt?

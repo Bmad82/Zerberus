@@ -115,10 +115,13 @@ NALA_HTML = """<!DOCTYPE html>
             --color-gold-dark: #c8941f;
             --color-text-light: #e8eaf0;
             --color-accent: #ec407a;
-            /* Patch 86: Bubble-Farben (Fallback auf Theme-Farben) */
-            --bubble-user-bg: var(--color-accent);
+            /* Patch 86/109: Bubble-Farben — Defaults als rgba (leicht transparent
+               für optische Tiefe). Gleiche Farbwerte wie --color-accent / --color-primary-mid,
+               nur mit Alpha. Anti-Invariante: NIE schwarz auf schwarz — Bubbles müssen
+               stets lesbar sein, selbst ohne Theme/Favorit. */
+            --bubble-user-bg: rgba(236, 64, 122, 0.88);
             --bubble-user-text: var(--color-primary);
-            --bubble-llm-bg: var(--color-primary-mid);
+            --bubble-llm-bg: rgba(26, 47, 78, 0.85);
             --bubble-llm-text: var(--color-text-light);
             /* Patch 86: Chat-Schriftgröße */
             --font-size-base: 15px;
@@ -1662,7 +1665,8 @@ NALA_HTML = """<!DOCTYPE html>
             // AbortError = Timeout ODER Session-Wechsel/Superseded
             if (error.name === 'AbortError' || (error.message || '').includes('aborted')) {
                 if (reqSessionId === sessionId && myAbort.signal.reason === 'timeout') {
-                    setTypingState('timeout', text);
+                    // Patch 109: reqSessionId mitgeben, damit Retry erst per REST-Fallback prüft
+                    setTypingState('timeout', text, reqSessionId);
                 } else {
                     removeTypingIndicator();
                 }
@@ -1671,7 +1675,8 @@ NALA_HTML = """<!DOCTYPE html>
             console.error('[ERROR-102] Chat-Request fehlgeschlagen:', error);
             removeTypingIndicator();
             if (reqSessionId === sessionId) {
-                showErrorBubble('Verbindungsfehler — bitte erneut versuchen', text);
+                // Patch 109: reqSessionId mitgeben für REST-Fallback
+                showErrorBubble('Verbindungsfehler — bitte erneut versuchen', text, reqSessionId);
             }
         } finally {
             clearTimeout(timeoutId);
@@ -1889,8 +1894,52 @@ NALA_HTML = """<!DOCTYPE html>
         if (el) el.remove();
     }
 
+    // Patch 109: REST-Fallback — prüft ob Backend inzwischen eine Antwort gespeichert hat.
+    // Sucht die letzte user-Message mit gleichem Content (rückwärts), liefert die erste
+    // nachfolgende assistant-Message zurück. null = keine späte Antwort gefunden.
+    async function fetchLateAnswer(sid, userText) {
+        if (!sid || !userText) return null;
+        try {
+            const r = await fetch('/archive/session/' + encodeURIComponent(sid), { headers: profileHeaders() });
+            if (!r.ok) return null;
+            const msgs = await r.json();
+            if (!Array.isArray(msgs) || msgs.length === 0) return null;
+            const needle = (userText || '').trim();
+            let lastUserIdx = -1;
+            for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i].role === 'user' && (msgs[i].content || '').trim() === needle) {
+                    lastUserIdx = i;
+                    break;
+                }
+            }
+            if (lastUserIdx < 0) return null;
+            for (let j = lastUserIdx + 1; j < msgs.length; j++) {
+                if (msgs[j].role === 'assistant' && msgs[j].content) {
+                    return msgs[j].content;
+                }
+            }
+            return null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    // Patch 109: Retry-Handler mit Fallback-Logik. Entfernt "wrapperOrRemover" vom DOM,
+    // zeigt späte Antwort an falls vorhanden, sonst echter Retry via sendMessage.
+    async function retryOrRecover(retryText, retrySid, cleanupFn) {
+        const late = await fetchLateAnswer(retrySid, retryText);
+        if (typeof cleanupFn === 'function') cleanupFn();
+        if (late && retrySid === sessionId) {
+            addMessage(late, 'bot');
+            loadSessions();
+            return;
+        }
+        sendMessage(retryText);
+    }
+
     // Patch 102 (B-03/B-09/B-11/B-17): Zustands-Helfer.
-    function setTypingState(state, retryText) {
+    // Patch 109: dritter Parameter retrySid — für REST-Fallback im Retry-Button.
+    function setTypingState(state, retryText, retrySid) {
         const wrapper = document.getElementById('typing-indicator');
         if (!wrapper) return;
         const bubble = wrapper.querySelector('.typing-indicator');
@@ -1900,9 +1949,14 @@ NALA_HTML = """<!DOCTYPE html>
             if (statusEl) statusEl.textContent = 'Keine Antwort vom Server';
             if (!bubble.querySelector('.retry-inline')) {
                 const btn = document.createElement('button');
+                btn.type = 'button';
                 btn.className = 'retry-inline';
                 btn.textContent = '🔄 Erneut versuchen';
-                btn.onclick = () => { removeTypingIndicator(); sendMessage(retryText); };
+                btn.onclick = async () => {
+                    btn.disabled = true;
+                    btn.textContent = '⏳ Prüfe Server…';
+                    await retryOrRecover(retryText, retrySid, removeTypingIndicator);
+                };
                 bubble.appendChild(btn);
             }
         } else if (state === 'running') {
@@ -1911,16 +1965,22 @@ NALA_HTML = """<!DOCTYPE html>
         }
     }
 
-    function showErrorBubble(text, retryText) {
+    // Patch 109: dritter Parameter retrySid — für REST-Fallback im Retry-Button.
+    function showErrorBubble(text, retryText, retrySid) {
         const wrapper = document.createElement('div');
         wrapper.className = 'msg-wrapper';
         const bubble = document.createElement('div');
         bubble.className = 'typing-indicator error-state frozen';
         bubble.innerHTML = '<span class="typing-status">' + text + '</span>';
         const btn = document.createElement('button');
+        btn.type = 'button';
         btn.className = 'retry-inline';
         btn.textContent = '🔄 Erneut versuchen';
-        btn.onclick = () => { wrapper.remove(); sendMessage(retryText); };
+        btn.onclick = async () => {
+            btn.disabled = true;
+            btn.textContent = '⏳ Prüfe Server…';
+            await retryOrRecover(retryText, retrySid, () => wrapper.remove());
+        };
         bubble.appendChild(btn);
         wrapper.appendChild(bubble);
         messagesDiv.appendChild(wrapper);
@@ -2253,6 +2313,11 @@ NALA_HTML = """<!DOCTYPE html>
         document.getElementById('tc-accent').value  = d.accent;
         localStorage.removeItem('nala_theme');
         localStorage.removeItem('nala_last_active_favorite');  // Patch 103 B-13/14
+        // Patch 109: Vollständiger Reset — inkl. Bubble-Overrides und Font-Size,
+        // sonst können alte Overrides (z.B. schwarzer LLM-Hintergrund) die rgba-
+        // Defaults überschreiben und unlesbare Bubbles erzeugen.
+        if (typeof resetAllBubbles === 'function') resetAllBubbles();
+        if (typeof resetFontSize === 'function') resetFontSize();
     }
 
     // ── Patch 86: Bubble-Farben (N-F07) ──

@@ -1,8 +1,15 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 108 (2026-04-22)*
+*Letzte Aktualisierung: Patch 108b + 109 (2026-04-22)*
 
 ## Aktueller Patch
+**Patch 108b + 109** – RAG-Eval-Erweiterung + SSE-Resilience + Theme-Hardening (2026-04-22)
+- **Teil A / 108b – RAG-Eval-Erweiterung:** `rag_eval_questions.txt` um 9 neue Fragen erweitert (Q12–Q20). Drei Cluster: Codex Heroicus (Q12–Q14, category `narrative`), NÉON Kadath Prosa (Q15–Q18, category `lore`), Cross-Document (Q19–Q20) — fragen Fakten-, Aggregations- und Cross-Category-Retrieval ab. **Live-Verifikation der Category-Tags (Upload mit category-Form-Feld, `sources_meta` im Status, `Kategorie: narrative` im Retrieval-Kontext) steht bei Chris aus** — Server-Start + Admin-JWT waren aus der CI-Umgebung nicht praktikabel. Neue Test-Doks (Codex Heroicus, NÉON Kadath) müssen vor dem Eval-Run mit passender Category hochgeladen werden.
+- **Teil B / 109 – SSE-Resilience (Cluster B1):** Root-Cause-Analyse: Der SSE-Stream `/nala/events` liefert nur Status-Events (rag_search/llm_start/done), die eigentliche Antwort kommt per `fetch('/v1/chat/completions')` als JSON. Bei 45-s-Frontend-Timeout bricht der fetch ab, obwohl das Backend noch weiterarbeitet und die Antwort via `store_interaction()` in die DB schreibt. Neuer **REST-Fallback auf Retry-Click** in [nala.py](zerberus/app/routers/nala.py): `fetchLateAnswer(sid, userText)` pollt das bestehende `/archive/session/{id}`, sucht rückwärts die letzte user-Message mit passendem Content, liefert die erste nachfolgende assistant-Message zurück. `retryOrRecover(retryText, retrySid, cleanupFn)` kapselt die Entscheidung: späte Antwort gefunden → anzeigen (kein Doppelkonsum von OpenRouter-Credits). Kein späte Antwort → klassisches `sendMessage(retryText)`. `setTypingState('timeout', text, reqSessionId)` + `showErrorBubble(text, retryText, reqSessionId)` bekommen die `reqSessionId` als dritten Parameter durchgereicht. Button zeigt „⏳ Prüfe Server…" während der kurzen Archive-Abfrage. **Kein neuer Endpoint nötig** — `/archive/session/{id}` aus [archive.py](zerberus/app/routers/archive.py) existiert bereits (mit JWT-Auth via `profileHeaders()`).
+- **Teil B / 109 – Theme-Hardening (Cluster B2):** `:root` in [nala.py](zerberus/app/routers/nala.py) — `--bubble-user-bg` + `--bubble-llm-bg` auf `rgba(…, 0.88/0.85)`-Defaults umgestellt (gleiche Farbwerte wie `--color-accent` / `--color-primary-mid`, nur mit Alpha). Anti-Invariante dokumentiert: „NIE schwarz auf schwarz". `resetTheme()` erweitert — ruft zusätzlich `resetAllBubbles()` + `resetFontSize()` auf, damit ein vollständiger Reset wirklich alle Overrides löscht (vorher konnten alte schwarze Bubble-Overrides die rgba-Defaults übersteuern). Color-Picker-Verhalten unverändert (liest `cssToHex` aus Theme-Fallback-Kette).
+- **Verifikation:** `python -m py_compile zerberus/app/routers/nala.py` OK. `node --check` auf beide NALA_HTML-`<script>`-Blöcke (3318 + 58678 Zeichen) OK. `pytest zerberus/tests/test_intent_transform.py zerberus/tests/test_cleaner.py` → **34 passed** (offline). Live-Playwright-Suite + RAG-Eval-Run stehen bei Chris aus (Server-Start nötig).
+- **Scope:** Nur SSE-Fallback + Theme-Defaults + neue Eval-Fragen. Color Picker / Farb-Rad (Backlog Phase 4), Chunking-Weiche (Patch 110), Query-Router mit Category-Filter (Patch 110), Background Memory Extraction (Patch 111), W-001 Sentence-Repetition, Multimodalität ZIP/Bild — NICHT in diesem Patch.
+
 **Patch 108** – RAG Category-Tags + Ratatoskr-Sync + CLAUDE_ZERBERUS Regel 9 (2026-04-22)
 - **Cluster 3 – RAG Category-Tags:** Neuer Form-Parameter `category` in [`/hel/admin/rag/upload`](zerberus/app/routers/hel.py) (`Allgemein`/`Narrativ`/`Technisch`/`Persönlich`/`Lore`/`Referenz`). Whitelist `_RAG_CATEGORIES` in hel.py, unbekannte Werte fallen auf `"general"` zurück (`[RAG-108]`-WARNING). Metadata pro Chunk um `category` erweitert (`{"source", "word_count", "category"}`). Altdaten ohne Category lesen via `.get("category", "general")` → keine Migration nötig.
 - **Hel-UI:** Neues `<select id="ragCategory" class="profile-select">`-Dropdown unter dem Datei-Button (gleiches Styling wie Profil-Dropdown aus Patch 95). `uploadRagFile()` hängt `category` an FormData. `loadRagStatus()` verarbeitet das neue `sources_meta`-Feld und rendert farbige Badges pro Kategorie in der Index-Übersicht (Farbmap `RAG_CATEGORY_COLORS`). Fallback auf `sources`-Only, falls Endpoint kein `sources_meta` liefert (Backward-Compat).
@@ -207,12 +214,14 @@
 11. [Patch 108 → Phase 2 Folge-Patches] Category-Tagging ist jetzt da, aber noch KEIN Filtering. Folge-Arbeit: **Chunking-Weiche pro Doc-Typ (Patch 109)**, **Query-Router mit Category-Filter (Patch 110)**, **Background Memory Extraction (Patch 111)**.
 12. [Patch 108] W-001 Sentence-Repetition-Bug (Whisper), Multimodalität ZIP/Bild-Upload, Relative Pfade — aus Scope raus, in Backlog verschoben.
 
-### Erledigt in Patches 105-108
+### Erledigt in Patches 105-109
 - Llama-Hardcode-Verdacht (Patch 105 — kein Hardcode, stattdessen Split-Brain in Hel gefixt)
 - Reranker-Threshold fehlt (Patch 105)
 - RAG-Skip für Textverarbeitung (Patch 106)
 - RAG Category-Tagging beim Upload + Anzeige (Patch 108)
 - CLAUDE_ZERBERUS Regel 9 „User-Entscheidungen als klickbare Box" (Patch 108)
+- SSE-Timeout doppelter OpenRouter-Call beim Retry (Patch 109 — REST-Fallback via `/archive/session/{id}`)
+- Theme-Defaults ohne rgba-Tiefe + unvollständiger `resetTheme()` (Patch 109)
 
 ## Architektur-Warnungen
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung

@@ -70,6 +70,15 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - **JS-Syntax immer mit `node --check` verifizieren:** Nach jedem Patch der das `<script>`-Block in hel.py/nala.py ändert, HTML aus dem Router rendern, `<script>`-Blöcke extrahieren, einzeln durch `node --check` jagen. Der Test `TestJavaScriptIntegrity` (Patch 100) fängt den Fehler im Playwright-Browser — `node --check` ist die schnelle Pre-Commit-Variante.
 - DOM-/API-Level-Tests (Playwright ohne `pageerror`-Listener) fangen JS-Parse-Errors NICHT. `page.on("pageerror", ...)` MUSS VOR `page.goto()` registriert werden, sonst werden initiale Script-Errors verschluckt.
 
+## SSE / Streaming Resilience (Patch 109)
+- **Frontend-Timeout ≠ Backend-Timeout:** Der 45-s-Frontend-Timeout bricht den `fetch()` ab, das Backend arbeitet trotzdem weiter und speichert die fertige Antwort via `store_interaction()` in die DB. Ein naiver Retry-Button, der einfach `sendMessage(text)` nochmal aufruft, produziert **doppelte LLM-Calls** (doppelte OpenRouter-Kosten + Verwirrung in der Session-Historie).
+- **Fix-Pattern:** Retry-Button prüft erst per REST-Endpoint (`/archive/session/{id}`) ob die DB inzwischen eine Antwort zum gleichen User-Text enthält. Nur wenn keine späte Antwort gefunden wird, läuft ein echter Retry. Kein neuer Endpoint nötig — das Archive-Endpoint existiert bereits für Session-Load. `fetchLateAnswer(sid, userText)` + `retryOrRecover(retryText, retrySid, cleanupFn)` in [nala.py](zerberus/app/routers/nala.py) kapseln die Logik (Patch 109).
+- **Signatur-Hinweis:** Retry-Handler (`setTypingState`, `showErrorBubble`) müssen die `reqSessionId` als dritten Parameter durchreichen — nicht `sessionId` zur Click-Zeit verwenden, weil der User inzwischen die Session gewechselt haben kann.
+
+## Theme-Defaults (Patch 109)
+- **Anti-Invariante „nie schwarz auf schwarz":** Bubble-Background-Defaults in `:root` müssen **lesbare Werte** haben, selbst ohne gesetztes Theme oder Favorit. `rgba(…, 0.85–0.88)`-Werte mit den Theme-Hex-Farben als Basis geben optische Tiefe ohne den Kontrast zu brechen. User-Bubble `rgba(236, 64, 122, 0.88)` + LLM-Bubble `rgba(26, 47, 78, 0.85)` entsprechen Chris's Purple/Gold-Scheme.
+- **Reset muss vollständig sein:** `resetTheme()` darf nicht nur die 5 Theme-Farben zurücksetzen — sonst bleiben alte Bubble-Overrides (z.B. schwarzer Hintergrund) in `localStorage` aktiv und übersteuern die rgba-Defaults. Lösung: `resetTheme()` ruft `resetAllBubbles()` + `resetFontSize()` mit auf.
+
 ## Dateinamen-Konvention (Patch 100)
 - Projektspezifische CLAUDE.md IMMER als `CLAUDE_[PROJEKTNAME].md` benennen
 - Gleiches für Supervisor-Briefing: `SUPERVISOR_[PROJEKTNAME].md`
