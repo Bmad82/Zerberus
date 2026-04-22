@@ -1952,32 +1952,105 @@ async def post_dialect(request: Request):
         raise e
     return {"status": "ok"}
 
+YAML_CONFIG_PATH = Path("config.yaml")
+
+
+def _yaml_replace_scalar(section_path: list[str], key: str, new_value) -> bool:
+    """Patch 105: Ersetzt einen Skalar-Wert in config.yaml in-place.
+
+    Einfache Line-basierte Ersetzung, die Kommentare und Formatierung
+    erhält — yaml.safe_dump würde alles neu serialisieren und Kommentare
+    zerstören. Findet den Key unter dem vorgegebenen Section-Pfad
+    (z.B. ['legacy', 'models']) und ersetzt nur die eine Zeile.
+
+    Gibt True zurück wenn ersetzt, False wenn Key/Section nicht gefunden.
+    """
+    if not YAML_CONFIG_PATH.exists():
+        return False
+    lines = YAML_CONFIG_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
+    indent_stack: list[tuple[str, int]] = []
+    target_depth = len(section_path)
+    for i, raw in enumerate(lines):
+        stripped = raw.lstrip(" ")
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(stripped)
+        while indent_stack and indent_stack[-1][1] >= indent:
+            indent_stack.pop()
+        if ":" not in stripped:
+            continue
+        line_key = stripped.split(":", 1)[0].strip()
+        current_path = [k for k, _ in indent_stack]
+        if current_path == section_path and line_key == key:
+            prefix = " " * indent
+            temp_fd, temp_path = tempfile.mkstemp(dir=YAML_CONFIG_PATH.parent, suffix=".tmp")
+            lines[i] = f"{prefix}{key}: {new_value}\n"
+            try:
+                with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+                os.replace(temp_path, YAML_CONFIG_PATH)
+            except Exception:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+                raise
+            return True
+        after_colon = stripped.split(":", 1)[1].strip()
+        if not after_colon or after_colon.startswith("#"):
+            indent_stack.append((line_key, indent))
+    return False
+
+
 @router.get("/admin/config")
 async def get_config():
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "r") as f:
-            return JSONResponse(content=json.load(f))
-    return JSONResponse(content={})
+    """Patch 105: Liest aus config.yaml (Single Source of Truth).
+
+    Antwortform `{"llm": {...}}` bleibt abwärtskompatibel mit dem Hel-UI-JS
+    (admin/hel.py ~L992-1017), das `config.llm?.cloud_model` auswertet.
+    """
+    settings = get_settings()
+    return JSONResponse(content={
+        "llm": {
+            "cloud_model": settings.legacy.models.cloud_model,
+            "temperature": settings.legacy.settings.ai_temperature,
+            "threshold": settings.legacy.settings.threshold_length,
+        }
+    })
+
 
 @router.post("/admin/config")
 async def post_config(request: Request):
+    """Patch 105: Schreibt nach config.yaml — nicht mehr in config.json.
+
+    Hintergrund: vorheriger Split-Brain (Hel schrieb config.json, LLMService
+    las config.yaml) führte dazu, dass in Hel ausgewählte Modelle nie
+    wirksam wurden. Kommentar-erhaltendes Line-Replace, damit die
+    handgepflegten Patch-Notizen in config.yaml nicht verloren gehen.
+    """
     data = await request.json()
-    current = {}
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "r") as f:
-            current = json.load(f)
-    if "llm" in data:
-        current["llm"] = {**current.get("llm", {}), **data["llm"]}
-    temp_fd, temp_path = tempfile.mkstemp(dir=CONFIG_PATH.parent, suffix=".tmp")
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            json.dump(current, f, indent=2)
-        os.replace(temp_path, CONFIG_PATH)
-    except Exception as e:
-        os.unlink(temp_path)
-        raise e
-    reload_settings()
-    return {"status": "ok", "reloaded": True}
+    llm = data.get("llm", {}) if isinstance(data, dict) else {}
+    changed: list[str] = []
+    if "cloud_model" in llm:
+        if _yaml_replace_scalar(["legacy", "models"], "cloud_model", str(llm["cloud_model"])):
+            changed.append("cloud_model")
+    if "temperature" in llm:
+        try:
+            temp_val = float(llm["temperature"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="temperature must be a float")
+        if _yaml_replace_scalar(["legacy", "settings"], "ai_temperature", temp_val):
+            changed.append("temperature")
+    if "threshold" in llm:
+        try:
+            thr_val = int(llm["threshold"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="threshold must be an int")
+        if _yaml_replace_scalar(["legacy", "settings"], "threshold_length", thr_val):
+            changed.append("threshold")
+    if changed:
+        reload_settings()
+    return {"status": "ok", "reloaded": bool(changed), "changed": changed}
 
 @router.get("/admin/sessions")
 async def get_sessions():

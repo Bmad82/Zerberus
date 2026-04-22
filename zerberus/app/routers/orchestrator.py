@@ -268,6 +268,23 @@ async def _rag_search(query: str, settings: Settings) -> list[dict]:
             hits = await asyncio.to_thread(
                 _rerank, query, all_candidates, rerank_model, _RAG_TOP_K
             )
+            # Patch 105: Minimum-Reranker-Score — liegt der Top-Score unter
+            # der Schwelle, ist KEIN Chunk wirklich relevant (typisch bei
+            # Übersetzungs-/Umformulierungs-Aufgaben). RAG-Kontext komplett
+            # verwerfen, statt 8 irrelevante Chunks ins Prompt zu pumpen.
+            rerank_min_score = float(rag_cfg.get("rerank_min_score", 0.05))
+            if hits and "rerank_score" in hits[0]:
+                top_score = float(hits[0].get("rerank_score", 0.0))
+                if top_score < rerank_min_score:
+                    logger.warning(
+                        "[THRESHOLD-105] RAG-Top-Score %.4f < Minimum %.4f — RAG-Kontext verworfen",
+                        top_score, rerank_min_score,
+                    )
+                    return []
+                logger.warning(
+                    "[THRESHOLD-105] RAG-Top-Score %.4f >= Minimum %.4f — Kontext behalten (%d Chunks)",
+                    top_score, rerank_min_score, len(hits),
+                )
             filtered = hits
         else:
             filtered = [h for h in all_candidates if h.get("l2_distance", 999) < _RAG_L2_THRESHOLD][:_RAG_TOP_K]

@@ -58,7 +58,7 @@ rate_limiting:
 
 # ============================================================
 # Haupteinstellungen: Modell, URLs, Temperatur
-# - cloud_model: OpenRouter-Modell-ID (z.B. meta-llama/llama-3.3-70b-instruct)
+# - cloud_model: OpenRouter-Modell-ID (z.B. deepseek/deepseek-v3.2, meta-llama/llama-3.3-70b-instruct)
 # - whisper_url: Adresse des lokal laufenden Whisper-Servers
 # - cloud_api_url: OpenRouter-API-Endpunkt (normalerweise nicht ändern)
 # - YOUR_TAILSCALE_DOMAIN ersetzen durch deine Tailscale-Domain, z.B. mein-pc.tail12345.ts.net
@@ -75,7 +75,7 @@ openrouter:
 
 legacy:
   models:
-    cloud_model: meta-llama/llama-3.3-70b-instruct
+    cloud_model: deepseek/deepseek-v3.2
     local_model: mistral-nemo
   urls:
     whisper_url: http://YOUR_TAILSCALE_DOMAIN:8002/v1/audio/transcriptions
@@ -195,6 +195,11 @@ modules:
     rerank_enabled: true
     rerank_model: BAAI/bge-reranker-v2-m3
     rerank_multiplier: 4
+    # Patch 105: Minimum-Reranker-Score — darunter wird der RAG-Kontext
+    # komplett verworfen. Sinnvoll bei Übersetzungen/Textumformungen, wo
+    # kein Dokument-Chunk wirklich passt. Cross-Encoder-Scores sind
+    # typischerweise 0..1 für relevante, <0.01 für irrelevante Paare.
+    rerank_min_score: 0.05
     # Patch 97 (R-04): Query Expansion vor dem FAISS-Retrieval. Ein kurzer
     # LLM-Call erzeugt 2-3 synonyme Formulierungen (Timeout 3 s). Alle
     # Varianten werden gesucht, die Kandidaten dedupliziert und zusammen
