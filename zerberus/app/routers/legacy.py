@@ -256,11 +256,13 @@ async def chat_completions(
 
         except Exception as e:
             logger.warning(f"⚠️ Orchestrator-Pipeline fehlgeschlagen, direkter LLM-Fallback: {e}")
+            logger.warning(f"[FALLBACK-102] Direkter LLM-Fallback aktiviert (Cloud-Default-Modell), Grund: Orchestrator-Exception ({type(e).__name__})")
             bus = get_event_bus()
             await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
             answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
     else:
         # Fallback: direkter LLM-Call ohne RAG
+        logger.warning("[FALLBACK-102] Direkter LLM-Fallback aktiviert (Cloud-Default-Modell), Grund: Orchestrator nicht initialisiert")
         bus = get_event_bus()
         await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
         answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)

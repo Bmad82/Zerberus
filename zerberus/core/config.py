@@ -27,9 +27,17 @@ class WhisperCorrection(BaseModel):
     old: str
     new: str
 
+class RepetitionFilterConfig(BaseModel):
+    """Patch 102 (B-01): Phrasen-Wiederholungsfilter für Whisper-Endlosschleifen."""
+    enabled: bool = True
+    min_phrase_len: int = 2
+    max_phrase_len: int = 6
+    max_repeats: int = 2
+
 class WhisperCleanerConfig(BaseModel):
     corrections: List[WhisperCorrection]
     strip_trailing: List[str] = []
+    repetition_filter: Optional[RepetitionFilterConfig] = None  # Patch 102 (B-01)
 
 class QuietHoursConfig(BaseModel):
     enabled: bool = False
@@ -89,8 +97,13 @@ class AuthConfig(BaseModel):
     static_api_key: str = ""  # Patch 59: X-API-Key Header als Alternative zu Bearer
 
 class OpenRouterConfig(BaseModel):
-    """Patch 63: OpenRouter Provider-Blacklist."""
-    provider_blacklist: List[str] = []
+    """
+    Patch 63: OpenRouter Provider-Blacklist.
+    Patch 102 (B-20): Default-Blacklist explizit gesetzt, da config.yaml gitignored
+    ist — sonst greift die Blacklist nach `git clone` nicht.
+    Kann via config.yaml unter `openrouter.provider_blacklist` überschrieben werden.
+    """
+    provider_blacklist: List[str] = ["chutes", "targon"]
 
 
 class ProfileConfig(BaseModel):

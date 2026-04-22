@@ -499,6 +499,40 @@ NALA_HTML = """<!DOCTYPE html>
             0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
             30%            { transform: translateY(-6px); opacity: 1; }
         }
+        /* Patch 102 (B-03/B-09/B-11): Spinner-Rad + Status-Text + Error-Bubble */
+        .spinner-rad {
+            width: 16px; height: 16px;
+            border: 2px solid rgba(240, 180, 41, 0.25);
+            border-top-color: var(--color-gold);
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+            flex-shrink: 0;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .typing-status {
+            margin-left: 8px;
+            font-size: 0.85em;
+            color: var(--color-text-dim, #9aa);
+        }
+        .typing-indicator.frozen .spinner-rad {
+            animation-play-state: paused;
+            border-top-color: rgba(240, 180, 41, 0.4);
+        }
+        .typing-indicator.error-state {
+            background: rgba(220, 80, 60, 0.15);
+            border-left: 3px solid #d64;
+        }
+        .typing-indicator .retry-inline {
+            margin-left: 10px;
+            background: var(--color-gold);
+            color: var(--color-primary, #001f3f);
+            border: none;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 0.8em;
+            cursor: pointer;
+        }
+        .typing-indicator .retry-inline:hover { opacity: 0.85; }
 
         /* ── Sidebar-Aktionen (Patch 67) ── */
         .sidebar-actions {
@@ -1025,7 +1059,7 @@ NALA_HTML = """<!DOCTYPE html>
                 <!-- Patch 67: textarea statt input, + Vollbild-Button -->
                 <textarea id="text-input" rows="1" placeholder="Schreib mir…"></textarea>
                 <button class="expand-btn" onclick="fullscreenOpen()" title="Vollbild">⛶</button>
-                <button class="send-btn" onclick="sendTextMessage()">➤</button>
+                <button class="send-btn" id="sendBtn" onclick="sendTextMessage()">➤</button>
                 <button class="mic-btn" id="micBtn" onclick="toggleRecording()">🎤</button>
             </div>
             <div id="transcript-hint"></div>
@@ -1136,6 +1170,20 @@ NALA_HTML = """<!DOCTYPE html>
             <button class="export-opt-btn" onclick="resetFontSize()">↺ Zurücksetzen</button>
         </div>
 
+        <!-- Patch 102 (B-07): Eingabe-Verhalten — nur Desktop sichtbar.
+             Mobile (Touch): Enter macht IMMER Zeilenumbruch (kein Soft-Keyboard-Senden). -->
+        <div class="settings-section" id="enter-behavior-section" style="display:none;">
+            <h5>⌨️ Eingabe-Verhalten (Desktop)</h5>
+            <div class="theme-row" style="flex-direction:column;align-items:stretch;gap:8px;">
+                <label for="enter-behavior-select" style="text-align:left;">Wie soll Enter funktionieren?</label>
+                <select id="enter-behavior-select" onchange="setEnterBehavior(this.value)"
+                        style="padding:8px;background:#0a1628;color:#e0e8f8;border:1px solid #2a4068;border-radius:6px;">
+                    <option value="true">Enter sendet — Shift+Enter = Zeilenumbruch</option>
+                    <option value="false">Shift+Enter sendet — Enter = Zeilenumbruch</option>
+                </select>
+            </div>
+        </div>
+
         <!-- Sektion D: Favoriten (Patch 77 erweitert zu v2) -->
         <div class="settings-section">
             <h5>⭐ Favoriten (Theme + Bubble + Schrift)</h5>
@@ -1187,6 +1235,9 @@ NALA_HTML = """<!DOCTYPE html>
     // Patch 45: Immer neue Session beim Start – keine gespeicherte sessionId laden
     let sessionId = generateUUID();
     let chatMessages = [];  // Patch 67: { text, sender, timestamp } für Chat-Export
+    // Patch 102 (B-02/B-06): AbortController für aktiven LLM-Request,
+    // ermöglicht Abbruch bei Session-Wechsel + Frontend-Timeout.
+    let currentChatAbort = null;
 
     let currentProfile = null;  // { name, display_name, theme_color, token, permission_level, allowed_model, temperature }
     let mediaRecorder, audioChunks = [], isRecording = false;
@@ -1195,6 +1246,7 @@ NALA_HTML = """<!DOCTYPE html>
 
     const messagesDiv    = document.getElementById('chatMessages');
     const textInput      = document.getElementById('text-input');
+    const sendBtn        = document.getElementById('sendBtn');
     const micErrorDiv    = document.getElementById('mic-error');
     const sessionList    = document.getElementById('session-list');
     const transcriptHint = document.getElementById('transcript-hint');
@@ -1313,6 +1365,8 @@ NALA_HTML = """<!DOCTYPE html>
     }
 
     function doLogout() {
+        // Patch 102 (B-02): Laufenden Chat abbrechen vor Logout
+        abortActiveChat('logout');
         localStorage.removeItem('nala_profile');
         currentProfile = null;
         disconnectSSE();
@@ -1349,6 +1403,8 @@ NALA_HTML = """<!DOCTYPE html>
 
     // ── 401-Handler: automatisch ausloggen ──
     function handle401() {
+        // Patch 102 (B-02): Laufenden Chat abbrechen bei 401
+        abortActiveChat('auth-expired');
         localStorage.removeItem('nala_profile');
         currentProfile = null;
         disconnectSSE();
@@ -1465,6 +1521,8 @@ NALA_HTML = """<!DOCTYPE html>
 
     async function loadSession(sid) {
         try {
+            // Patch 102 (B-02/B-06): Aktiven Chat-Request abbrechen, bevor wir zur neuen Session wechseln
+            abortActiveChat('session-switch');
             const response = await fetch(`/archive/session/${sid}`, { headers: profileHeaders() });
             const messages = await response.json();
             // sessionId im Speicher aktualisieren (kein localStorage-Eintrag)
@@ -1503,25 +1561,69 @@ NALA_HTML = """<!DOCTYPE html>
         }
         addMessage(text, 'user');
         textInput.value = '';
-        // Status-Bar zurücksetzen bei neuem Chat
         statusBar.textContent = '';
         statusBar.style.opacity = '0';
+
+        // Patch 102 (B-02/B-03/B-06/B-08): Sofortige UI-Reaktion + Lock + Abort-Tracking
+        // Falls noch ein älterer Chat-Request läuft (User klickt schnell), abbrechen.
+        if (currentChatAbort) { try { currentChatAbort.abort('superseded'); } catch (_) {} }
+        showTypingIndicator();
+        setTypingState('running');
+        lockInput();
+        currentChatAbort = new AbortController();
+        const myAbort = currentChatAbort;
+        const reqSessionId = sessionId;  // Snapshot für Stale-Response-Check
+
+        // Patch 102 (B-09/B-17): Frontend-Timeout 45s — schützt vor Endlos-Hängen
+        const timeoutId = setTimeout(() => {
+            if (myAbort && !myAbort.signal.aborted) {
+                console.warn('[TIMEOUT-102] Keine Antwort nach 45s — fetch wird abgebrochen');
+                try { myAbort.abort('timeout'); } catch (_) {}
+            }
+        }, 45000);
 
         try {
             const response = await fetch('/v1/chat/completions', {
                 method: 'POST',
                 headers: profileHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ messages: [{ role: 'user', content: text }] })
+                body: JSON.stringify({ messages: [{ role: 'user', content: text }] }),
+                signal: myAbort.signal
             });
             if (response.status === 401) { handle401(); return; }
             const data = await response.json();
+
+            // Patch 102 (B-02/B-06): Stale-Response-Check — Session inzwischen gewechselt?
+            if (reqSessionId !== sessionId) {
+                console.warn('[SESSION-102] Response für veraltete Session verworfen', { req: reqSessionId, current: sessionId });
+                return;
+            }
+
             const reply = data.choices?.[0]?.message?.content || 'Keine Antwort';
-            removeTypingIndicator(); // Patch 76
+            removeTypingIndicator();
             addMessage(reply, 'bot');
             loadSessions();
         } catch (error) {
-            removeTypingIndicator(); // Patch 76
-            addMessage('❌ Fehler: ' + error.message, 'bot');
+            // AbortError = Timeout ODER Session-Wechsel/Superseded
+            if (error.name === 'AbortError' || (error.message || '').includes('aborted')) {
+                if (reqSessionId === sessionId && myAbort.signal.reason === 'timeout') {
+                    setTypingState('timeout', text);
+                } else {
+                    removeTypingIndicator();
+                }
+                return;
+            }
+            console.error('[ERROR-102] Chat-Request fehlgeschlagen:', error);
+            removeTypingIndicator();
+            if (reqSessionId === sessionId) {
+                showErrorBubble('Verbindungsfehler — bitte erneut versuchen', text);
+            }
+        } finally {
+            clearTimeout(timeoutId);
+            if (currentChatAbort === myAbort) currentChatAbort = null;
+            // Input nur freigeben wenn kein Timeout-Bubble aktiv ist (User soll Retry sehen können).
+            // Bei Timeout bleibt Bubble + Retry-Button stehen — Input wird trotzdem freigegeben damit
+            // User auch eine neue Nachricht tippen kann.
+            unlockInput();
         }
     }
 
@@ -1610,12 +1712,38 @@ NALA_HTML = """<!DOCTYPE html>
         }
     });
 
-    // Patch 67: keydown statt keypress (Shift+Enter = Zeilenumbruch, Enter = Senden)
+    // Patch 102 (B-07): Mobile-First Input-Verhalten.
+    // - Mobile (Touch): Enter macht IMMER Zeilenumbruch — Soft-Keyboards können nicht
+    //   zwischen Enter und Shift+Enter unterscheiden, deshalb wäre 'Enter sendet' fatal.
+    //   Senden geht ausschließlich über den Send-Button.
+    // - Desktop: Per Setting umschaltbar (localStorage 'zerberus_enter_sends').
+    //   Default = true (Enter sendet, wie Patch 67) für Rückwärtskompatibilität.
+    function isTouchDevice() {
+        return ('ontouchstart' in window)
+            || (navigator.maxTouchPoints > 0)
+            || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    }
+    function getEnterSendsSetting() {
+        if (isTouchDevice()) return false;  // Mobile: NIE Enter sendet
+        const v = localStorage.getItem('zerberus_enter_sends');
+        return v === null ? true : v === 'true';  // Desktop-Default
+    }
+    function setEnterBehavior(value) {
+        // value = "true" / "false" (string aus <select>)
+        localStorage.setItem('zerberus_enter_sends', value);
+    }
+
     textInput.addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key !== 'Enter') return;
+        const enterSends = getEnterSendsSetting();
+        if (enterSends && !e.shiftKey) {
+            e.preventDefault();
+            sendTextMessage();
+        } else if (!enterSends && e.shiftKey) {
             e.preventDefault();
             sendTextMessage();
         }
+        // sonst: natürliches Verhalten (Zeilenumbruch in der Textarea)
     });
 
     // ── Nachrichten anzeigen (Patch 65: Export-Dropdown / Patch 67: Toolbar + Tracking) ──
@@ -1685,7 +1813,7 @@ NALA_HTML = """<!DOCTYPE html>
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
-    // Patch 76: Typing-Indicator Bubble
+    // Patch 76 + Patch 102 (B-03): Typing-Indicator mit Spinner + Status-Text
     function showTypingIndicator() {
         if (document.getElementById('typing-indicator')) return;
         const wrapper = document.createElement('div');
@@ -1693,7 +1821,9 @@ NALA_HTML = """<!DOCTYPE html>
         wrapper.className = 'msg-wrapper';
         const bubble = document.createElement('div');
         bubble.className = 'typing-indicator';
-        bubble.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+        bubble.innerHTML =
+            '<span class="spinner-rad"></span>' +
+            '<span class="typing-status">Antwort wird generiert…</span>';
         wrapper.appendChild(bubble);
         messagesDiv.appendChild(wrapper);
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -1701,6 +1831,62 @@ NALA_HTML = """<!DOCTYPE html>
     function removeTypingIndicator() {
         const el = document.getElementById('typing-indicator');
         if (el) el.remove();
+    }
+
+    // Patch 102 (B-03/B-09/B-11/B-17): Zustands-Helfer.
+    function setTypingState(state, retryText) {
+        const wrapper = document.getElementById('typing-indicator');
+        if (!wrapper) return;
+        const bubble = wrapper.querySelector('.typing-indicator');
+        const statusEl = wrapper.querySelector('.typing-status');
+        if (state === 'timeout') {
+            bubble.classList.add('frozen');
+            if (statusEl) statusEl.textContent = 'Keine Antwort vom Server';
+            if (!bubble.querySelector('.retry-inline')) {
+                const btn = document.createElement('button');
+                btn.className = 'retry-inline';
+                btn.textContent = '🔄 Erneut versuchen';
+                btn.onclick = () => { removeTypingIndicator(); sendMessage(retryText); };
+                bubble.appendChild(btn);
+            }
+        } else if (state === 'running') {
+            bubble.classList.remove('frozen', 'error-state');
+            if (statusEl) statusEl.textContent = 'Antwort wird generiert…';
+        }
+    }
+
+    function showErrorBubble(text, retryText) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'msg-wrapper';
+        const bubble = document.createElement('div');
+        bubble.className = 'typing-indicator error-state frozen';
+        bubble.innerHTML = '<span class="typing-status">' + text + '</span>';
+        const btn = document.createElement('button');
+        btn.className = 'retry-inline';
+        btn.textContent = '🔄 Erneut versuchen';
+        btn.onclick = () => { wrapper.remove(); sendMessage(retryText); };
+        bubble.appendChild(btn);
+        wrapper.appendChild(bubble);
+        messagesDiv.appendChild(wrapper);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function lockInput() {
+        if (textInput) textInput.disabled = true;
+        if (sendBtn) { sendBtn.disabled = true; sendBtn.style.opacity = '0.5'; }
+    }
+    function unlockInput() {
+        if (textInput) textInput.disabled = false;
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = ''; }
+    }
+    // Patch 102 (B-02/B-06): Aktiven LLM-Request abbrechen — bei Session-Wechsel/Logout.
+    function abortActiveChat(reason) {
+        if (currentChatAbort) {
+            try { currentChatAbort.abort(reason || 'session-switch'); } catch (_) {}
+            currentChatAbort = null;
+        }
+        removeTypingIndicator();
+        unlockInput();
     }
 
     // Patch 67 + Patch 86: Kopieren-Feedback mit execCommand-Fallback
@@ -1789,6 +1975,8 @@ NALA_HTML = """<!DOCTYPE html>
 
     // ── Patch 67: Neue Session ──
     function newSession() {
+        // Patch 102 (B-02/B-06): Aktiven Chat-Request abbrechen vor Session-Wechsel
+        abortActiveChat('session-switch');
         sessionId = generateUUID();
         chatMessages = [];
         messagesDiv.innerHTML = '';
@@ -1835,17 +2023,27 @@ NALA_HTML = """<!DOCTYPE html>
         document.getElementById('fullscreen-modal').classList.remove('open');
     }
 
-    // ── Patch 67: Dynamische Begrüßung ──
+    // ── Patch 67 + Patch 102 (B-05): Dynamische Begrüßung mit Varianz ──
+    // Backend liefert {prefix, name}; Frontend wählt zufällig aus 4 Templates.
+    const GREETING_VARIANTS = [
+        (p, n) => n ? `${p}, ${n}!` : `${p}!`,
+        (p, n) => n ? `Hey ${n}! ${p}.` : `Hey! ${p}.`,
+        (p, n) => n ? `${p}! Schön, dass du da bist, ${n}.` : `${p}! Schön, dass du da bist.`,
+        (p, n) => n ? `${n}! ${p} — was kann ich für dich tun?` : `${p} — was kann ich für dich tun?`,
+    ];
     async function fetchGreeting() {
-        let greeting = 'Hallo! Wie kann ich dir helfen?';
+        let prefix = 'Hallo', name = null;
         try {
             const res = await fetch('/nala/greeting', { headers: profileHeaders() });
             if (res.ok) {
                 const data = await res.json();
-                greeting = data.greeting || greeting;
+                // Neues Format {prefix, name}; alter Fallback {greeting} wird ignoriert.
+                if (typeof data.prefix === 'string') prefix = data.prefix;
+                if (data.name) name = data.name;
             }
         } catch (_) {}
-        addMessage(greeting, 'bot');
+        const variant = GREETING_VARIANTS[Math.floor(Math.random() * GREETING_VARIANTS.length)];
+        addMessage(variant(prefix, name), 'bot');
     }
 
     async function saveMyPrompt() {
@@ -1948,6 +2146,18 @@ NALA_HTML = """<!DOCTYPE html>
         document.getElementById('bc-llm-bg').value    = cssToHex(r.getPropertyValue('--bubble-llm-bg'));
         document.getElementById('bc-llm-text').value  = cssToHex(r.getPropertyValue('--bubble-llm-text'));
         markActiveFontPreset();
+        // Patch 102 (B-07): Enter-Behavior nur auf Desktop sichtbar; Wert aus localStorage setzen.
+        const enterSection = document.getElementById('enter-behavior-section');
+        const enterSelect  = document.getElementById('enter-behavior-select');
+        if (enterSection && enterSelect) {
+            if (isTouchDevice()) {
+                enterSection.style.display = 'none';
+            } else {
+                enterSection.style.display = '';
+                const v = localStorage.getItem('zerberus_enter_sends');
+                enterSelect.value = (v === null) ? 'true' : v;
+            }
+        }
         document.getElementById('settings-modal').classList.add('open');
     }
     function closeSettingsModal() {
@@ -2585,70 +2795,35 @@ async def voice_endpoint(
 @router.get("/greeting")
 async def get_greeting(request: Request):
     """
-    Patch 72: Personalisierte, tageszeit-abhängige Begrüßung.
-    Sucht nach 'Du bist [Name]' oder 'Ich bin [Name]' im System-Prompt.
-    Name muss großgeschrieben sein – schließt Artikel wie 'ein' aus.
-    Fallback: generische Begrüßung ohne Namensteil.
+    Patch 102 (B-05): Begrüßungs-Endpoint liefert nur Tageszeit-Prefix + User-Anzeigenamen.
+    Frontend pickt zufällig aus mehreren Templates → echte Varianz.
+
+    Vorher (Patch 72) wurde der Charakter-Name aus dem System-Prompt extrahiert
+    ('Du bist Nala'), was zu 'Hallo, Nala!' führte — Nala spricht sich selbst an.
+    Jetzt: name = display_name aus dem Profil (also 'Chris'), nicht der Charakter.
     """
-    import re
     from datetime import datetime
 
     hour = datetime.now().hour
-    if 6 <= hour < 12:
+    if 6 <= hour < 11:
         prefix = "Guten Morgen"
-    elif 12 <= hour < 18:
+    elif 11 <= hour < 18:
         prefix = "Hallo"
     elif 18 <= hour < 22:
         prefix = "Guten Abend"
     else:
         prefix = "Hallo"
 
-    def build_greeting(name: str | None) -> str:
-        if name:
-            return f"{prefix}, {name}! Wie kann ich dir helfen?"
-        return f"{prefix}! Wie kann ich dir helfen?"
-
+    name = None
     profile_name = getattr(request.state, "profile_name", None)
-    if not profile_name:
-        return {"greeting": build_greeting(None)}
+    if profile_name:
+        profiles = _load_profiles()
+        profile = profiles.get(profile_name.lower(), {})
+        dn = profile.get("display_name", "").strip()
+        if dn:
+            name = dn
 
-    profiles = _load_profiles()
-    profile = profiles.get(profile_name.lower(), {})
-    display_name = profile.get("display_name", "")
-
-    # System-Prompt-Datei ermitteln (gleiche Fallback-Kette wie profile_login)
-    prompt_file = profile.get("system_prompt_file", "")
-    candidates = []
-    if prompt_file:
-        candidates.append(Path(prompt_file))
-    candidates += [
-        Path(f"system_prompt_{profile_name.lower()}.json"),
-        Path("system_prompt.json"),
-    ]
-
-    char_name = display_name  # Fallback = display_name aus config.yaml
-    for p in candidates:
-        if p.exists():
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    prompt = data.get("prompt", "")
-                    if prompt:
-                        m = re.search(
-                            r'(?:du bist|ich bin|you are|i am)\s+(\w+)',
-                            prompt,
-                            re.IGNORECASE,
-                        )
-                        if m:
-                            candidate = m.group(1)
-                            # Nur übernehmen wenn großgeschrieben (kein Artikel wie 'ein')
-                            if candidate[0].isupper():
-                                char_name = candidate
-            except Exception:
-                pass
-            break  # erste existierende Datei reicht
-
-    return {"greeting": build_greeting(char_name or None)}
+    return {"prefix": prefix, "name": name}
 
 
 @router.get("/health")
