@@ -732,12 +732,12 @@ ADMIN_HTML = """<!DOCTYPE html>
           <div class="hel-section-body collapsed" id="body-gedaechtnis" style="max-height:0;padding:0 20px;">
             <div class="card">
                 <h2>&#128196; Dokument hochladen</h2>
-                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Unterst&#252;tzte Formate: <strong>.txt</strong> und <strong>.docx</strong>. Das Dokument wird automatisch in Chunks von ~800 W&#246;rtern zerlegt und in Nalas Ged&#228;chtnis (FAISS) indiziert.</p>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">Unterst&#252;tzte Formate: <strong>.txt .md .docx .pdf .json .csv</strong>. Chunk-Gr&#246;&#223;e und Split-Strategie h&#228;ngen von der gew&#228;hlten Kategorie ab (Patch 110).</p>
                 <label>Datei ausw&#228;hlen:</label>
                 <label for="ragFileInput" id="ragFileLabel" style="display:block; padding:18px; background:#252525; border:2px dashed #555; border-radius:10px; text-align:center; cursor:pointer; margin-bottom:14px; font-size:1em; color:#ccc; touch-action:manipulation;">
-                    &#128196; Datei tippen/ausw&#228;hlen (.txt oder .docx)
+                    &#128196; Datei tippen/ausw&#228;hlen (.txt .md .docx .pdf .json .csv)
                 </label>
-                <input type="file" id="ragFileInput" accept=".txt,.docx" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="updateRagFileLabel()">
+                <input type="file" id="ragFileInput" accept=".txt,.md,.docx,.pdf,.json,.csv" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="updateRagFileLabel()">
                 <label for="ragCategory" style="margin-top:4px;">Kategorie:</label>
                 <select id="ragCategory" class="profile-select" style="width:100%; margin-bottom:14px;">
                     <option value="general">Allgemein</option>
@@ -2150,17 +2150,44 @@ _CHAPTER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Patch 110: Markdown-Header-Regex (# / ## / ### / …) am Zeilenanfang.
+# Für `technical`-Category: Abschnitte an Headern hart trennen.
+_MD_HEADER_RE = re.compile(r'(?m)(?=^#{1,6}\s+\S)')
+
+# Patch 110: Chunking-Konfigurationen pro Category.
+# - chunk_size / overlap / min_chunk_words in Wörtern (Einheit aus Patch 75).
+# - split: "chapter" = _CHAPTER_RE, "markdown" = _MD_HEADER_RE, "none" = nur Wortfenster.
+# `narrative`/`lore` behalten die bestehenden 800/160/120-Werte (stabil mit
+# bge-reranker-v2-m3, siehe Patch 89). Andere Categories bekommen eigene Profile.
+CHUNK_CONFIGS: dict[str, dict] = {
+    "narrative":  {"chunk_size": 800, "overlap": 160, "min_chunk_words": 120, "split": "chapter"},
+    "lore":       {"chunk_size": 800, "overlap": 160, "min_chunk_words": 120, "split": "chapter"},
+    "technical":  {"chunk_size": 500, "overlap": 100, "min_chunk_words": 80,  "split": "markdown"},
+    "reference":  {"chunk_size": 300, "overlap": 60,  "min_chunk_words": 50,  "split": "none"},
+    "personal":   {"chunk_size": 400, "overlap": 80,  "min_chunk_words": 80,  "split": "chapter"},
+    "general":    {"chunk_size": 800, "overlap": 160, "min_chunk_words": 120, "split": "chapter"},
+}
+
 
 def _chunk_text(
     text: str,
-    chunk_size: int = 800,
-    overlap: int = 160,
-    min_chunk_words: int = 120,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+    min_chunk_words: int | None = None,
+    category: str = "general",
 ) -> tuple[list[str], int]:
-    """Zerlegt Text in Chunks mit harten Splits an Kapitelgrenzen.
+    """Zerlegt Text in Chunks mit optional harten Splits an Kapitel-/Header-Grenzen.
 
-    Kapitelgrenzen (Prolog / Akt I–VII / Epilog / Glossar) werden nie
-    überlappt — Overlap nur innerhalb eines Abschnitts.
+    Patch 110: `category` wählt ein Profil aus `CHUNK_CONFIGS` (chunk_size, overlap,
+    min_chunk_words, split-Strategie). Explizite Argumente überschreiben das Profil —
+    nützlich für Tests oder config.yaml-Overrides.
+
+    Split-Strategien:
+    - "chapter" (narrative/lore/personal/general): harte Splits an Prolog/Akt/Epilog/Glossar
+    - "markdown" (technical): harte Splits an Markdown-Headern (# bis ######)
+    - "none" (reference): nur Wortfenster, keine harten Splits
+
+    Kapitel-/Header-Grenzen werden nie überlappt — Overlap nur innerhalb eines Abschnitts.
     Einheit: Wörter (nicht Token, nicht Zeichen) — Patch 75.
 
     Patch 88 (Fix A): Post-Processing-Pass merged Residual-Chunks unter
@@ -2168,8 +2195,18 @@ def _chunk_text(
     kapern bei normalisierten MiniLM-Embeddings sonst Rang 1.
     Rückgabe: (chunks, merged_count)
     """
-    # Harter Split an Kapitelgrenzen
-    sections = _CHAPTER_RE.split(text)
+    cfg = CHUNK_CONFIGS.get(category, CHUNK_CONFIGS["general"])
+    chunk_size = chunk_size if chunk_size is not None else cfg["chunk_size"]
+    overlap = overlap if overlap is not None else cfg["overlap"]
+    min_chunk_words = min_chunk_words if min_chunk_words is not None else cfg["min_chunk_words"]
+    split_strategy = cfg["split"]
+
+    if split_strategy == "chapter":
+        sections = _CHAPTER_RE.split(text)
+    elif split_strategy == "markdown":
+        sections = _MD_HEADER_RE.split(text)
+    else:
+        sections = [text]
     sections = [s.strip() for s in sections if s.strip()]
 
     chunks: list[str] = []
@@ -2178,10 +2215,11 @@ def _chunk_text(
         if not words:
             continue
         i = 0
+        step = max(1, chunk_size - overlap)
         while i < len(words):
             chunk_words = words[i:i + chunk_size]
             chunks.append(" ".join(chunk_words))
-            i += chunk_size - overlap
+            i += step
 
     # Patch 88: Residual-Tail-Merge
     merged_count = 0
@@ -2264,26 +2302,63 @@ async def rag_upload(
             text = "\n\n".join(pages)
         except Exception as e:
             raise HTTPException(422, f"PDF konnte nicht gelesen werden: {e}")
+    elif suffix == ".json":
+        # Patch 110: JSON als pretty-printed Text indizieren — erhält Struktur,
+        # bleibt als Klartext für Embedding-Modell lesbar.
+        try:
+            data = json.loads(raw_bytes.decode("utf-8", errors="replace"))
+            text = json.dumps(data, indent=2, ensure_ascii=False)
+        except Exception as e:
+            raise HTTPException(422, f"JSON konnte nicht geparst werden: {e}")
+    elif suffix == ".csv":
+        # Patch 110: CSV als Text indizieren — Header-Zeile zuerst, dann jede Daten-
+        # zeile mit "Header: Wert"-Mapping. Hilft Embedding-Modell, Spaltenbezüge
+        # zu lernen. Leere Zellen werden ausgelassen.
+        import csv as _csv
+        from io import StringIO as _StringIO
+        try:
+            raw_text = raw_bytes.decode("utf-8", errors="replace")
+            reader = _csv.reader(_StringIO(raw_text))
+            rows = list(reader)
+            if not rows:
+                raise HTTPException(400, "CSV-Datei ist leer.")
+            header = rows[0]
+            lines = [", ".join(header)]
+            for row in rows[1:]:
+                parts = [f"{header[i]}: {v}" for i, v in enumerate(row) if i < len(header) and v.strip()]
+                if parts:
+                    lines.append("; ".join(parts))
+            text = "\n".join(lines)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(422, f"CSV konnte nicht gelesen werden: {e}")
     else:
-        raise HTTPException(422, f"Nicht unterstütztes Format '{suffix}'. Erlaubt: .txt, .md, .docx, .pdf")
+        raise HTTPException(422, f"Nicht unterstütztes Format '{suffix}'. Erlaubt: .txt, .md, .docx, .pdf, .json, .csv")
 
     text = text.strip()
     if not text:
         raise HTTPException(400, "Datei ist leer oder enthält keinen lesbaren Text.")
 
-    # chunk_size=800 Wörter, overlap=160 Wörter (20 %), kapitelaware — Patch 75
-    # Patch 88: min_chunk_words aus config (Default 120) für Residual-Merge
+    # Patch 110: Chunking-Strategie pro Category (CHUNK_CONFIGS). chunk_size / overlap /
+    # min_chunk_words kommen aus dem Profil. config.yaml `modules.rag.min_chunk_words`
+    # überschreibt den Category-Default, falls gesetzt (Rückwärtskompat Patch 88).
     rag_cfg_full = settings.modules.get("rag", {})
-    min_words = int(rag_cfg_full.get("min_chunk_words", 120))
+    min_words_override = rag_cfg_full.get("min_chunk_words")
     chunks, merged_count = _chunk_text(
-        text, chunk_size=800, overlap=160, min_chunk_words=min_words
+        text,
+        category=category,
+        min_chunk_words=int(min_words_override) if min_words_override is not None else None,
     )
+    cfg_used = CHUNK_CONFIGS.get(category, CHUNK_CONFIGS["general"])
     if not chunks:
         raise HTTPException(400, "Kein Text nach dem Chunking übrig.")
 
     logger.info(
-        f"[RAG-Chunking] Doc={filename}, Chunks={len(chunks)} (nach Merge), "
-        f"merged={merged_count} kurze Residuals, min_chunk_words={min_words}"
+        f"[RAG-Chunking] Doc={filename}, Category={category}, Chunks={len(chunks)} (nach Merge), "
+        f"merged={merged_count} kurze Residuals, "
+        f"profile={cfg_used['chunk_size']}/{cfg_used['overlap']}/{cfg_used['min_chunk_words']} "
+        f"split={cfg_used['split']}"
     )
 
     await _ensure_init(settings)

@@ -1,8 +1,16 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 108b + 109 (2026-04-22)*
+*Letzte Aktualisierung: Patch 110 (2026-04-22)*
 
 ## Aktueller Patch
+**Patch 110** – Upload-Formate erweitern + Chunking-Weiche pro Dokumenttyp (2026-04-22)
+- **Cluster 1 – Upload-Formate .json + .csv:** `.pdf` und `.md` waren bereits akzeptiert (pdfplumber 0.11.9 installiert, `.md` wird seit jeher wie `.txt` behandelt). Neu in [hel.py](zerberus/app/routers/hel.py) `rag_upload()`: **`.json`** wird via `json.loads()` geparst und als `json.dumps(data, indent=2, ensure_ascii=False)`-pretty-print in den Index geschoben — Struktur bleibt für das Embedding-Modell als Klartext lesbar. **`.csv`** wird mit `csv.reader` geparst, Header-Zeile zuerst, dann pro Daten-Zeile ein `"Header1: Wert1; Header2: Wert2"`-Mapping (leere Zellen ausgelassen) — hilft dem Embedder, Spaltenbezüge zu lernen. Hel-UI: `<input accept="...">` erweitert auf `.txt,.md,.docx,.pdf,.json,.csv`; Label + Hinweis aktualisiert.
+- **Cluster 2 – Chunking-Weiche pro Category:** Neue Konstante `CHUNK_CONFIGS` in [hel.py](zerberus/app/routers/hel.py) — pro Category ein Profil mit `chunk_size`, `overlap`, `min_chunk_words`, `split`-Strategie. `_chunk_text(text, category="general", ...)` nimmt jetzt einen `category`-Parameter; explizite `chunk_size`/`overlap`/`min_chunk_words`-Argumente überschreiben das Profil (für Tests + config.yaml). Drei Split-Strategien: `"chapter"` (Prolog/Akt/Epilog/Glossar, für narrative/lore/personal/general), `"markdown"` (neue `_MD_HEADER_RE` an `# … ######`, für technical), `"none"` (nur Wortfenster, für reference). **Profile:** narrative/lore 800/160/120 (stabil mit bge-reranker-v2-m3, Patch 89), technical 500/100/80, reference 300/60/50, personal 400/80/80, general 800/160/120.
+- **Pipeline:** `rag_upload()` reicht `category` an `_chunk_text()` durch; config.yaml `modules.rag.min_chunk_words` behält als optionaler globaler Override Vorrang (Rückwärtskompat Patch 88). Log-Line `[RAG-Chunking]` zeigt jetzt Category + Profil-Werte + Split-Strategie.
+- **Tests:** Neue Datei [test_chunker.py](zerberus/tests/test_chunker.py) mit 15 Unit-Tests (Category-Profile, Kapitel-Split, Markdown-Split, Reference-No-Split, Residual-Merge, Override-Parameter, Unknown-Category-Fallback, Edge-Cases). Offline-Lauf: **52 passed** (15 neu + 37 bestehend). `py_compile hel.py` OK. `node --check` auf beide Hel-JS-Blöcke (616 + 50387 Zeichen) OK.
+- **Scope:** Keine neuen Dependencies (alles in Python-stdlib oder bereits installiert). Kein Re-Index notwendig — Altdaten ohne Profile-Info arbeiten weiter unverändert (gelesen via `.get("category", "general")`). Query-Router mit Category-Filter (Patch 111), Background Memory Extraction (Patch 111), Bild/ZIP-Upload (Phase 4), Color Picker (Phase 4) — NICHT in diesem Patch.
+- **Live-Verifikation (USER):** Upload einer `.json` + `.csv`-Datei mit passender Category. Eval-Lauf `python rag_eval.py` gegen den neuen Index mit den Q12–Q20 aus Patch 108b. Ergebnis in `rag_eval_delta_patch110.md` dokumentieren.
+
 **Patch 108b + 109** – RAG-Eval-Erweiterung + SSE-Resilience + Theme-Hardening (2026-04-22)
 - **Teil A / 108b – RAG-Eval-Erweiterung:** `rag_eval_questions.txt` um 9 neue Fragen erweitert (Q12–Q20). Drei Cluster: Codex Heroicus (Q12–Q14, category `narrative`), NÉON Kadath Prosa (Q15–Q18, category `lore`), Cross-Document (Q19–Q20) — fragen Fakten-, Aggregations- und Cross-Category-Retrieval ab. **Live-Verifikation der Category-Tags (Upload mit category-Form-Feld, `sources_meta` im Status, `Kategorie: narrative` im Retrieval-Kontext) steht bei Chris aus** — Server-Start + Admin-JWT waren aus der CI-Umgebung nicht praktikabel. Neue Test-Doks (Codex Heroicus, NÉON Kadath) müssen vor dem Eval-Run mit passender Category hochgeladen werden.
 - **Teil B / 109 – SSE-Resilience (Cluster B1):** Root-Cause-Analyse: Der SSE-Stream `/nala/events` liefert nur Status-Events (rag_search/llm_start/done), die eigentliche Antwort kommt per `fetch('/v1/chat/completions')` als JSON. Bei 45-s-Frontend-Timeout bricht der fetch ab, obwohl das Backend noch weiterarbeitet und die Antwort via `store_interaction()` in die DB schreibt. Neuer **REST-Fallback auf Retry-Click** in [nala.py](zerberus/app/routers/nala.py): `fetchLateAnswer(sid, userText)` pollt das bestehende `/archive/session/{id}`, sucht rückwärts die letzte user-Message mit passendem Content, liefert die erste nachfolgende assistant-Message zurück. `retryOrRecover(retryText, retrySid, cleanupFn)` kapselt die Entscheidung: späte Antwort gefunden → anzeigen (kein Doppelkonsum von OpenRouter-Credits). Kein späte Antwort → klassisches `sendMessage(retryText)`. `setTypingState('timeout', text, reqSessionId)` + `showErrorBubble(text, retryText, reqSessionId)` bekommen die `reqSessionId` als dritten Parameter durchgereicht. Button zeigt „⏳ Prüfe Server…" während der kurzen Archive-Abfrage. **Kein neuer Endpoint nötig** — `/archive/session/{id}` aus [archive.py](zerberus/app/routers/archive.py) existiert bereits (mit JWT-Auth via `profileHeaders()`).
@@ -214,7 +222,7 @@
 11. [Patch 108 → Phase 2 Folge-Patches] Category-Tagging ist jetzt da, aber noch KEIN Filtering. Folge-Arbeit: **Chunking-Weiche pro Doc-Typ (Patch 109)**, **Query-Router mit Category-Filter (Patch 110)**, **Background Memory Extraction (Patch 111)**.
 12. [Patch 108] W-001 Sentence-Repetition-Bug (Whisper), Multimodalität ZIP/Bild-Upload, Relative Pfade — aus Scope raus, in Backlog verschoben.
 
-### Erledigt in Patches 105-109
+### Erledigt in Patches 105-110
 - Llama-Hardcode-Verdacht (Patch 105 — kein Hardcode, stattdessen Split-Brain in Hel gefixt)
 - Reranker-Threshold fehlt (Patch 105)
 - RAG-Skip für Textverarbeitung (Patch 106)
@@ -222,6 +230,8 @@
 - CLAUDE_ZERBERUS Regel 9 „User-Entscheidungen als klickbare Box" (Patch 108)
 - SSE-Timeout doppelter OpenRouter-Call beim Retry (Patch 109 — REST-Fallback via `/archive/session/{id}`)
 - Theme-Defaults ohne rgba-Tiefe + unvollständiger `resetTheme()` (Patch 109)
+- Upload-Formate: `.json` + `.csv` zusätzlich zu `.txt/.md/.docx/.pdf` (Patch 110)
+- Chunking-Weiche pro Category (CHUNK_CONFIGS, Markdown-Header-Split für `technical`) (Patch 110)
 
 ## Architektur-Warnungen
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung
