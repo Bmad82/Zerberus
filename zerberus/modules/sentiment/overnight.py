@@ -5,7 +5,6 @@ für alle Messages der letzten 24h, die noch keinen bert_sentiment-Wert haben.
 Neue Spalten in message_metrics werden per raw SQL angelegt (kein Alembic).
 """
 import logging
-from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -66,24 +65,32 @@ async def run_overnight_sentiment():
         logger.error("[Overnight] Abgebrochen: DB-Spalten konnten nicht angelegt werden.")
         return
 
-    since = datetime.utcnow() - timedelta(hours=24)
-
+    # Patch 104 (B-24): Bisher wurde `datetime.utcnow().isoformat()` als
+    # Vergleichswert übergeben — das produziert `2026-04-21T08:42:29.116695`
+    # mit `T`-Separator. SQLAlchemy schreibt Timestamps aber als
+    # `2026-04-21 18:50:50.611657` (Space-Separator) in SQLite. Beim
+    # lexikografischen Vergleich gilt `T` (0x54) > ` ` (0x20), wodurch alle
+    # Zeilen aus dem Vortag (UTC) lautlos rausfallen — exakt das Fenster,
+    # das der 04:30-Cron auswerten soll. Fix: SQLite-natives
+    # `datetime('now', '-24 hours')` (Space-formatiert, korrekter Vergleich)
+    # statt Python-side ISO-String.
     try:
         async with _async_session_maker() as session:
             result = await session.execute(text("""
                 SELECT i.id, i.content
                 FROM interactions i
                 JOIN message_metrics mm ON i.id = mm.message_id
-                WHERE i.timestamp >= :since
+                WHERE i.timestamp >= datetime('now', '-24 hours')
                   AND i.role = 'user'
                   AND mm.bert_sentiment_label IS NULL
                 ORDER BY i.timestamp ASC
-            """), {"since": since.isoformat()})
+            """))
             rows = result.fetchall()
     except Exception as e:
         logger.error(f"[Overnight] Fehler beim Abfragen der Messages: {e}")
         return
 
+    logger.warning(f"[B24-104] Overnight-Query lieferte {len(rows)} Messages (Filter: role=user, bert_sentiment_label NULL, last 24h)")
     logger.info(f"[Overnight] {len(rows)} Messages zur Auswertung gefunden.")
 
     count = 0

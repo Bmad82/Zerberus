@@ -141,23 +141,14 @@ async def chat_completions(
             choices=[Choice(index=0, message=Message(role="assistant", content=dialect_response), finish_reason="stop")]
         )
 
-    # Patch 47: Permission-Check vor LLM-Call (nach Dialect-Kurzschluss)
+    # Patch 47 / Patch 104: Intent-Erkennung läuft (für RAG-Skip-Logik unten),
+    # der HITL-Guard ist hier aber DEAKTIVIERT.
+    # /v1/ ist Dictate-only und Nala-Frontend — beides interne Channels.
+    # Externe Bot-Channels (Telegram/WhatsApp) müssen direkt _run_pipeline()
+    # mit channel="telegram"/"whatsapp" aufrufen, dort greift der Guard.
     if _ORCH_PIPELINE_OK:
         intent = detect_intent(last_user_msg)
-        allowed_intents = _PERMISSION_MATRIX.get(permission_level, _PERMISSION_MATRIX["guest"])
-        if intent not in allowed_intents:
-            logger.info(f"🔒 Permission-Block (legacy): '{permission_level}' darf '{intent}' nicht ausführen")
-            try:
-                await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
-                await store_interaction("assistant", _HITL_MESSAGE, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
-                await update_interaction()
-            except Exception:
-                pass
-            return ChatCompletionResponse(
-                created=int(datetime.now().timestamp()),
-                model="permission-block",
-                choices=[Choice(index=0, message=Message(role="assistant", content=_HITL_MESSAGE), finish_reason="stop")]
-            )
+        logger.warning("[HITL-104] Guard übersprungen (legacy /v1/, kein externer Channel) – intent=%s, permission=%s", intent, permission_level)
 
     # Modellwahl (++ = Cloud, -- = Local)
     force_cloud = last_user_msg.endswith("++")

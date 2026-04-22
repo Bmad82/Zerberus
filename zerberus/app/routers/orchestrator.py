@@ -116,6 +116,12 @@ _HITL_MESSAGE = (
     "aber dafür brauche ich Chris' OK. Soll ich ihn fragen?"
 )
 
+# Patch 104: HITL-Guard greift NUR bei externen Bot-Channels.
+# Nala-Frontend, Dictate (/v1/), Orchestrator-API laufen mit channel=None
+# und überspringen den Permission-Block. Telegram/WhatsApp-Router müssen
+# beim Aufruf von _run_pipeline() channel="telegram"/"whatsapp" setzen.
+_HITL_PROTECTED_CHANNELS: set[str] = {"telegram", "whatsapp"}
+
 
 def detect_intent(message: str) -> str:
     """
@@ -313,6 +319,7 @@ async def _run_pipeline(
     permission_level: str = "guest",
     allowed_model: str | None = None,
     temperature_override: float | None = None,
+    channel: str | None = None,
 ) -> tuple[str, str, int, int, float, str, float | None, str | None]:
     """
     Vollständige Orchestrator-Pipeline mit Session-Kontext (Patch 43):
@@ -344,13 +351,19 @@ async def _run_pipeline(
     ))
 
     # ------------------------------------------------------------------
-    # 0b. Permission-Check (Patch 47)
+    # 0b. Permission-Check / HITL-Guard (Patch 47, scope-restricted Patch 104)
+    # Greift nur bei externen Bot-Channels (Telegram/WhatsApp). Nala-Chat,
+    # Dictate (/v1/) und die Orchestrator-API laufen mit channel=None und
+    # überspringen den Block.
     # ------------------------------------------------------------------
-    allowed_intents = _PERMISSION_MATRIX.get(permission_level, _PERMISSION_MATRIX["guest"])
-    if intent not in allowed_intents:
-        logger.info(f"🔒 Permission-Block: '{permission_level}' darf '{intent}' nicht ausführen")
-        await bus.publish(Event(type="done", data={}, session_id=session_id))
-        return _HITL_MESSAGE, "permission-block", 0, 0, 0.0, intent, None, None
+    if channel in _HITL_PROTECTED_CHANNELS:
+        allowed_intents = _PERMISSION_MATRIX.get(permission_level, _PERMISSION_MATRIX["guest"])
+        if intent not in allowed_intents:
+            logger.info(f"🔒 Permission-Block: '{permission_level}' darf '{intent}' nicht ausführen (channel={channel})")
+            await bus.publish(Event(type="done", data={}, session_id=session_id))
+            return _HITL_MESSAGE, "permission-block", 0, 0, 0.0, intent, None, None
+    else:
+        logger.warning("[HITL-104] Guard übersprungen – channel=%s, intent=%s, permission=%s", channel, intent, permission_level)
 
     # ------------------------------------------------------------------
     # 0c. Sandbox-Ausführung (Patch 52 – aktiv für COMMAND_TOOL + admin)
