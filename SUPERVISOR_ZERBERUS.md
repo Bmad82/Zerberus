@@ -6,7 +6,12 @@
 **Patch 107** – Smoke-Tests Phase 1 + Pipeline-Deduplizierung-Doku (2026-04-22)
 - **Doku:** `lessons.md` erweitert um (a) Pipeline-Dedup (Dictate cleaned Text bereits vor dem Upload, legacy.py cleaned nochmal — aktuell idempotent-harmlos, Backlog-Item), (b) Hel-Admin-UI Split-Brain-Lektion aus Patch 105, (c) Reranker-Minimum-Score-Lektion aus Patch 105, (d) TRANSFORM-Intent-Regel aus Patch 106.
 - **Backlog:** drei neue Items (Pipeline-Dedup-Skip-Flag, DB-Dedup Overnight, Projekt-Workspace als Langzeit-Vision).
-- **Tests:** Unit-Level detect_intent-Matrix (17/18, Uebersetze-ohne-Umlaut-Edge absichtlich nach Patch-Fix getestet → 18/18). Playwright-Suite + curl-Smoke-Tests benötigen laufenden Server — wurden NICHT automatisch gestartet, Chris führt sie nach Server-Start manuell aus (Commands stehen im Patch-Prompt).
+- **Tests post-Server-Restart:** Volle Playwright-Suite **71 passed in 74 s** (14 Loki E2E + 28 Fenrir Chaos + 8 Cleaner + 3 LLM-Fallback + 26 neue TRANSFORM-Intent-Tests). Live-curl-Smoke-Tests:
+  - T1 (HITL-Guard Englisch): Response kommt durch, `model: deepseek/deepseek-v3.2` ✓
+  - T2 (TRANSFORM): `"Übersetze auf Englisch: Heute ist ein guter Tag."` → `"Today is a good day."` — Log zeigt `[TRANSFORM-106] RAG und Query Expansion übersprungen` ✓
+  - T3 (RAG-Gegenprobe): `"Was passiert in den Rosendornen bei der Perseiden-Nacht?"` → ausführliche Antwort mit 4 Details. Log zeigt `[THRESHOLD-105] RAG-Top-Score 0.4808 >= Minimum 0.0500 — Kontext behalten (8 Chunks)` ✓
+  - T4 (Dialekt): `🐻🐻🐻🐻🐻 Ich gehe nicht nach Hause` → `Ick gehe nich nach Hause` (Patch 103 stabil) ✓
+  - T5 (Threshold-Trigger): Englischer Email-Request löste `[THRESHOLD-105] RAG-Top-Score 0.0038 < Minimum 0.0500 — RAG-Kontext verworfen` aus — Threshold-Mechanik live bestätigt ✓
 
 **Patch 106** – RAG-Skip für TRANSFORM-Intent (2026-04-22)
 - **Root Cause:** Jeder /v1/chat/completions-Request durchlief die komplette RAG-Pipeline inkl. Query-Expansion (OpenRouter-Call) und Cross-Encoder-Rerank (~47 s auf CPU). Bei Textverarbeitungs-Aufgaben (Übersetzen/Lektorieren/Zusammenfassen) liefert der User den Kontext selbst mit — RAG-Index hat nichts Passendes, der 16k-Token-Monster-Prompt ist reine Latenz.
