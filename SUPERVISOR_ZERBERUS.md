@@ -1,8 +1,17 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patches 105-107 (2026-04-22)*
+*Letzte Aktualisierung: Patch 108 (2026-04-22)*
 
 ## Aktueller Patch
+**Patch 108** – RAG Category-Tags + Ratatoskr-Sync + CLAUDE_ZERBERUS Regel 9 (2026-04-22)
+- **Cluster 3 – RAG Category-Tags:** Neuer Form-Parameter `category` in [`/hel/admin/rag/upload`](zerberus/app/routers/hel.py) (`Allgemein`/`Narrativ`/`Technisch`/`Persönlich`/`Lore`/`Referenz`). Whitelist `_RAG_CATEGORIES` in hel.py, unbekannte Werte fallen auf `"general"` zurück (`[RAG-108]`-WARNING). Metadata pro Chunk um `category` erweitert (`{"source", "word_count", "category"}`). Altdaten ohne Category lesen via `.get("category", "general")` → keine Migration nötig.
+- **Hel-UI:** Neues `<select id="ragCategory" class="profile-select">`-Dropdown unter dem Datei-Button (gleiches Styling wie Profil-Dropdown aus Patch 95). `uploadRagFile()` hängt `category` an FormData. `loadRagStatus()` verarbeitet das neue `sources_meta`-Feld und rendert farbige Badges pro Kategorie in der Index-Übersicht (Farbmap `RAG_CATEGORY_COLORS`). Fallback auf `sources`-Only, falls Endpoint kein `sources_meta` liefert (Backward-Compat).
+- **Retriever-Kontext:** `_fmt_hit()` in legacy.py + orchestrator.py ersetzt das alte `[Gedächtnis]: ...`-Format durch `[Quelle: <file> | Kategorie: <cat> | Score: <0.xx>]\n<chunk-text>` — LLM sieht jetzt Herkunft + Kategorie direkt. Category-Filtering beim Retrieval ist bewusst NICHT aktiviert (kommt in Patch 110 Query-Router).
+- **Cluster 2 – CLAUDE_ZERBERUS Regel 9** (nicht 8 — existierende Regel 8 = `/v1/`-Auth-Bypass): User-Entscheidungen als klickbare Box in Nala-UI statt Text-Rückfrage.
+- **Cluster 1 – Ratatoskr-Sync:** CLAUDE_ZERBERUS.md + SUPERVISOR_ZERBERUS.md nach Ratatoskr kopiert + gepusht.
+- **Scope:** Tagging-Mechanik + Anzeige. Chunking-Weiche pro Typ (Patch 109), Query-Router (Patch 110), Background Memory Extraction (Patch 111) sind NICHT in diesem Patch.
+- **Verifikation:** Statische Checks grün — `ast.parse` auf hel.py/legacy.py/orchestrator.py OK, `node --check` auf alle 5 `<script>`-Blöcke in hel.py OK (50387 Zeichen + 616 Zeichen). **Live-Upload mit Category-Dropdown + Hel-Übersicht-Rendering steht bei Chris aus (Server-Restart nötig).** Testdoks liegen in `docs/RAG Testdokumente/` (Note: Ordnername hat ein Leerzeichen, nicht Bindestrich — Patch-Prompt-Pfad `RAG-Testdokumente` existiert nicht).
+
 **Patch 107** – Smoke-Tests Phase 1 + Pipeline-Deduplizierung-Doku (2026-04-22)
 - **Doku:** `lessons.md` erweitert um (a) Pipeline-Dedup (Dictate cleaned Text bereits vor dem Upload, legacy.py cleaned nochmal — aktuell idempotent-harmlos, Backlog-Item), (b) Hel-Admin-UI Split-Brain-Lektion aus Patch 105, (c) Reranker-Minimum-Score-Lektion aus Patch 105, (d) TRANSFORM-Intent-Regel aus Patch 106.
 - **Backlog:** drei neue Items (Pipeline-Dedup-Skip-Flag, DB-Dedup Overnight, Projekt-Workspace als Langzeit-Vision).
@@ -195,11 +204,15 @@
 8. [Patch 107] Doppelte Pipeline-Verarbeitung: Dictate-Tastatur schickt bereits gecleanten Text, legacy.py cleaned nochmal. Aktuell harmlos (idempotent), aber bei nicht-idempotenten Regeln problematisch. Lösung: `X-Already-Cleaned`-Header oder Channel-basierter Skip in [legacy.py](zerberus/app/routers/legacy.py) `clean_transcript`-Aufruf.
 9. [Patch 107] DB-Deduplizierung: Tastatur-Retries bei schlechtem Empfang erzeugen identische aufeinanderfolgende Messages in `bunker_memory.db`. Overnight-Job soll Duplikate erkennen und markieren/entfernen. Kriterium: gleicher `profile_key` + gleicher `content` + `timestamp` innerhalb von 60 Sekunden.
 10. [Langzeit] Projekt-Oberfläche in Nala: Eigener Workspace pro Projekt mit Dateien, eigenem RAG-Index, Code-Execution in Docker-Sandbox mit Sancho-Panza-Veto (Multi-Agent-Prüfung vor Execution). War von Anfang an geplant, aus Scope rausgefallen. Abhängigkeit: Rosa/Heimdall für Execution Oversight.
+11. [Patch 108 → Phase 2 Folge-Patches] Category-Tagging ist jetzt da, aber noch KEIN Filtering. Folge-Arbeit: **Chunking-Weiche pro Doc-Typ (Patch 109)**, **Query-Router mit Category-Filter (Patch 110)**, **Background Memory Extraction (Patch 111)**.
+12. [Patch 108] W-001 Sentence-Repetition-Bug (Whisper), Multimodalität ZIP/Bild-Upload, Relative Pfade — aus Scope raus, in Backlog verschoben.
 
-### Erledigt in Patches 105-107
+### Erledigt in Patches 105-108
 - Llama-Hardcode-Verdacht (Patch 105 — kein Hardcode, stattdessen Split-Brain in Hel gefixt)
 - Reranker-Threshold fehlt (Patch 105)
 - RAG-Skip für Textverarbeitung (Patch 106)
+- RAG Category-Tagging beim Upload + Anzeige (Patch 108)
+- CLAUDE_ZERBERUS Regel 9 „User-Entscheidungen als klickbare Box" (Patch 108)
 
 ## Architektur-Warnungen
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung

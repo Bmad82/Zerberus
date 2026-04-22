@@ -204,7 +204,14 @@ async def chat_completions(
             snippet = INTENT_SNIPPETS.get(intent, "")
 
             if rag_hits:
-                context_lines = "\n".join(f"[Gedächtnis]: {h['text']}" for h in rag_hits)
+                # Patch 108: Quelle + Kategorie + Score im Kontext-Header sichtbar
+                def _fmt_hit(h: dict) -> str:
+                    src = h.get("source") or "unbekannt"
+                    cat = h.get("category") or "general"
+                    score = h.get("score")
+                    score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "n/a"
+                    return f"[Quelle: {src} | Kategorie: {cat} | Score: {score_str}]\n{h['text']}"
+                context_lines = "\n".join(_fmt_hit(h) for h in rag_hits)
                 # Patch 101 (R-07): Aggregation-Hint für Listen-/Aufzählungs-Fragen
                 agg_hint = (
                     "\n\nWICHTIG: Wenn die Frage nach einer Aufzählung, Liste oder "

@@ -11,7 +11,7 @@ import asyncio
 import io
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, Request, HTTPException, Depends, status, UploadFile, File
+from fastapi import APIRouter, Request, HTTPException, Depends, status, UploadFile, File, Form
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
 import httpx
@@ -738,6 +738,15 @@ ADMIN_HTML = """<!DOCTYPE html>
                     &#128196; Datei tippen/ausw&#228;hlen (.txt oder .docx)
                 </label>
                 <input type="file" id="ragFileInput" accept=".txt,.docx" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="updateRagFileLabel()">
+                <label for="ragCategory" style="margin-top:4px;">Kategorie:</label>
+                <select id="ragCategory" class="profile-select" style="width:100%; margin-bottom:14px;">
+                    <option value="general">Allgemein</option>
+                    <option value="narrative">Narrativ / Prosa</option>
+                    <option value="technical">Technisch / Code</option>
+                    <option value="personal">Pers&#246;nlich / Tagebuch</option>
+                    <option value="lore">Lore / Worldbuilding</option>
+                    <option value="reference">Referenz / Nachschlagewerk</option>
+                </select>
                 <button onclick="uploadRagFile()" style="width:100%; padding:16px; font-size:1.1em; border-radius:12px; touch-action:manipulation;">&#128196; Hochladen &amp; Indizieren</button>
                 <div id="ragUploadStatus" style="margin-top:14px; font-size:1.05em; word-break:break-word;"></div>
             </div>
@@ -1597,6 +1606,16 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
 
         // ========== RAG / Gedächtnis ==========
+        // Patch 108: Farbcode pro Kategorie (gleiches Farbschema wie Permission-Badges)
+        const RAG_CATEGORY_COLORS = {
+            general:   '#555',
+            narrative: '#7b1fa2',
+            technical: '#1a3a5c',
+            personal:  '#b8860b',
+            lore:      '#2e7d32',
+            reference: '#5d4037',
+        };
+
         async function loadRagStatus() {
             const res = await fetch('/hel/admin/rag/status');
             if (!res.ok) { document.getElementById('ragIndexInfo').innerText = 'Fehler beim Laden'; return; }
@@ -1604,12 +1623,25 @@ ADMIN_HTML = """<!DOCTYPE html>
             document.getElementById('ragIndexInfo').innerText =
                 `Index-Gr\u00f6\u00dfe: ${data.total_chunks} Chunk(s)`;
             const sourcesDiv = document.getElementById('ragSourcesList');
-            if (data.sources && data.sources.length > 0) {
-                const counts = {};
-                data.sources.forEach(s => { counts[s] = (counts[s] || 0) + 1; });
-                sourcesDiv.innerHTML = Object.entries(counts)
-                    .map(([src, cnt]) => `<div style="padding:4px 0; border-bottom:1px solid #444;">[doc] <strong>${src}</strong> &mdash; ${cnt} Chunk(s)</div>`)
-                    .join('');
+            const meta = data.sources_meta || (data.sources || []).map(s => ({source: s, category: 'general'}));
+            if (meta.length > 0) {
+                // Gruppiere pro Source: Anzahl Chunks + gesehene Kategorien
+                const grouped = {};
+                meta.forEach(m => {
+                    const src = m.source || 'unbekannt';
+                    const cat = m.category || 'general';
+                    if (!grouped[src]) grouped[src] = { count: 0, cats: {} };
+                    grouped[src].count += 1;
+                    grouped[src].cats[cat] = (grouped[src].cats[cat] || 0) + 1;
+                });
+                sourcesDiv.innerHTML = Object.entries(grouped).map(([src, info]) => {
+                    const catBadges = Object.entries(info.cats).map(([cat, n]) => {
+                        const color = RAG_CATEGORY_COLORS[cat] || '#555';
+                        const label = info.cats[cat] === info.count ? cat : `${cat} (${n})`;
+                        return `<span style="background:${color}; padding:2px 8px; border-radius:10px; font-size:0.8em; margin-left:6px;">${label}</span>`;
+                    }).join('');
+                    return `<div style="padding:4px 0; border-bottom:1px solid #444;">[doc] <strong>${src}</strong> &mdash; ${info.count} Chunk(s)${catBadges}</div>`;
+                }).join('');
             } else {
                 sourcesDiv.innerHTML = '<span style="color:#888;">Noch keine Dokumente indiziert.</span>';
             }
@@ -1641,13 +1673,17 @@ ADMIN_HTML = """<!DOCTYPE html>
             const file = input.files[0];
             const formData = new FormData();
             formData.append('file', file);
+            const categorySelect = document.getElementById('ragCategory');
+            const category = categorySelect ? categorySelect.value : 'general';
+            formData.append('category', category);
             status.innerHTML = '\u23F3 Wird hochgeladen und indiziert\u2026';
             status.style.color = '#ffd700';
             try {
                 const res = await fetch('/hel/admin/rag/upload', { method: 'POST', body: formData });
                 const data = await res.json().catch(() => ({}));
                 if (res.ok) {
-                    status.innerHTML = `\u2705 <strong>${data.chunks_indexed} Chunks indiziert</strong> aus <em>${data.filename}</em>`;
+                    const catTag = data.category ? ` &middot; Kategorie: <strong>${data.category}</strong>` : '';
+                    status.innerHTML = `\u2705 <strong>${data.chunks_indexed} Chunks indiziert</strong> aus <em>${data.filename}</em>${catTag}`;
                     status.style.color = '#4ecdc4';
                     loadRagStatus();
                     // Label zurücksetzen
@@ -2169,9 +2205,23 @@ def _chunk_text(
     return chunks, merged_count
 
 
+# Patch 108: Erlaubte Kategorien für RAG-Upload. "general" ist Default/Fallback
+# für Altdaten ohne category-Feld.
+_RAG_CATEGORIES = {
+    "general", "narrative", "technical", "personal", "lore", "reference",
+}
+
+
 @router.post("/admin/rag/upload")
-async def rag_upload(file: UploadFile = File(...)):
-    """Lädt .txt, .md, .docx oder .pdf hoch, zerlegt in Chunks und indiziert sie im FAISS-Index."""
+async def rag_upload(
+    file: UploadFile = File(...),
+    category: str = Form("general"),
+):
+    """Lädt .txt, .md, .docx oder .pdf hoch, zerlegt in Chunks und indiziert sie im FAISS-Index.
+
+    Patch 108: `category` (Form-Feld) wird pro Chunk als Metadata gespeichert.
+    Unbekannte Werte fallen stillschweigend auf "general" zurück.
+    """
     from zerberus.modules.rag.router import (
         _ensure_init, _encode, _add_to_index, RAG_AVAILABLE
     )
@@ -2184,6 +2234,10 @@ async def rag_upload(file: UploadFile = File(...)):
 
     filename = file.filename or "unbekannt"
     suffix = Path(filename).suffix.lower()
+    category = (category or "general").strip().lower()
+    if category not in _RAG_CATEGORIES:
+        logger.warning(f"[RAG-108] Unbekannte Kategorie {category!r}, fallback auf 'general'")
+        category = "general"
 
     raw_bytes = await file.read()
 
@@ -2240,22 +2294,42 @@ async def rag_upload(file: UploadFile = File(...)):
         word_count = len(chunk.split())
         await asyncio.to_thread(
             _add_to_index, vec, chunk,
-            {"source": filename, "word_count": word_count},
+            {"source": filename, "word_count": word_count, "category": category},
             settings,
         )
         indexed += 1
 
-    logger.info(f"✅ RAG-Upload abgeschlossen: {indexed}/{len(chunks)} Chunks aus '{filename}' indiziert")
-    return {"status": "ok", "filename": filename, "chunks_indexed": indexed, "merged_residuals": merged_count}
+    logger.info(
+        f"✅ RAG-Upload abgeschlossen: {indexed}/{len(chunks)} Chunks aus '{filename}' "
+        f"indiziert (Kategorie: {category})"
+    )
+    return {
+        "status": "ok",
+        "filename": filename,
+        "category": category,
+        "chunks_indexed": indexed,
+        "merged_residuals": merged_count,
+    }
 
 
 @router.get("/admin/rag/status")
 async def rag_status():
-    """Gibt aktuelle Index-Größe und Liste der indizierten Quellen zurück."""
+    """Gibt aktuelle Index-Größe und Liste der indizierten Quellen zurück.
+
+    Patch 108: Zusätzlich `sources_meta` mit (source, category) pro Chunk.
+    `sources` bleibt aus Backward-Compat erhalten (nur Dateinamen).
+    """
     from zerberus.modules.rag.router import _index, _metadata
     total = _index.ntotal if _index is not None else 0
     sources = [m.get("source", "unbekannt") for m in _metadata]
-    return {"total_chunks": total, "sources": sources}
+    sources_meta = [
+        {
+            "source": m.get("source", "unbekannt"),
+            "category": m.get("category", "general"),
+        }
+        for m in _metadata
+    ]
+    return {"total_chunks": total, "sources": sources, "sources_meta": sources_meta}
 
 
 @router.delete("/admin/rag/clear")
