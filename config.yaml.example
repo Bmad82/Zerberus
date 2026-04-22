@@ -208,6 +208,15 @@ modules:
     # query_expansion_model: null → nutzt legacy.models.cloud_model
     query_expansion_enabled: true
     query_expansion_model: null
+    # Patch 111: Device-Auswahl für Embedding + Cross-Encoder.
+    # "auto" = CUDA wenn verfügbar + >= 2 GB VRAM frei, sonst CPU.
+    # "cuda" erzwingt GPU (Fallback CPU wenn nicht verfügbar).
+    # "cpu" erzwingt CPU.
+    device: auto
+    # Patch 111: Category-Boost im Retrieval — passende Categories bekommen
+    # kleinen Score-Bonus nach dem Reranking. Keyword-basiert.
+    category_boost_enabled: true
+    category_boost_value: 0.1
 
   # MQTT – IoT-Sensor-Integration (aktuell deaktiviert)
   mqtt:

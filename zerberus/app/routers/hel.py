@@ -740,6 +740,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <input type="file" id="ragFileInput" accept=".txt,.md,.docx,.pdf,.json,.csv" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="updateRagFileLabel()">
                 <label for="ragCategory" style="margin-top:4px;">Kategorie:</label>
                 <select id="ragCategory" class="profile-select" style="width:100%; margin-bottom:14px;">
+                    <option value="auto" selected>&#128269; Automatisch erkennen</option>
                     <option value="general">Allgemein</option>
                     <option value="narrative">Narrativ / Prosa</option>
                     <option value="technical">Technisch / Code</option>
@@ -1674,7 +1675,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             const formData = new FormData();
             formData.append('file', file);
             const categorySelect = document.getElementById('ragCategory');
-            const category = categorySelect ? categorySelect.value : 'general';
+            const category = categorySelect ? categorySelect.value : 'auto';
             formData.append('category', category);
             status.innerHTML = '\u23F3 Wird hochgeladen und indiziert\u2026';
             status.style.color = '#ffd700';
@@ -1682,7 +1683,8 @@ ADMIN_HTML = """<!DOCTYPE html>
                 const res = await fetch('/hel/admin/rag/upload', { method: 'POST', body: formData });
                 const data = await res.json().catch(() => ({}));
                 if (res.ok) {
-                    const catTag = data.category ? ` &middot; Kategorie: <strong>${data.category}</strong>` : '';
+                    const autoFlag = data.auto_detected ? ' (auto)' : '';
+                    const catTag = data.category ? ` &middot; Kategorie: <strong>${data.category}</strong>${autoFlag}` : '';
                     status.innerHTML = `\u2705 <strong>${data.chunks_indexed} Chunks indiziert</strong> aus <em>${data.filename}</em>${catTag}`;
                     status.style.color = '#4ecdc4';
                     loadRagStatus();
@@ -2244,20 +2246,61 @@ def _chunk_text(
 
 
 # Patch 108: Erlaubte Kategorien für RAG-Upload. "general" ist Default/Fallback
-# für Altdaten ohne category-Feld.
+# für Altdaten ohne category-Feld. Patch 111: "auto" triggert Extension-basierte
+# Detection (_detect_category), landet aber nie als echte Category in der Metadata.
 _RAG_CATEGORIES = {
     "general", "narrative", "technical", "personal", "lore", "reference",
 }
 
 
+# Patch 111: Extension-basierte Auto-Detection. Entscheidet wenn
+# User "auto" (neues Default) oder "general" gewählt hat. Content-basierte
+# Detection (LLM) kommt in Phase 4.
+_EXTENSION_CATEGORY_MAP: dict[str, str] = {
+    ".py":   "technical",
+    ".js":   "technical",
+    ".ts":   "technical",
+    ".json": "technical",
+    ".yaml": "technical",
+    ".yml":  "technical",
+    ".md":   "technical",
+    ".csv":  "reference",
+    ".pdf":  "general",
+    ".txt":  "general",
+    ".docx": "general",
+}
+
+
+def _detect_category(filename: str, user_category: str) -> tuple[str, bool]:
+    """Auto-Detection wenn User 'auto' oder 'general' gewählt hat.
+
+    Returns:
+        (resolved_category, auto_detected) — auto_detected=True wenn die
+        Detection das Ergebnis bestimmt hat (nicht User-Override).
+    """
+    user_category = (user_category or "auto").strip().lower()
+    if user_category not in ("auto", "general"):
+        return user_category, False
+
+    suffix = Path(filename).suffix.lower()
+    detected = _EXTENSION_CATEGORY_MAP.get(suffix, "general")
+    logger.warning(
+        f"[CAT-111] Auto-Detection: {filename} (suffix={suffix!r}) → {detected} "
+        f"[user wählte {user_category!r}]"
+    )
+    return detected, True
+
+
 @router.post("/admin/rag/upload")
 async def rag_upload(
     file: UploadFile = File(...),
-    category: str = Form("general"),
+    category: str = Form("auto"),
 ):
     """Lädt .txt, .md, .docx oder .pdf hoch, zerlegt in Chunks und indiziert sie im FAISS-Index.
 
     Patch 108: `category` (Form-Feld) wird pro Chunk als Metadata gespeichert.
+    Patch 111: `category="auto"` (neues Default) oder `"general"` triggert
+    Extension-basierte Auto-Detection (siehe `_detect_category`).
     Unbekannte Werte fallen stillschweigend auf "general" zurück.
     """
     from zerberus.modules.rag.router import (
@@ -2272,10 +2315,15 @@ async def rag_upload(
 
     filename = file.filename or "unbekannt"
     suffix = Path(filename).suffix.lower()
-    category = (category or "general").strip().lower()
+    raw_category = (category or "auto").strip().lower()
+
+    # Patch 111: Auto-Detection bei "auto"/"general"
+    category, auto_detected = _detect_category(filename, raw_category)
+
     if category not in _RAG_CATEGORIES:
         logger.warning(f"[RAG-108] Unbekannte Kategorie {category!r}, fallback auf 'general'")
         category = "general"
+        auto_detected = False
 
     raw_bytes = await file.read()
 
@@ -2382,6 +2430,7 @@ async def rag_upload(
         "status": "ok",
         "filename": filename,
         "category": category,
+        "auto_detected": auto_detected,
         "chunks_indexed": indexed,
         "merged_residuals": merged_count,
     }

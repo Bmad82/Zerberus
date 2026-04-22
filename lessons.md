@@ -85,6 +85,22 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - **Anti-Invariante „nie schwarz auf schwarz":** Bubble-Background-Defaults in `:root` müssen **lesbare Werte** haben, selbst ohne gesetztes Theme oder Favorit. `rgba(…, 0.85–0.88)`-Werte mit den Theme-Hex-Farben als Basis geben optische Tiefe ohne den Kontrast zu brechen. User-Bubble `rgba(236, 64, 122, 0.88)` + LLM-Bubble `rgba(26, 47, 78, 0.85)` entsprechen Chris's Purple/Gold-Scheme.
 - **Reset muss vollständig sein:** `resetTheme()` darf nicht nur die 5 Theme-Farben zurücksetzen — sonst bleiben alte Bubble-Overrides (z.B. schwarzer Hintergrund) in `localStorage` aktiv und übersteuern die rgba-Defaults. Lösung: `resetTheme()` ruft `resetAllBubbles()` + `resetFontSize()` mit auf.
 
+## RAG GPU-Acceleration (Patch 111)
+- **torch-Variante checken:** `pip list | grep torch` zeigt `+cpu` wenn CUDA nicht drin ist. RTX 3060 bleibt ungenutzt bis `pip install torch --index-url https://download.pytorch.org/whl/cu121` (oder passender CUDA-Version). Der Device-Helper aus Patch 111 fällt defensiv auf CPU zurück — also keine Regression, aber auch kein Speed-Up.
+- **VRAM-Threshold 2 GB:** MiniLM ~0.5 GB + bge-reranker-v2-m3 ~1 GB + Puffer. Whisper frisst ~4 GB, BERT-Sentiment ~0.5 GB → auf einer 12-GB-Karte bleiben 7 GB frei, mehr als genug. Der Check soll nur verhindern dass bei gleichzeitig belegtem VRAM (z.B. paralleler Whisper-Call) das Embedding auf OOM läuft.
+- **CrossEncoder nimmt `device` direkt:** In `sentence-transformers >= 2.2` akzeptiert `CrossEncoder(model, device=...)` den Konstruktor-Parameter. Keine nachträgliche `.to(device)`-Verschiebung nötig. In Patch 111 mit `inspect.signature(CrossEncoder.__init__)` verifiziert.
+- **`_cuda_state()` isolieren:** Die eine Funktion ist mockbar ohne `torch`-Dependency in Tests — `monkeypatch.setattr(dev_mod, "_cuda_state", lambda: (True, 8.0, 12.0, "RTX 3060"))`. 9 Unit-Tests für Device-Detection ohne jede GPU (Patch 111).
+
+## Query-Router / Category-Boost (Patch 111)
+- **Wortgrenzen-Matching IMMER:** Naives Substring-`in` findet `api` in `Kapitel` → false positive. `re.search(r'(?<!\w)kw(?!\w)', text.lower())` ist Pflicht. Multi-Wort-Keys (`"ich habe"`) fallen auf einfaches `in` zurück, weil der Leerzeichen-Kontext selbst Wortgrenze ist. Lesson analog zu Patch 103 Dialekt-Weiche.
+- **Boost statt Filter:** Category-Filtering als hartes Drop würde Retrieval brüchig machen (Fehl-Klassifikation der Heuristik = leeres Ergebnis). Score-Bonus (Default 0.1) auf `rerank_score` (Cross-Encoder, Patch 89) bzw. `score` als Fallback verschiebt nur die Reihenfolge. Flag `category_boosted: True` pro Chunk für Debugging.
+- **Keyword-Listen kurz halten:** Lieber false negatives (kein Boost) als false positives (falscher Boost). 5-15 Keywords pro Category reicht — LLM-basierte Detection kommt eh in Phase 4.
+
+## Auto-Category-Detection (Patch 111)
+- **Extension-Map statt Content-Analyse:** Erste Stufe reicht `Path(filename).suffix.lower()` → dict lookup. Content-basierte Detection (LLM-Call) kommt in Phase 4. `.json`/`.yaml`/`.md` → technical, `.csv` → reference, `.pdf`/`.txt`/`.docx` → general. Bei `.txt`/`.pdf` gibt's keine saubere Zuordnung — `general` ist die richtige Wahl (Chris kann manuell overriden).
+- **`"general"` als Detection-Trigger behalten:** Nicht nur `"auto"`. Grund: Alt-Uploads mit `general` sind meist unbewusst gesetzt, die Auto-Detection verbessert ohne Opt-In. User-Override (narrative/technical/…) gewinnt immer.
+- **Python `\u{…}` in HTML-Strings bricht Parse:** Emoji-Literale wie `\u{1F50D}` sind ES6+ JS-Syntax, aber Python's String-Parser erwartet nach `\u` genau 4 Hex-Chars → `SyntaxError: truncated \uXXXX escape` beim Import. Entweder Emoji direkt einfügen oder `\\u{1F50D}` (doppel-escape). Analog zur Patch-69c/100-Lesson zu `\n` in JS-Strings.
+
 ## Dateinamen-Konvention (Patch 100)
 - Projektspezifische CLAUDE.md IMMER als `CLAUDE_[PROJEKTNAME].md` benennen
 - Gleiches für Supervisor-Briefing: `SUPERVISOR_[PROJEKTNAME].md`

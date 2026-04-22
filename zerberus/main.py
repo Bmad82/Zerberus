@@ -134,6 +134,13 @@ async def lifespan(app: FastAPI):
             _log_fail("RAG/FAISS", "faiss oder sentence-transformers nicht installiert")
         except Exception as _rag_err:
             _log_fail("RAG/FAISS", str(_rag_err)[:100])
+
+        # Patch 111: VRAM-Status einmalig beim Start loggen
+        try:
+            from zerberus.modules.rag.device import log_gpu_status
+            log_gpu_status()
+        except Exception as _gpu_err:
+            logger.warning(f"[GPU-111] Status-Check fehlgeschlagen: {_gpu_err}")
     else:
         _log_skip("RAG/FAISS", "deaktiviert")
 

@@ -219,6 +219,14 @@ async def chat_completions(
                     "stehenden Kontext-Abschnitte. Zähle alle relevanten Treffer auf, "
                     "nicht nur den ersten."
                 )
+                # Patch 111: Category-Hint bei gemischten Kategorien
+                cats = {h.get("category") or "general" for h in rag_hits}
+                if len(cats) > 1:
+                    agg_hint += (
+                        "\n\nDie Kontext-Abschnitte stammen aus verschiedenen Kategorien "
+                        "(z.B. narrative, technical, lore). Bevorzuge Informationen aus "
+                        "der zur Frage passenden Kategorie."
+                    )
                 enriched_content = f"[Intent: {intent}]\n{context_lines}{agg_hint}\n\n{snippet}\n{last_user_msg}" if snippet else f"[Intent: {intent}]\n{context_lines}{agg_hint}\n\n{last_user_msg}"
                 # Letzte User-Nachricht in der Kopie anreichern
                 for i in range(len(messages_for_llm) - 1, -1, -1):

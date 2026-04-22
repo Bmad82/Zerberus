@@ -86,9 +86,13 @@ def _init_sync(settings: Settings) -> None:
         if _initialized:
             return
 
-        model_name = settings.modules.get("rag", {}).get("embedding_model", "all-MiniLM-L6-v2")
-        logger.info(f"🤖 Lade Embedding-Modell: {model_name}")
-        _model = SentenceTransformer(model_name)
+        rag_cfg = settings.modules.get("rag", {})
+        model_name = rag_cfg.get("embedding_model", "all-MiniLM-L6-v2")
+        from zerberus.modules.rag.device import get_rag_device
+        device = get_rag_device(rag_cfg.get("device"))
+        logger.info(f"🤖 Lade Embedding-Modell: {model_name} (device={device})")
+        _model = SentenceTransformer(model_name, device=device)
+        logger.warning(f"[GPU-111] Embedding-Modell geladen auf {device}")
 
         index_path, meta_path = _resolve_paths(settings)
         _index = _load_or_create_index(index_path)
@@ -130,7 +134,15 @@ def _encode(text: str) -> np.ndarray:
     global _model
     if _model is None:
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+        from zerberus.modules.rag.device import get_rag_device
+        try:
+            settings = get_settings()
+            rag_cfg = settings.modules.get("rag", {})
+            device = get_rag_device(rag_cfg.get("device"))
+        except Exception:
+            device = get_rag_device(None)
+        _model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2", device=device)
+        logger.warning(f"[GPU-111] Embedding-Modell lazy-geladen auf {device}")
     vec = _model.encode([text], normalize_embeddings=True)
     return vec.astype("float32")
 
@@ -318,6 +330,16 @@ async def semantic_search(
         results = await asyncio.to_thread(_rerank, query, all_candidates, rerank_model, req.top_k)
     else:
         results = all_candidates[:req.top_k]
+
+    # Patch 111: Category-Boost (Keyword-basiert)
+    if results and bool(mod_cfg.get("category_boost_enabled", False)):
+        from zerberus.modules.rag.category_router import (
+            detect_query_category, apply_category_boost,
+        )
+        query_cat = detect_query_category(query)
+        if query_cat:
+            boost = float(mod_cfg.get("category_boost_value", 0.1))
+            results = apply_category_boost(results, query_cat, boost)
 
     bus = get_event_bus()
     await bus.publish(Event(type="rag_search", data={"query": query[:100], "results": len(results)}))

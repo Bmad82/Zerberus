@@ -1,8 +1,16 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 110 (2026-04-22)*
+*Letzte Aktualisierung: Patch 111 (2026-04-22) – Phase 2 abgeschlossen*
 
 ## Aktueller Patch
+**Patch 111** – GPU-Acceleration + Auto-Category-Detection + Query-Router (2026-04-22) — *Phase 2 abgeschlossen*
+- **Cluster 1 – GPU-Acceleration:** Neues Modul [device.py](zerberus/modules/rag/device.py) mit `get_rag_device(config_override)` und `log_gpu_status()`. Detection-Logik: `auto` (Default) → CUDA wenn verfügbar UND ≥ 2 GB VRAM frei, sonst CPU. `cuda`/`cpu` erzwingen das Device mit Fallback-Logging. `_cuda_state()` isoliert das `torch.cuda.mem_get_info()`-API hinter einer mockbaren Funktion (keine torch-Dependency in Tests). `SentenceTransformer` (router.py) und `CrossEncoder` (reranker.py) nehmen `device=` beim Konstruktor, Lazy-Load-Guard in `_encode()` liest Config nachträglich. main.py loggt GPU-Status beim Start (`log_gpu_status()` nach dem FAISS-Check). Config-Keys `modules.rag.device: auto` in config.yaml + .example. **Wichtig:** Aktuelles venv hat `torch==2.10.0+cpu` installiert — für echte GPU-Nutzung muss Chris `pip install torch --index-url https://download.pytorch.org/whl/cu121` ziehen. Code läuft defensiv: ohne CUDA-torch bleibt alles auf CPU (kein Crash, keine Regression).
+- **Cluster 2 – Auto-Category-Detection:** Neuer Helper `_detect_category(filename, user_category)` in [hel.py](zerberus/app/routers/hel.py) mit `_EXTENSION_CATEGORY_MAP` (.py/.js/.ts/.json/.yaml/.yml/.md → technical, .csv → reference, .pdf/.txt/.docx → general). `"auto"` (neues Upload-Default) und `"general"` triggern die Detection, explizite User-Wahl (narrative/technical/…) gewinnt immer. Hel-UI-Dropdown: neue Default-Option `🔍 Automatisch erkennen` vor „Allgemein". Upload-Response enthält jetzt `auto_detected: bool`; Frontend-Status zeigt `(auto)`-Suffix wenn die Detection gegriffen hat. Rückgabe-Tupel `(category, auto_detected)` wird auch im Log sichtbar (`[CAT-111]`-WARNING).
+- **Cluster 3 – Query-Router mit Category-Boost:** Neues Modul [category_router.py](zerberus/modules/rag/category_router.py) mit `detect_query_category()` (Keyword-basiert, **Wortgrenzen-Matching** via `re.search(r'(?<!\w)kw(?!\w)')` — `api` matcht nicht mehr in `Kapitel`) und `apply_category_boost(results, category, boost)`. Boost addiert auf `rerank_score` (Patch 89) bzw. `score` (Fallback), sortiert neu, flaggt geboostete Chunks mit `category_boosted: True`. Integration in `_rag_search()` (orchestrator.py, wirkt via Import auch für legacy.py) UND in `/rag/search` (router.py, für `rag_eval.py`). System-Prompt-Hint: bei gemischten Categories bekommt der LLM eine zusätzliche Zeile im Aggregation-Hint („bevorzuge die zur Frage passende Kategorie"). Config: `category_boost_enabled: true`, `category_boost_value: 0.1` in config.yaml + .example.
+- **Tests:** Drei neue Dateien — [test_device.py](zerberus/tests/test_device.py) (9 Tests, auto/cuda/cpu + VRAM-Threshold + Case-Normalisierung), [test_category_detect.py](zerberus/tests/test_category_detect.py) (14 Tests, Upload-Detection + Query-Detection), [test_category_boost.py](zerberus/tests/test_category_boost.py) (6 Tests, Boost-Reihenfolge + rerank_score-Präferenz + keine Matches). **Offline-Run: 82 passed** (30 neu + 52 bestehend). App-Import + `get_rag_device('auto')` funktioniert sauber.
+- **Scope:** Alle drei Cluster in Scope, inkl. Config-Optionen + Tests. NICHT in diesem Patch (wie im Prompt festgelegt): LLM-basierte Category-Detection, Background Memory Extraction, Sancho-Panza Veto, Halluzinations-Detektor, Bild-/ZIP-Upload, Color Picker.
+- **Live-Verifikation (USER):** (1) Server-Restart: Log sollte `[GPU-111]`-Zeilen zeigen. Ohne CUDA-torch erscheint `Kein CUDA verfügbar — CPU-Modus`. Für echte GPU-Nutzung: torch-cu121 installieren + erneut starten. (2) Upload mit `auto`: `.py`-Datei → Log `[CAT-111] → technical`, Response-Feld `auto_detected: true`, UI zeigt `(auto)`-Suffix. (3) Query „Was passiert in Kapitel 3?" → Log `[ROUTER-111] Query-Category: narrative`, narrative-Chunks rücken in der Reihenfolge nach oben. (4) Antwortzeit: mit CUDA-torch sollte Rerank auf 37 Chunks deutlich unter 10 s laufen (vorher 30-47 s CPU).
+
 **Patch 110** – Upload-Formate erweitern + Chunking-Weiche pro Dokumenttyp (2026-04-22)
 - **Cluster 1 – Upload-Formate .json + .csv:** `.pdf` und `.md` waren bereits akzeptiert (pdfplumber 0.11.9 installiert, `.md` wird seit jeher wie `.txt` behandelt). Neu in [hel.py](zerberus/app/routers/hel.py) `rag_upload()`: **`.json`** wird via `json.loads()` geparst und als `json.dumps(data, indent=2, ensure_ascii=False)`-pretty-print in den Index geschoben — Struktur bleibt für das Embedding-Modell als Klartext lesbar. **`.csv`** wird mit `csv.reader` geparst, Header-Zeile zuerst, dann pro Daten-Zeile ein `"Header1: Wert1; Header2: Wert2"`-Mapping (leere Zellen ausgelassen) — hilft dem Embedder, Spaltenbezüge zu lernen. Hel-UI: `<input accept="...">` erweitert auf `.txt,.md,.docx,.pdf,.json,.csv`; Label + Hinweis aktualisiert.
 - **Cluster 2 – Chunking-Weiche pro Category:** Neue Konstante `CHUNK_CONFIGS` in [hel.py](zerberus/app/routers/hel.py) — pro Category ein Profil mit `chunk_size`, `overlap`, `min_chunk_words`, `split`-Strategie. `_chunk_text(text, category="general", ...)` nimmt jetzt einen `category`-Parameter; explizite `chunk_size`/`overlap`/`min_chunk_words`-Argumente überschreiben das Profil (für Tests + config.yaml). Drei Split-Strategien: `"chapter"` (Prolog/Akt/Epilog/Glossar, für narrative/lore/personal/general), `"markdown"` (neue `_MD_HEADER_RE` an `# … ######`, für technical), `"none"` (nur Wortfenster, für reference). **Profile:** narrative/lore 800/160/120 (stabil mit bge-reranker-v2-m3, Patch 89), technical 500/100/80, reference 300/60/50, personal 400/80/80, general 800/160/120.
@@ -219,10 +227,12 @@
 8. [Patch 107] Doppelte Pipeline-Verarbeitung: Dictate-Tastatur schickt bereits gecleanten Text, legacy.py cleaned nochmal. Aktuell harmlos (idempotent), aber bei nicht-idempotenten Regeln problematisch. Lösung: `X-Already-Cleaned`-Header oder Channel-basierter Skip in [legacy.py](zerberus/app/routers/legacy.py) `clean_transcript`-Aufruf.
 9. [Patch 107] DB-Deduplizierung: Tastatur-Retries bei schlechtem Empfang erzeugen identische aufeinanderfolgende Messages in `bunker_memory.db`. Overnight-Job soll Duplikate erkennen und markieren/entfernen. Kriterium: gleicher `profile_key` + gleicher `content` + `timestamp` innerhalb von 60 Sekunden.
 10. [Langzeit] Projekt-Oberfläche in Nala: Eigener Workspace pro Projekt mit Dateien, eigenem RAG-Index, Code-Execution in Docker-Sandbox mit Sancho-Panza-Veto (Multi-Agent-Prüfung vor Execution). War von Anfang an geplant, aus Scope rausgefallen. Abhängigkeit: Rosa/Heimdall für Execution Oversight.
-11. [Patch 108 → Phase 2 Folge-Patches] Category-Tagging ist jetzt da, aber noch KEIN Filtering. Folge-Arbeit: **Chunking-Weiche pro Doc-Typ (Patch 109)**, **Query-Router mit Category-Filter (Patch 110)**, **Background Memory Extraction (Patch 111)**.
-12. [Patch 108] W-001 Sentence-Repetition-Bug (Whisper), Multimodalität ZIP/Bild-Upload, Relative Pfade — aus Scope raus, in Backlog verschoben.
+11. [Phase 4] Background Memory Extraction — wurde aus Phase 2 umgeplant. Aktuell NICHT implementiert.
+12. [Phase 4] LLM-basierte Category-Detection (ergänzt zur Keyword-Heuristik von Patch 111), Sancho-Panza Veto-Layer, Halluzinations-Detektor „Ach laber doch nicht", Multimodalität ZIP/Bild-Upload, Color Picker.
+13. [Patch 108] W-001 Sentence-Repetition-Bug (Whisper), Relative Pfade — aus Scope raus, in Backlog verschoben.
+14. [Patch 111] **torch-cu121-Installation**: Aktuelles venv hat nur `torch==2.10.0+cpu`. Für echte GPU-Nutzung `pip install torch --index-url https://download.pytorch.org/whl/cu121`. Code ist defensiv — ohne CUDA-torch bleibt alles auf CPU (kein Crash).
 
-### Erledigt in Patches 105-110
+### Erledigt in Patches 105-111
 - Llama-Hardcode-Verdacht (Patch 105 — kein Hardcode, stattdessen Split-Brain in Hel gefixt)
 - Reranker-Threshold fehlt (Patch 105)
 - RAG-Skip für Textverarbeitung (Patch 106)
@@ -232,6 +242,10 @@
 - Theme-Defaults ohne rgba-Tiefe + unvollständiger `resetTheme()` (Patch 109)
 - Upload-Formate: `.json` + `.csv` zusätzlich zu `.txt/.md/.docx/.pdf` (Patch 110)
 - Chunking-Weiche pro Category (CHUNK_CONFIGS, Markdown-Header-Split für `technical`) (Patch 110)
+- **GPU-Acceleration für Embedding + Reranker (Patch 111)** — zentrale `get_rag_device()`-Helper mit VRAM-Check + Fallback
+- **Auto-Category-Detection beim Upload (Patch 111)** — Extension-basiert, UI-Default `auto`
+- **Query-Router mit Category-Boost (Patch 111)** — Keyword-basiert, Score-Boost statt hartes Filtering
+- **→ Phase 2 damit abgeschlossen.**
 
 ## Architektur-Warnungen
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung

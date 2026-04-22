@@ -24,14 +24,25 @@ def _load_reranker(model_name: str):
 
     Modell-Wechsel zur Laufzeit wird unterstützt: Wenn model_name sich
     ändert, wird das neue Modell geladen und der Cache aktualisiert.
+
+    Patch 111: Device-Auswahl via `get_rag_device()` aus config.yaml
+    (`modules.rag.device`). CrossEncoder nimmt `device` direkt als
+    Konstruktor-Parameter (sentence-transformers >= 2.2).
     """
     global _reranker, _reranker_model_name
     if _reranker is None or _reranker_model_name != model_name:
         from sentence_transformers import CrossEncoder
-        logger.info(f"[DEBUG-89] Loading cross-encoder: {model_name}")
-        _reranker = CrossEncoder(model_name, max_length=512)
+        from zerberus.modules.rag.device import get_rag_device
+        try:
+            from zerberus.core.config import get_settings
+            rag_cfg = get_settings().modules.get("rag", {})
+            device = get_rag_device(rag_cfg.get("device"))
+        except Exception:
+            device = get_rag_device(None)
+        logger.info(f"[DEBUG-89] Loading cross-encoder: {model_name} (device={device})")
+        _reranker = CrossEncoder(model_name, max_length=512, device=device)
         _reranker_model_name = model_name
-        logger.info(f"[DEBUG-89] Cross-encoder loaded: {model_name}")
+        logger.warning(f"[GPU-111] Reranker geladen auf {device}")
     return _reranker
 
 

@@ -319,6 +319,17 @@ async def _rag_search(query: str, settings: Settings) -> list[dict]:
             filtered = [h for h in all_candidates if h.get("l2_distance", 999) < _RAG_L2_THRESHOLD][:_RAG_TOP_K]
             if all_candidates and not filtered:
                 logger.warning(f"[DEBUG-85] RAG: {len(all_candidates)} Treffer gefunden, aber ALLE über L2-Threshold {_RAG_L2_THRESHOLD}! Nächster: {all_candidates[0].get('l2_distance', 'N/A'):.3f}")
+
+        # Patch 111: Category-Boost (Keyword-basiert)
+        if filtered and bool(rag_cfg.get("category_boost_enabled", False)):
+            from zerberus.modules.rag.category_router import (
+                detect_query_category, apply_category_boost,
+            )
+            query_cat = detect_query_category(query)
+            if query_cat:
+                boost = float(rag_cfg.get("category_boost_value", 0.1))
+                filtered = apply_category_boost(filtered, query_cat, boost)
+
         return filtered
     except Exception as e:
         logger.warning(f"RAG-Suche fehlgeschlagen (graceful fallback): {e}")
@@ -502,6 +513,15 @@ async def _run_pipeline(
             "stehenden Kontext-Abschnitte. Zähle alle relevanten Treffer auf, "
             "nicht nur den ersten."
         )
+        # Patch 111: Category-Hint — bei gemischten Categories dem LLM signalisieren,
+        # dass zur Frage passende Kategorien bevorzugt werden sollen.
+        cats = {h.get("category") or "general" for h in rag_hits}
+        if len(cats) > 1:
+            agg_hint += (
+                "\n\nDie Kontext-Abschnitte stammen aus verschiedenen Kategorien "
+                "(z.B. narrative, technical, lore). Bevorzuge Informationen aus "
+                "der zur Frage passenden Kategorie."
+            )
         user_content = f"[Intent: {intent}]\n{context_lines}{agg_hint}\n\n{snippet}\n{sandbox_block}{message}" if snippet else f"[Intent: {intent}]\n{context_lines}{agg_hint}\n\n{sandbox_block}{message}"
         logger.warning(f"[AGG-101] Chunks in Prompt: {len(rag_hits)} | Aggregation-Hint: aktiv")
         logger.info(f"🧠 RAG lieferte {len(rag_hits)} relevante Treffer (L2 < {_RAG_L2_THRESHOLD})")
