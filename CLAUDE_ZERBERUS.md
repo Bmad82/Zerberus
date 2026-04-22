@@ -40,6 +40,7 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 5. Module mit `enabled: false` in `config.yaml` nicht anfassen
 6. Dateinamen `CLAUDE_ZERBERUS.md` und `SUPERVISOR_ZERBERUS.md` sind FINAL — nicht umbenennen, nicht verschieben, nicht durch alte Namen ersetzen. Gilt auch für die Kopien in Ratatoskr.
 7. Mobile-first: Nala/Hel/Admin-UIs werden primär auf iOS Safari + Android Chrome genutzt. Jede UI-Änderung muss mobile-kompatibel sein (`:active` statt nur `:hover`, Mindest-Touch-Target 44px, `keydown` statt `keypress`, `type="button"` auf allen Form-Buttons die kein submit sind).
+8. `/v1/`-Endpoints (`/v1/chat/completions`, `/v1/audio/transcriptions`) sind **IMMER auth-frei**. Die Dictate-App (Android-Tastatur) kann keine Custom-Headers (X-API-Key, JWT) setzen. Diese Ausnahme darf **NIEMALS** entfernt werden, auch nicht bei Auth-Refactoring. Der Bypass liegt in [`zerberus/core/middleware.py`](zerberus/core/middleware.py) in `_JWT_EXCLUDED_PREFIXES` als `/v1/`-Prefix. Hintergrund: Hotfix 103a.
 
 ## RAG-Upload
 

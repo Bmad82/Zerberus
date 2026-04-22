@@ -89,9 +89,12 @@ async def rate_limiting_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 # Pfade, die kein JWT benötigen
+# Hotfix 103a (B-25): /v1/ komplett auth-frei — Dictate-App (Android-Tastatur) kann
+# keine Custom-Headers (X-API-Key, JWT) setzen. DIESE AUSNAHME DARF NIEMALS ENTFERNT
+# WERDEN, auch nicht bei Auth-Refactoring. Siehe CLAUDE_ZERBERUS.md Regel 8 + lessons.md.
 _JWT_EXCLUDED_PREFIXES = [
     "/nala/profile/login",
-    "/v1/audio/transcriptions",
+    "/v1/",
     "/nala/events",
     "/static/",
     "/favicon.ico",

@@ -32,6 +32,7 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - .env niemals in Logs ausgeben oder committen
 - Rosa Security Layer: Dateien im Projektordner sind nur Vorbereitung — Verschlüsselung ist NICHT aktiv
 - Bei Profil-Key-Umbenennung (z.B. user2 → jojo) immer password_hash explizit prüfen und im Log bestätigen lassen — fehlende Hashes erzeugen lautlose Login-Fehler (Patch 83)
+- **/v1/-Endpoints MÜSSEN auth-frei bleiben** — Dictate-App (Android-Tastatur) kann keine Custom-Headers (X-API-Key, JWT) setzen. Bei JEDEM Patch der die Auth-Middleware anfasst: `/v1/chat/completions` und `/v1/audio/transcriptions` ohne Auth testen. Bypass liegt in `_JWT_EXCLUDED_PREFIXES` (Prefix `/v1/`) in `zerberus/core/middleware.py`. Regression ist hier ein Dauerbrenner (Hotfix 103a).
 
 ## Deployment (Zerberus-spezifisch)
 - start.bat muss `call venv\Scripts\activate` vor uvicorn enthalten
