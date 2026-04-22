@@ -68,6 +68,7 @@ llm = LLMService()
 
 # ---------------------------------------------------------------------------
 # Intent-Erkennung (regelbasiert, keine KI) – Patch 47: 4 Subtypen
+# Patch 106: 5. Subtyp TRANSFORM (Übersetzen/Lektorieren/Zusammenfassen/...)
 # ---------------------------------------------------------------------------
 
 # COMMAND_TOOL: Tool-Use, Agenten, externe Ressourcen, Dateisystem, teure Operationen
@@ -78,10 +79,11 @@ _COMMAND_TOOL_WORDS = {
 }
 
 # COMMAND_SAFE: harmlose Aktionen ohne externe Ressourcen
+# Patch 106: "übersetze", "zusammenfass(e)" raus — gehen jetzt nach TRANSFORM.
 _COMMAND_SAFE_PHRASES = ["zeig mir", "liste auf", "gib mir", "lies vor"]
 _COMMAND_SAFE_WORDS = {
     "exportier", "exportiere", "spiel", "spiele", "wiederhol", "wiederhole",
-    "zusammenfass", "zusammenfasse", "übersetze", "formatier", "formatiere",
+    "formatier", "formatiere",
 }
 
 # QUESTION: Informationsanfragen
@@ -91,12 +93,32 @@ _QUESTION_STARTERS = {
     "what", "how", "when", "where", "who", "why", "which",
 }
 
+# Patch 106: TRANSFORM — Textverarbeitungs-Aufgaben. Der User liefert den
+# zu bearbeitenden Text komplett mit; RAG-Kontext und Query Expansion sind
+# für diese Aufgaben sinnlos (Cross-Encoder-Rerank ~47 s auf CPU, zero nutzen).
+# Erkennung NUR am Nachrichtenanfang, sonst würde "Übersetze" mitten im Text
+# falsch triggern. Aggregat als re.compile — einmal gebaut, oft genutzt.
+_TRANSFORM_PATTERNS = [
+    # Deutsch (mit Umlaut-Toleranz: ü/ue, ö/oe, ä/ae)
+    r"^(übersetze|übersetz|übersetzung|uebersetze|uebersetz|uebersetzung)\b",
+    r"^(lektoriere|lektorier|korrigiere|korrigier)\b",
+    r"^(fasse\s+zusammen|fass\s+zusammen|zusammenfassung|verdichte)\b",
+    r"^(stichpunkte|bullet\s*points?|aufzählung|aufzaehlung)\b",
+    r"^(schreib\s+um|umschreiben|paraphrasiere|paraphrasier|reformuliere|reformulier)\b",
+    r"^(kürze|kürz(?:en)?|kuerze|kuerz(?:en)?|straffe)\b",
+    r"^(erweitere|erweiter|ausformulier(?:en)?|ausführlicher|ausfuehrlicher)\b",
+    # Englisch (Dictate-Tastatur)
+    r"^(translate|summari[sz]e|proofread|rephrase|rewrite|shorten|expand|bullet\s*points?)\b",
+]
+_TRANSFORM_RE = re.compile("|".join(_TRANSFORM_PATTERNS), re.IGNORECASE)
+
 # Intent-Snippets: werden direkt vor der User-Message in den Kontext eingefügt
 INTENT_SNIPPETS = {
     "QUESTION":      "[Modus: Informationsanfrage – präzise antworten, strukturiert, kein Bullshit]",
     "COMMAND_SAFE":  "[Modus: Aktion – kurz ausführen und knapp bestätigen]",
     "COMMAND_TOOL":  "[Modus: Tool-Anfrage – Permission-Check läuft]",
     "CONVERSATION":  "[Modus: Gespräch – locker, empathisch, keine Listen wenn nicht nötig]",
+    "TRANSFORM":     "[Modus: Textverarbeitung – den vom User gelieferten Text direkt bearbeiten, keine Recherche, keine Rückfragen]",
 }
 
 # ---------------------------------------------------------------------------
@@ -106,9 +128,9 @@ INTENT_SNIPPETS = {
 # Welche Intent-Typen sind pro Permission-Level erlaubt?
 # Nicht erlaubte Intents → Human-in-the-Loop statt LLM-Call
 _PERMISSION_MATRIX: dict[str, set[str]] = {
-    "admin":  {"QUESTION", "COMMAND_SAFE", "COMMAND_TOOL", "CONVERSATION"},
-    "user":   {"QUESTION", "COMMAND_SAFE", "CONVERSATION"},
-    "guest":  {"QUESTION", "CONVERSATION"},
+    "admin":  {"QUESTION", "COMMAND_SAFE", "COMMAND_TOOL", "CONVERSATION", "TRANSFORM"},
+    "user":   {"QUESTION", "COMMAND_SAFE", "CONVERSATION", "TRANSFORM"},
+    "guest":  {"QUESTION", "CONVERSATION", "TRANSFORM"},
 }
 
 _HITL_MESSAGE = (
@@ -125,19 +147,26 @@ _HITL_PROTECTED_CHANNELS: set[str] = {"telegram", "whatsapp"}
 
 def detect_intent(message: str) -> str:
     """
-    Regelbasierte Intent-Erkennung (Patch 47).
-    Prüfreihenfolge: COMMAND_TOOL → COMMAND_SAFE → QUESTION → CONVERSATION
-    Rückgabe: "COMMAND_TOOL" | "COMMAND_SAFE" | "QUESTION" | "CONVERSATION"
+    Regelbasierte Intent-Erkennung (Patch 47, erweitert Patch 106).
+    Prüfreihenfolge: TRANSFORM → COMMAND_TOOL → COMMAND_SAFE → QUESTION → CONVERSATION
+    Rückgabe: "TRANSFORM" | "COMMAND_TOOL" | "COMMAND_SAFE" | "QUESTION" | "CONVERSATION"
+
+    TRANSFORM läuft zuerst, damit "Übersetze folgenden Text: ..." nicht durch
+    ein COMMAND_TOOL-Keyword im Text gekapert wird.
     """
     text = message.strip()
     if not text:
         return "CONVERSATION"
 
+    # 0. TRANSFORM (Patch 106) — nur am Nachrichtenanfang matchen
+    if _TRANSFORM_RE.match(text):
+        return "TRANSFORM"
+
     text_lower = text.lower()
     first_word = text.split()[0].lower().rstrip(",.!:;")
     words = {w.lower().rstrip(",.!:;") for w in text.split()}
 
-    # 1. COMMAND_TOOL (höchste Priorität)
+    # 1. COMMAND_TOOL
     for phrase in _COMMAND_TOOL_PHRASES:
         if phrase in text_lower:
             return "COMMAND_TOOL"
@@ -419,12 +448,18 @@ async def _run_pipeline(
     #    Patch 78b: Skip bei CONVERSATION-Intent oder kurzen Eingaben ohne Fragezeichen
     # ------------------------------------------------------------------
     # Patch 85: RAG-Skip nur bei CONVERSATION + kurz + kein ?
-    # Vorher: OR-Logik skippte auch QUESTION-Intent ohne "?" → RAG nie erreicht
-    skip_rag = (
+    # Patch 106: TRANSFORM skipt immer — User liefert Text komplett mit,
+    # RAG-Kontext wäre Lärm. Spart Query Expansion + Cross-Encoder-Rerank.
+    skip_rag_transform = intent == "TRANSFORM"
+    skip_rag_conversation = (
         intent == "CONVERSATION" and
         len(message.split()) < 15 and
         "?" not in message
     )
+    skip_rag = skip_rag_transform or skip_rag_conversation
+
+    if skip_rag_transform:
+        logger.warning("[TRANSFORM-106] Intent=TRANSFORM erkannt — RAG und Query Expansion übersprungen")
 
     logger.warning(f"[DEBUG-85] RAG-Skip: {skip_rag} | intent={intent}, wörter={len(message.split())}, '?'={'?' in message}")
 
