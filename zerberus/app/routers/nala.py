@@ -953,9 +953,39 @@ NALA_HTML = """<!DOCTYPE html>
         }
     </style>
     <script>
-        /* Patch 77 C3 + Patch 86: Theme + Bubble + Schriftgröße aus localStorage – vor erstem Render */
+        /* Patch 77 C3 + Patch 86: Theme + Bubble + Schriftgröße aus localStorage – vor erstem Render
+           Patch 103 B-13/14: Wenn ein Favoriten-Slot als "last active" markiert ist, hat der Vorrang. */
         (function() {
             var r = document.documentElement.style;
+            var favApplied = false;
+            try {
+                var lastFav = localStorage.getItem('nala_last_active_favorite');
+                if (lastFav) {
+                    var favStored = localStorage.getItem('nala_theme_fav_' + lastFav);
+                    if (favStored) {
+                        var fav = JSON.parse(favStored);
+                        var t = (fav && fav.v === 2) ? fav.theme : fav;
+                        if (t) {
+                            if (t.primary)   r.setProperty('--color-primary', t.primary);
+                            if (t.mid)       r.setProperty('--color-primary-mid', t.mid);
+                            if (t.gold)      r.setProperty('--color-gold', t.gold);
+                            if (t.textLight) r.setProperty('--color-text-light', t.textLight);
+                            if (t.accent)    r.setProperty('--color-accent', t.accent);
+                        }
+                        if (fav && fav.v === 2 && fav.bubble) {
+                            if (fav.bubble.userBg)   r.setProperty('--bubble-user-bg',   fav.bubble.userBg);
+                            if (fav.bubble.userText) r.setProperty('--bubble-user-text', fav.bubble.userText);
+                            if (fav.bubble.llmBg)    r.setProperty('--bubble-llm-bg',    fav.bubble.llmBg);
+                            if (fav.bubble.llmText)  r.setProperty('--bubble-llm-text',  fav.bubble.llmText);
+                        }
+                        if (fav && fav.v === 2 && fav.fontSize) {
+                            r.setProperty('--font-size-base', fav.fontSize);
+                        }
+                        favApplied = true;
+                    }
+                }
+            } catch(_) {}
+            if (favApplied) return;
             try {
                 var t = localStorage.getItem('nala_theme');
                 if (t) {
@@ -992,9 +1022,9 @@ NALA_HTML = """<!DOCTYPE html>
     <!-- ── Login-Screen (Patch 45: offenes Textfeld) ── -->
     <div id="login-screen">
         <h2>👑 Nala</h2>
-        <input type="text" id="login-username" placeholder="Benutzername" autocomplete="username">
+        <input type="text" id="login-username" placeholder="Benutzername" autocomplete="off">
         <div class="pw-wrapper">
-            <input type="password" id="login-password" placeholder="Passwort" autocomplete="current-password">
+            <input type="password" id="login-password" placeholder="Passwort" autocomplete="new-password">
             <button type="button" class="pw-toggle" id="pw-toggle-btn" onclick="togglePw()" aria-label="Passwort anzeigen">
                 <svg id="eye-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
@@ -1037,11 +1067,11 @@ NALA_HTML = """<!DOCTYPE html>
                 </div>
                 <div id="pw-status" style="font-size:0.82em;min-height:1.2em;margin-top:4px;"></div>
             </div>
+            <h3 id="pinned-heading" style="display:none;">📌 Angepinnt</h3>
+            <ul class="session-list" id="pinned-list"></ul>
             <h3>📋 Letzte Chats</h3>
             <input type="search" class="archive-search" id="archive-search" placeholder="Archiv durchsuchen…">
             <ul class="session-list" id="session-list"><li class="session-item">Lade...</li></ul>
-            <h3>📌 Angepinnt</h3>
-            <ul class="session-list" id="pinned-list"></ul>
             <!-- Patch 47: Mein Ton -->
             <h3>✏️ Mein Ton</h3>
             <textarea id="my-prompt-area" class="my-prompt-area" placeholder="Dein persönlicher System-Prompt..."></textarea>
@@ -1416,91 +1446,113 @@ NALA_HTML = """<!DOCTYPE html>
         document.getElementById('login-error').textContent = 'Sitzung abgelaufen – bitte erneut einloggen.';
     }
 
-    // ── Archiv: Pin-Hilfsfunktionen (A3) ──
+    // ── Archiv: Pin-Hilfsfunktionen (A3, Patch 103 B-23: localStorage statt sessionStorage) ──
     function getPinnedIds() {
-        try { return JSON.parse(sessionStorage.getItem('pinned_sessions') || '[]'); } catch(_) { return []; }
+        try {
+            const ls = localStorage.getItem('pinned_sessions');
+            if (ls !== null) return JSON.parse(ls);
+            // Einmalige Migration aus sessionStorage (Alt-Daten aktueller Tab-Session)
+            const ss = sessionStorage.getItem('pinned_sessions');
+            if (ss) {
+                localStorage.setItem('pinned_sessions', ss);
+                return JSON.parse(ss);
+            }
+            return [];
+        } catch(_) { return []; }
     }
     function setPinnedIds(ids) {
-        sessionStorage.setItem('pinned_sessions', JSON.stringify(ids));
+        localStorage.setItem('pinned_sessions', JSON.stringify(ids));
     }
     function togglePin(sid, btn) {
         const ids = getPinnedIds();
         const idx = ids.indexOf(sid);
         if (idx === -1) {
             ids.push(sid);
-            btn.textContent = '📌';
-            btn.classList.add('pinned');
         } else {
             ids.splice(idx, 1);
-            btn.textContent = '📍';
-            btn.classList.remove('pinned');
         }
         setPinnedIds(ids);
         renderSessionList(window._lastSessions || []);
     }
 
-    // ── Archiv: Session-Liste rendern (A1+A2+A3) ──
+    // ── Archiv: Session-Eintrag als <li> bauen (Helper für Patch 103 Zwei-Listen-Render) ──
+    function buildSessionItem(s, isPinned) {
+        const rawMsg   = s.first_message || 'Neuer Chat';
+        const title    = rawMsg.length > 40 ? rawMsg.slice(0, 40) + '…' : rawMsg;
+        const preview  = rawMsg.length > 42 ? rawMsg.slice(0, 80) + (rawMsg.length > 80 ? '…' : '') : '';
+        const ts       = s.created_at
+            ? new Date(s.created_at).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' })
+            : '';
+
+        const li = document.createElement('li');
+        li.className = 'session-item' + (isPinned ? ' pinned' : '');
+
+        const header = document.createElement('div');
+        header.className = 'session-item-header';
+
+        const titleEl = document.createElement('span');
+        titleEl.className = 'session-title';
+        titleEl.textContent = title;
+
+        const tsEl = document.createElement('span');
+        tsEl.className = 'session-ts';
+        tsEl.textContent = ts;
+
+        const pinBtn = document.createElement('button');
+        pinBtn.className = 'session-pin-btn' + (isPinned ? ' pinned' : '');
+        pinBtn.title = isPinned ? 'Entpinnen' : 'Anpinnen';
+        pinBtn.textContent = isPinned ? '📌' : '📍';
+        pinBtn.onclick = (e) => { e.stopPropagation(); togglePin(s.session_id, pinBtn); };
+
+        header.appendChild(titleEl);
+        header.appendChild(tsEl);
+        header.appendChild(pinBtn);
+        li.appendChild(header);
+
+        if (preview) {
+            const previewEl = document.createElement('div');
+            previewEl.className = 'session-preview';
+            previewEl.textContent = preview;
+            li.appendChild(previewEl);
+        }
+
+        li.onclick = () => loadSession(s.session_id);
+        return li;
+    }
+
+    // ── Archiv: Session-Liste rendern (A1+A2+A3, Patch 103 B-23: getrennte Pinned-/Normal-Sektionen) ──
     function renderSessionList(sessions) {
         window._lastSessions = sessions;
         const searchEl = document.getElementById('archive-search');
         const q = (searchEl ? searchEl.value : '').toLowerCase();
         const pinnedIds = getPinnedIds();
 
+        const pinnedList   = document.getElementById('pinned-list');
+        const pinnedHead   = document.getElementById('pinned-heading');
+
         const pinned   = sessions.filter(s => pinnedIds.includes(s.session_id));
         const unpinned = sessions.filter(s => !pinnedIds.includes(s.session_id));
-        const ordered  = [...pinned, ...unpinned];
-        const filtered = q ? ordered.filter(s => (s.first_message || '').toLowerCase().includes(q)) : ordered;
 
+        const filterFn = (s) => !q || (s.first_message || '').toLowerCase().includes(q);
+        const pinnedFiltered   = pinned.filter(filterFn);
+        const unpinnedFiltered = unpinned.filter(filterFn);
+
+        // Pinned-Sektion
+        if (pinnedList) {
+            pinnedList.innerHTML = '';
+            pinnedFiltered.forEach(s => pinnedList.appendChild(buildSessionItem(s, true)));
+        }
+        if (pinnedHead) {
+            pinnedHead.style.display = pinnedFiltered.length > 0 ? '' : 'none';
+        }
+
+        // Haupt-Sektion
         sessionList.innerHTML = '';
-        if (filtered.length === 0) {
+        if (unpinnedFiltered.length === 0 && pinnedFiltered.length === 0) {
             sessionList.innerHTML = '<li class="session-item">Keine Chats</li>';
             return;
         }
-
-        filtered.forEach(s => {
-            const rawMsg   = s.first_message || 'Neuer Chat';
-            const title    = rawMsg.length > 40 ? rawMsg.slice(0, 40) + '…' : rawMsg;
-            const preview  = rawMsg.length > 42 ? rawMsg.slice(0, 80) + (rawMsg.length > 80 ? '…' : '') : '';
-            const ts       = s.created_at
-                ? new Date(s.created_at).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' })
-                : '';
-            const isPinned = pinnedIds.includes(s.session_id);
-
-            const li = document.createElement('li');
-            li.className = 'session-item' + (isPinned ? ' pinned' : '');
-
-            const header = document.createElement('div');
-            header.className = 'session-item-header';
-
-            const titleEl = document.createElement('span');
-            titleEl.className = 'session-title';
-            titleEl.textContent = title;
-
-            const tsEl = document.createElement('span');
-            tsEl.className = 'session-ts';
-            tsEl.textContent = ts;
-
-            const pinBtn = document.createElement('button');
-            pinBtn.className = 'session-pin-btn' + (isPinned ? ' pinned' : '');
-            pinBtn.title = isPinned ? 'Entpinnen' : 'Anpinnen';
-            pinBtn.textContent = isPinned ? '📌' : '📍';
-            pinBtn.onclick = (e) => { e.stopPropagation(); togglePin(s.session_id, pinBtn); };
-
-            header.appendChild(titleEl);
-            header.appendChild(tsEl);
-            header.appendChild(pinBtn);
-            li.appendChild(header);
-
-            if (preview) {
-                const previewEl = document.createElement('div');
-                previewEl.className = 'session-preview';
-                previewEl.textContent = preview;
-                li.appendChild(previewEl);
-            }
-
-            li.onclick = () => loadSession(s.session_id);
-            sessionList.appendChild(li);
-        });
+        unpinnedFiltered.forEach(s => sessionList.appendChild(buildSessionItem(s, false)));
     }
 
     // ── Archiv laden ──
@@ -1508,8 +1560,10 @@ NALA_HTML = """<!DOCTYPE html>
         try {
             // Patch 67 fix: Auth-Header mitschicken – /archive/* ist JWT-geschützt
             const response = await fetch('/archive/sessions', { headers: profileHeaders() });
+            // Patch 103 B-10: Bei 401 direkt Login anzeigen statt stiller Auth-Fehler-Meldung
+            if (response.status === 401) { handle401(); return; }
             if (!response.ok) {
-                sessionList.innerHTML = '<li class="session-item">Keine Chats (Auth-Fehler)</li>';
+                sessionList.innerHTML = '<li class="session-item">Keine Chats</li>';
                 return;
             }
             const sessions = await response.json();
@@ -1524,6 +1578,8 @@ NALA_HTML = """<!DOCTYPE html>
             // Patch 102 (B-02/B-06): Aktiven Chat-Request abbrechen, bevor wir zur neuen Session wechseln
             abortActiveChat('session-switch');
             const response = await fetch(`/archive/session/${sid}`, { headers: profileHeaders() });
+            // Patch 103 B-10: 401-Check auch beim Session-Laden
+            if (response.status === 401) { handle401(); return; }
             const messages = await response.json();
             // sessionId im Speicher aktualisieren (kein localStorage-Eintrag)
             sessionId = sid;
@@ -2196,6 +2252,7 @@ NALA_HTML = """<!DOCTYPE html>
         document.getElementById('tc-text').value    = d.textLight;
         document.getElementById('tc-accent').value  = d.accent;
         localStorage.removeItem('nala_theme');
+        localStorage.removeItem('nala_last_active_favorite');  // Patch 103 B-13/14
     }
 
     // ── Patch 86: Bubble-Farben (N-F07) ──
@@ -2266,10 +2323,12 @@ NALA_HTML = """<!DOCTYPE html>
             fontSize: localStorage.getItem('nala_font_size') || null,
         };
         localStorage.setItem('nala_theme_fav_' + n, JSON.stringify(payload));
+        localStorage.setItem('nala_last_active_favorite', String(n));  // Patch 103 B-13/14
     }
     function loadFav(n) {
         const stored = localStorage.getItem('nala_theme_fav_' + n);
         if (!stored) return;
+        localStorage.setItem('nala_last_active_favorite', String(n));  // Patch 103 B-13/14
         try {
             const raw = JSON.parse(stored);
             // Schema-Detect: v2 hat .theme / .bubble / .fontSize, v1 ist flach (primary/mid/gold/...)
@@ -2442,6 +2501,21 @@ NALA_HTML = """<!DOCTYPE html>
             spawnStars(e.clientX, e.clientY, 3);
         }
     });
+
+    /* Patch 103 – C3: Backdrop-Klick schließt Modals (außer ee-modal, das hat eigenen Handler) */
+    (function() {
+        document.querySelectorAll('#settings-modal, #export-modal, #fullscreen-modal').forEach(function(m) {
+            m.addEventListener('click', function(e) {
+                if (e.target === m) m.classList.remove('open');
+            });
+        });
+        var pwModal = document.getElementById('pw-modal');
+        if (pwModal) {
+            pwModal.addEventListener('click', function(e) {
+                if (e.target === pwModal) pwModal.style.display = 'none';
+            });
+        }
+    })();
 </script>
 </body>
 </html>

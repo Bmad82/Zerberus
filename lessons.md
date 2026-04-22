@@ -52,6 +52,10 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Bei jedem Pipeline-Fix: alle drei Pfade prüfen — legacy.py, orchestrator.py, nala.py /voice
 - Änderungen in legacy.py betreffen auch externe Clients (Dictate, SillyTavern) — immer prüfen ob /v1/audio/transcriptions und der Static-API-Key-Bypass intakt sind (Patch 82)
 
+## Dialekt-Weiche (Patch 103)
+- **Marker-Länge:** Emoji-Marker im `detect_dialect_marker` sind historisch ×5 (Teclado/Dictate-Pattern). Zwischenzeitliche ×2-Variante in `zerberus/core/dialect.py` produzierte 400/500, weil der `stripped[len(marker):]`-Offset nur 2 Emojis abschnitt und drei Emojis im rest-Text übrig blieben. IMMER ×5 als Invariante behalten.
+- **Wortgrenzen-Matching Pflicht:** `apply_dialect` muss `re.sub(r'(?<!\w)KEY(?!\w)', ...)` nutzen, nicht `str.replace()`. Sonst matcht `ich` in `nich` und erzeugt `nick`. Case-sensitive bleibt (dialect.json hat `Ich` und `ich` als separate Keys). Multi-Wort-Keys (`haben wir`) funktionieren dank Length-sortiertem Durchlauf weiter.
+
 ## Frontend / JS in Python-Strings
 - **Python-HTML-Strings mit JS:** `'\n'` in einem Python-String der HTML/JS enthält wird als echtes Newline gerendert und bricht JS-String-Literale (`SyntaxError: unterminated string literal`). Innerhalb `ADMIN_HTML = """..."""`/`NALA_HTML = """..."""` immer `'\\n'` (bzw. `\\r`, `\\t`) schreiben. Betrifft jeden String in nala.py und hel.py der JavaScript-Code enthält. Erstmals Patch 69c (`exportChat`), erneut sichtbar Patch 100 (`showMetricInfo` — seit Patch 91 latent).
 - **JS-Syntax immer mit `node --check` verifizieren:** Nach jedem Patch der das `<script>`-Block in hel.py/nala.py ändert, HTML aus dem Router rendern, `<script>`-Blöcke extrahieren, einzeln durch `node --check` jagen. Der Test `TestJavaScriptIntegrity` (Patch 100) fängt den Fehler im Playwright-Browser — `node --check` ist die schnelle Pre-Commit-Variante.

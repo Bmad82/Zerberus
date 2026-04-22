@@ -93,7 +93,7 @@ class ModuleConfig(BaseModel):
 
 class AuthConfig(BaseModel):
     token_secret: str = "CHANGE_ME"
-    token_expire_minutes: int = 480
+    token_expire_minutes: int = 525600  # Patch 103: 365 Tage (eigener Server, kein Risiko)
     static_api_key: str = ""  # Patch 59: X-API-Key Header als Alternative zu Bearer
 
 class OpenRouterConfig(BaseModel):
