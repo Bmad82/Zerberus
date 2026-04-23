@@ -162,6 +162,18 @@ async def lifespan(app: FastAPI):
     except Exception as _sched_err:
         _log_fail("Overnight-Scheduler", str(_sched_err)[:100])
 
+    # --- Whisper-Watchdog (Patch 119 – stuendlicher Auto-Restart) ---
+    _whisper_watchdog_task = None
+    if _DOCKER_OK and settings.features.get("whisper_watchdog", True):
+        try:
+            from zerberus.whisper_watchdog import whisper_watchdog_loop
+            _whisper_watchdog_task = asyncio.create_task(whisper_watchdog_loop())
+            _log_ok("Whisper-Watchdog", "stuendlicher Docker-Restart aktiv")
+        except Exception as _wd_err:
+            _log_fail("Whisper-Watchdog", str(_wd_err)[:100])
+    else:
+        _log_skip("Whisper-Watchdog", "Docker nicht erreichbar oder Feature deaktiviert")
+
     # --- Module dynamisch laden ---
     logger.info("📦 Lade Module...")
     modules_path = pathlib.Path(__file__).parent / "modules"
@@ -192,6 +204,12 @@ async def lifespan(app: FastAPI):
             _scheduler.shutdown(wait=False)
             logger.info("⏰ Overnight-Scheduler gestoppt.")
         except Exception:
+            pass
+    if _whisper_watchdog_task is not None:
+        _whisper_watchdog_task.cancel()
+        try:
+            await _whisper_watchdog_task
+        except (asyncio.CancelledError, Exception):
             pass
     await bus.stop()
 

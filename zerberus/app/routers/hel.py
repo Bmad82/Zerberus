@@ -789,6 +789,12 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <button onclick="savePacemakerConfig()">Speichern</button>
                 <div id="pacemakerStatus" style="margin-top:8px;"></div>
             </div>
+            <div class="card">
+                <h2>&#128260; Whisper Docker-Restart (Patch 119)</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">St&#252;ndlicher Auto-Restart des Whisper-Containers l&#228;uft im Hintergrund. Manueller Trigger bei Bedarf:</p>
+                <button type="button" onclick="restartWhisperContainer()" style="min-height:44px;">&#128260; Whisper neu starten</button>
+                <div id="whisperRestartStatus" style="margin-top:10px; font-size:0.95em;"></div>
+            </div>
           </div>
         </div>
 
@@ -1800,6 +1806,30 @@ ADMIN_HTML = """<!DOCTYPE html>
                 res.ok ? '\u2705 Gespeichert. Wirkt nach Neustart.' : '\u274C Fehler: ' + (data.detail || '');
         }
 
+        // Patch 119: Whisper manuell neu starten
+        async function restartWhisperContainer() {
+            const status = document.getElementById('whisperRestartStatus');
+            status.textContent = '\u23f3 Starte Container neu ...';
+            status.style.color = '#ffd700';
+            try {
+                const res = await fetch('/hel/admin/whisper/restart', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok && data.restart_success && data.post_restart_healthy) {
+                    status.textContent = '\u2705 Restart erfolgreich, Whisper antwortet wieder.';
+                    status.style.color = '#4ecdc4';
+                } else if (res.ok && data.restart_success) {
+                    status.textContent = '\u26a0\ufe0f Container neu gestartet, aber Health-Check fehlgeschlagen.';
+                    status.style.color = '#ff9800';
+                } else {
+                    status.textContent = '\u274c Restart fehlgeschlagen: ' + (data.detail || JSON.stringify(data));
+                    status.style.color = '#f44336';
+                }
+            } catch (e) {
+                status.textContent = '\u274c Fehler: ' + e.message;
+                status.style.color = '#f44336';
+            }
+        }
+
         // ========== Provider-Blacklist (Patch 63) ==========
         let currentBlacklist = [];
 
@@ -2720,6 +2750,26 @@ async def post_pacemaker_config(request: Request):
         raise HTTPException(500, f"Fehler beim Schreiben: {e}")
 
     return {"status": "ok", "keep_alive_minutes": minutes}
+
+
+# ============================================================
+# Whisper Docker Restart (Patch 119)
+# ============================================================
+
+@router.post("/admin/whisper/restart")
+async def restart_whisper_endpoint():
+    """Manueller Whisper-Container-Restart aus dem Hel-Dashboard."""
+    from zerberus.whisper_watchdog import restart_whisper_container, check_whisper_health
+
+    loop = asyncio.get_event_loop()
+    success = await loop.run_in_executor(None, restart_whisper_container)
+    await asyncio.sleep(10)
+    healthy = await check_whisper_health()
+
+    return {
+        "restart_success": success,
+        "post_restart_healthy": healthy,
+    }
 
 
 # ============================================================

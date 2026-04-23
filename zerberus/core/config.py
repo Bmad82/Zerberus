@@ -146,7 +146,7 @@ class Settings(BaseSettings):
     modules: Dict[str, Any] = {}
     profiles: Dict[str, Any] = {}  # Patch 61: ProfileConfig-Einträge (raw Dict, da nala.py direkt yaml liest)
     openrouter: OpenRouterConfig = OpenRouterConfig()  # Patch 63: Provider-Blacklist
-    features: Dict[str, Any] = {"decision_boxes": True}  # Patch 118a: Feature-Flags (config.yaml gitignored → Default explizit)
+    features: Dict[str, Any] = {"decision_boxes": True, "whisper_watchdog": True}  # Patch 118a: Feature-Flags (config.yaml gitignored → Default explizit); Patch 119: whisper_watchdog
 
     class Config:
         env_file = ".env"

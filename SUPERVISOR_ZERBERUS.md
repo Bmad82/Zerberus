@@ -1,8 +1,30 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 118b (2026-04-23) – Phase 3 abgeschlossen, Phase 4 vorbereitet*
+*Letzte Aktualisierung: Patch 119 (2026-04-23) – Phase 4 gestartet, Whisper-Watchdog live*
 
 ## Aktueller Patch
+
+**Patch 119** – Whisper Docker Auto-Restart + Phase 4 Roadmap (2026-04-23) — *Phase 4 gestartet*
+
+- **Problem:** Der Whisper-Container `der_latsch` (`fedirz/faster-whisper-server:latest-cuda` auf Port `8002`) degradiert nach ~1 Tag Laufzeit — Transkriptionen werden zunehmend langsam. Bisher half nur ein manueller Docker-Restart.
+- **Neues Modul** [`zerberus/whisper_watchdog.py`](zerberus/whisper_watchdog.py): asyncio-Loop mit `check_whisper_health()` (HTTP-GET auf `http://127.0.0.1:8002/v1/models`, Timeout 10 s) und `restart_whisper_container()` (ruft `docker restart der_latsch` via `subprocess.run`, Timeout 60 s). Haupt-Loop `whisper_watchdog_loop()` schläft `RESTART_INTERVAL_SECONDS=3600` (1 h), prüft Health, logt geplanten vs. Notfall-Restart, restartet, wartet 15 s, prüft nochmal. CancelledError wird korrekt propagiert, sonstige Fehler werden 60 s abgefedert ohne den Loop zu killen.
+- **Lifespan-Integration** in [main.py](zerberus/main.py): Watchdog startet nur wenn `_DOCKER_OK` UND `settings.features["whisper_watchdog"]=True` (neuer Feature-Flag-Default in [config.py](zerberus/core/config.py)). Task-Handle `_whisper_watchdog_task` wird im Shutdown gecancelt + awaited.
+- **Hel-Button** in der „Systemsteuerung"-Sektion: neue Card „🔄 Whisper Docker-Restart" mit Button `restartWhisperContainer()` → `POST /hel/admin/whisper/restart`. Endpoint führt `restart_whisper_container()` in einem ThreadPool (damit der Event-Loop nicht blockt), wartet 10 s, liefert `{restart_success, post_restart_healthy}`. Frontend zeigt ✅/⚠️/❌-Toast je nach Ergebnis, 44 px Touch-Target, `type="button"`.
+- **Tests:** [`zerberus/tests/test_whisper_watchdog.py`](zerberus/tests/test_whisper_watchdog.py) — 10 Tests (Health-Check 200/500/Netzwerk-Fehler, Docker-Restart Erfolg/Failure/Timeout/FileNotFound, Konstanten-Smoke-Tests). Nutzt `asyncio.run` statt `pytest-asyncio` (nicht installiert). **116 passed in 10.59 s** offline (vorher 106, +10 neu, keine Regressionen). `ast.parse` grün auf allen geänderten Python-Dateien. `node --check` grün auf beide `<script>`-Blöcke in [hel.py](zerberus/app/routers/hel.py).
+- **Scope:** In Scope: Watchdog-Modul + Lifespan-Hook, Hel-Button, Tests, Config-Flag. NICHT in diesem Patch: Docker-Scheduler-UI (Backlog 131+), Prometheus-Metriken fürs Watchdog-Verhalten, Konfigurierbares Intervall per config.yaml (aktuell hardcoded 3600 s — wenn jemand anderes Intervall will, reicht der Feature-Flag zum Abschalten + manueller Restart-Button).
+- **Live-Verifikation (USER):** (1) Server-Restart → Startup-Log zeigt `✅ Whisper-Watchdog (stuendlicher Docker-Restart aktiv)` nach dem Overnight-Scheduler. (2) Im Hel-„Systemsteuerung"-Tab sollte die neue Card sichtbar sein, Button → Toast „✅ Restart erfolgreich, Whisper antwortet wieder". Dauer insgesamt ~15 s. (3) Nach 1 h echtem Betrieb: Log-Zeile `[WATCHDOG-119] … Geplanter stuendlicher Restart` → `Container-Restart erfolgreich` → `Whisper nach Restart gesund`.
+
+## Phase 4 Roadmap (aktualisiert Patch 119)
+
+- [x] **119** Whisper Docker Auto-Restart + Watchdog
+- [ ] **120** (Reserve)
+- [ ] **121–123** „Ach-laber-doch-nicht"-Halluzinations-Detektor
+- [ ] **124–126** Telegram-Bot (Skeleton aktivieren + HitL-Alerts)
+- [ ] **127–130** Projekt-Oberfläche in Nala + Sancho-Panza-Veto
+- [ ] **131+** SER/Prosodie, Color Picker, Docker-Container-Scheduler
+- [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung
+
+---
 
 **Patch 118b** – Neon Kadath Indexierung + RAG-Eval + Repo-Sync (2026-04-23) — *Phase 3 abgeschlossen (bis auf Jojo iPhone-Test)*
 
