@@ -93,25 +93,9 @@ NIEMALS mit der globalen CLAUDE.md verwechseln oder zusammenführen.
 ## Supervisor-Patch-Prompts
 Patch-Prompts werden vom Supervisor (claude.ai Chat) immer als `.md`-Datei generiert — nie als inline Chat-Text. Claude Code erhält den Inhalt per Copy-Paste aus der Datei.
 
-## Ratatoskr-Sync (nach JEDEM Patch)
-Folgende Dateien nach `C:\Users\chris\Python\Rosa\Nala_Rosa\Ratatoskr\` kopieren und pushen:
-- `CLAUDE_ZERBERUS.md`
-- `SUPERVISOR_ZERBERUS.md` (wird vom Supervisor separat aktualisiert — nur kopieren wenn im Zerberus-Repo vorhanden)
-- `lessons.md`
-- `PROJEKTDOKUMENTATION.md`
-- `backlog_nach_patch83.md`
-- `README.md`
+## Repo-Sync-Pflicht
 
-```powershell
-$src = "C:\Users\chris\Python\Rosa\Nala_Rosa\Zerberus"
-$dst = "C:\Users\chris\Python\Rosa\Nala_Rosa\Ratatoskr"
-Copy-Item "$src\CLAUDE_ZERBERUS.md" "$dst\" -Force
-Copy-Item "$src\lessons.md" "$dst\" -Force
-Copy-Item "$src\PROJEKTDOKUMENTATION.md" "$dst\" -Force
-Copy-Item "$src\backlog_nach_patch83.md" "$dst\" -Force
-Copy-Item "$src\README.md" "$dst\" -Force
-cd $dst
-git add -A; git commit -m "Sync nach Patch [NR]"; git push
-```
-
-Universelle Lessons zusätzlich nach `C:\Users\chris\Python\Claude\lessons\` spiegeln (nur wenn die Erkenntnis projektübergreifend gilt).
+- **Nach jedem Patch:** `git add -A; git commit -m "Patch XX – [Titel]"; git push` (nur Zerberus).
+- **Am Ende jeder Claude-Code-Session ODER nach jedem 5. Patch:** `powershell -ExecutionPolicy Bypass -File sync_repos.ps1` ausführen. Das Script synchronisiert Ratatoskr (SUPERVISOR/CLAUDE/PROJEKTDOKUMENTATION/lessons/backlog/README) und das Claude-Repo (nur lessons.md, als `lessons/zerberus_lessons.md`) automatisch, zieht die Commit-Message aus dem letzten Zerberus-Commit und pusht nur, wenn es Änderungen gibt.
+- **Niemals** Ratatoskr oder das Claude-Repo manuell editieren — immer nur via `sync_repos.ps1` aus Zerberus kopieren. Direkte Commits dort werden beim nächsten Sync überschrieben.
+- Universelle, projektübergreifende Lessons können zusätzlich direkt in `C:\Users\chris\Python\Claude\lessons\` unter einem generischen Namen abgelegt werden (z.B. `sqlite-db.md`, `frontend-js.md`) — das Sync-Script fasst sie nicht an, weil es nur `zerberus_lessons.md` schreibt.

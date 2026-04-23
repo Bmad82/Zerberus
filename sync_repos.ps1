@@ -1,0 +1,73 @@
+# sync_repos.ps1 — Ratatoskr + Claude Repo Sync
+# Aufrufen aus Zerberus-Root:
+#   powershell -ExecutionPolicy Bypass -File sync_repos.ps1
+#
+# Regel (siehe CLAUDE_ZERBERUS.md "Repo-Sync-Pflicht"):
+# - Nach jedem Patch Zerberus selbst committen + pushen
+# - Nach jedem 5. Patch oder am Ende jeder Session dieses Script laufen
+# - Ratatoskr NIEMALS manuell editieren — immer nur via Kopie aus Zerberus
+
+$ErrorActionPreference = "Stop"
+
+$zerberus  = "C:\Users\chris\Python\Rosa\Nala_Rosa\Zerberus"
+$ratatoskr = "C:\Users\chris\Python\Rosa\Nala_Rosa\Ratatoskr"
+$claude    = "C:\Users\chris\Python\Claude"
+
+# Letzte Zerberus-Commit-Message als Sync-Betreff
+$patchMsg = git -C $zerberus log -1 --format="%s"
+if (-not $patchMsg) { $patchMsg = "Sync" }
+
+# --- Ratatoskr Sync ---
+Write-Host "=== Ratatoskr Sync ===" -ForegroundColor Cyan
+$ratatoskrFiles = @(
+    "SUPERVISOR_ZERBERUS.md",
+    "CLAUDE_ZERBERUS.md",
+    "PROJEKTDOKUMENTATION.md",
+    "lessons.md",
+    "backlog_nach_patch83.md",
+    "README.md"
+)
+foreach ($f in $ratatoskrFiles) {
+    $src = Join-Path $zerberus $f
+    if (Test-Path $src) {
+        Copy-Item $src (Join-Path $ratatoskr $f) -Force
+        Write-Host "  copy: $f"
+    } else {
+        Write-Host "  skip (nicht vorhanden): $f" -ForegroundColor DarkGray
+    }
+}
+
+Set-Location $ratatoskr
+git add -A
+$ratatoskrDiff = git diff --cached --stat
+if ($ratatoskrDiff) {
+    git commit -m "Sync: $patchMsg"
+    git push
+    Write-Host "Ratatoskr gepusht." -ForegroundColor Green
+} else {
+    Write-Host "Ratatoskr: nichts zu committen." -ForegroundColor Yellow
+}
+
+# --- Claude Repo Sync (nur wenn lessons.md projektuebergreifende Erkenntnisse enthaelt) ---
+Write-Host "=== Claude Repo Sync ===" -ForegroundColor Cyan
+$lessonsSrc = Join-Path $zerberus "lessons.md"
+if (Test-Path $lessonsSrc) {
+    # Ablage als zerberus_lessons.md im Claude-Repo (projektspezifisch markiert)
+    $lessonsDst = Join-Path $claude "lessons\zerberus_lessons.md"
+    Copy-Item $lessonsSrc $lessonsDst -Force
+    Write-Host "  copy: lessons.md → lessons\zerberus_lessons.md"
+}
+
+Set-Location $claude
+git add -A
+$claudeDiff = git diff --cached --stat
+if ($claudeDiff) {
+    git commit -m "Lessons sync: $patchMsg"
+    git push
+    Write-Host "Claude-Repo gepusht." -ForegroundColor Green
+} else {
+    Write-Host "Claude-Repo: nichts zu committen." -ForegroundColor Yellow
+}
+
+Set-Location $zerberus
+Write-Host "=== Sync komplett ===" -ForegroundColor Green
