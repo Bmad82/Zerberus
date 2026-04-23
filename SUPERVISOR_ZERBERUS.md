@@ -1,8 +1,39 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Mega-Patch 122–126 (2026-04-23) – Code-Chunker, Huginn, UI-Overhaul, Bibel-Fibel, Dual-Embedder*
+*Letzte Aktualisierung: Patches 127–129 (2026-04-23) – Huginn-Hel-Tab, Settings-Drawer mit HSL, Embedder-Migration-Script*
 
 ## Aktueller Patch
+
+**Patches 127–129** – Zweiter Zyklus des Mega-Patch-Tests (2026-04-23)
+
+- **Patch 127 – Huginn-Tab im Hel-Dashboard:** Neuer 12. Tab „🐤 Huginn" in der Hel-Tab-Leiste (nach „Links", vor „About"). Vollständiges Frontend für die Patch-123-Endpoints: Status-Dot (aktiv/deaktiv), Bot-Token-Feld (Password-Input, zeigt maskierten aktuellen Wert, akzeptiert neuen Wert nur wenn kein `…` enthalten — verhindert dass der maskierte Reload-Wert als neuer Token gespeichert wird), Admin Chat-ID, Modell-Dropdown (wiederverwendet `_allModels` aus dem LLM-Tab mit Preis pro 1M Tokens), Max-Response-Länge. Gruppen-Verhalten + HitL als collapsible `<details>`-Blöcke mit Checkboxes. Drei Action-Buttons: „💾 Speichern", „🔃 Neu laden", „🔗 Webhook registrieren". Tab lädt sich lazy beim ersten Aufruf (`_HEL_LAZY_LOADED`).
+- **Patch 128 – Nala Settings-Drawer + HSL-Farbrad:** Sticky-Settings-Anchor im Burger-Sidebar unten (44px Touch-Target, Gold-Rand), öffnet das bestehende Settings-Modal — keine Code-Duplikation. Neuer HSL-Slider-Block im Settings-Modal unter Bubble-Farben: H/S/L-Slider pro Bubble (User + Bot) mit Live-Vorschau (Swatch + CSS-Variable + Sync zum bestehenden `<input type="color">`). Hue-Slider hat einen Regenbogen-Gradient-Track. JS-Funktion `hslToHex(h,s,l)` für den Sync zum Color-Picker. LocalStorage persistent. Die bestehenden Color-Picker + Favoriten greifen weiter — HSL ist additiv, nicht ersetzend.
+- **Patch 129 – FAISS Dual-Embedder Migration-Script:** Neues Script `scripts/migrate_embedder.py` mit `--dry-run` (Default) und `--execute`. Flow: Backup unter `data/backups/pre_patch129_<ts>/`, Sprache pro Chunk mit `detect_language` bucketed (statt aus System-Prompt!), pro Sprache eigener FAISS-Index mit dem passenden Embedder (DE auf GPU, EN auf CPU), Persist als `{lang}.index` + `{lang}_meta.json`. Validierung mit Probe-Queries. **Nicht destruktiv:** alte `faiss.index` + `metadata.json` bleiben — der aktive Retriever liest weiter aus ihnen, bis Chris in config.yaml explizit auf Dual umstellt. Dry-Run auf dem echten Index: **61 Chunks, 61 DE, 0 EN**. **5 neue Tests** (`test_migrate_embedder.py`) — importieren das Script als Modul, testen `categorize_by_language` und das Dry-Run-Verhalten.
+- **Tests:** **238 passed in 12.1s** (233 vorher + 5 neu). `ast.parse` grün auf hel.py, nala.py, migrate_embedder.py.
+- **Scope:** IN Scope: Huginn-Hel-Frontend mit Lazy-Load, Sidebar-Settings-Anchor + HSL-Sliders, Migration-Script mit Dry-Run + Tests. NICHT in diesem Patch: vollständige Burger-Menü-Konsolidierung (System-Prompt im Sidebar bleibt wo er ist — nur ein Settings-Anchor kam dazu), Umschaltung auf Dual-Embedder in `modules/rag/router.py` (wird separat sein, sobald Chris die echte Migration mit `--execute` fährt und validiert), Cross-Language-Search-Merge.
+- **Live-Verifikation (USER):** (1) Hel → Tab „Huginn" → Status-Dot + leere Config (da `enabled: false`). (2) Nala → Burger-Menü → ganz unten „⚙️ Einstellungen" sticky — Klick öffnet Settings-Modal. (3) In Settings-Modal → HSL-Slider bewegen → Bubble-Farbe ändert sich live, Swatch zeigt die Farbe, Wert unter dem Slider zeigt aktuelle Zahl. (4) `venv\Scripts\python.exe scripts\migrate_embedder.py --dry-run` → Summary zeigt 61 DE / 0 EN.
+
+## Phase 4 Roadmap (aktualisiert Patches 127–129)
+
+- [x] **119** Whisper Docker Auto-Restart Watchdog
+- [x] **119b** PROJEKTDOKUMENTATION.md Pflichtschritt + Nachholen
+- [x] **120** „Ach-laber-doch-nicht"-Guard (Mistral Small 3) + W-001b Fix + Audio-Sentiment-Architektur
+- [x] **121** Konsolidierung (Memory-Router-Fix, RAG Einzel-Delete verifiziert, Lessons)
+- [x] **122** Code-Chunker für RAG (.py AST, .js/.ts Regex, .html/.css/.json/.yaml/.sql)
+- [x] **123** Telegram-Bot Huginn (Fastlane + HitL + Gruppen-Intelligenz)
+- [x] **124** Nala UI-Polish (Bubble-Shine, Collapse, Animations)
+- [x] **125** Bibel-Fibel Prompt-Kompressor (Werkzeug)
+- [x] **126** Dual-Embedder Infrastruktur (Language-Detector + DualEmbedder-Klasse)
+- [x] **127** Huginn-Tab im Hel-Dashboard (Frontend zu Patch-123-Endpoints)
+- [x] **128** Settings-Anchor + HSL-Slider (Nala-Sidebar + Theme)
+- [x] **129** FAISS-Migration-Script (`scripts/migrate_embedder.py`, Dry-Run + Tests)
+- [ ] **130+** Echte Dual-Embedder-Umschaltung in `rag/router.py` nach Migration-Execute
+- [ ] **131+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
+- [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
+- [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)
+- [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung
+
+---
 
 **Mega-Patch 122–126** – Code-Chunker + Huginn + UI-Overhaul + Bibel-Fibel + Dual-Embedder (2026-04-23)
 

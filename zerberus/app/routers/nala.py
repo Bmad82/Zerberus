@@ -292,6 +292,45 @@ NALA_HTML = """<!DOCTYPE html>
             box-shadow: 2px 0 10px rgba(0,0,0,0.5);
         }
         .sidebar.open { left: 0; }
+        /* Patch 128: Fest getackerter Settings-Bereich am Unterrand des Sidebar. */
+        .sidebar-settings-anchor {
+            position: sticky;
+            bottom: 0;
+            margin-top: 14px;
+            padding-top: 10px;
+            background: linear-gradient(to top, var(--color-primary-mid) 70%, transparent);
+            border-top: 1px solid rgba(240,180,41,0.22);
+        }
+        .sidebar-settings-btn {
+            width: 100%;
+            min-height: 48px;
+            padding: 12px;
+            background: rgba(240,180,41,0.14);
+            border: 1px solid rgba(240,180,41,0.45);
+            color: var(--color-gold);
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 600;
+            transition: background 0.15s, transform 0.12s;
+        }
+        .sidebar-settings-btn:active {
+            background: rgba(240,180,41,0.24);
+            transform: translateY(1px);
+        }
+        /* Patch 128: HSL-Slider fuer Bubble-Farben. */
+        .hsl-group { margin: 10px 0 4px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px; }
+        .hsl-group h6 { margin: 0 0 8px; font-size: 0.88em; color: var(--color-gold); }
+        .hsl-slider-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+        .hsl-slider-row label { flex: 0 0 34px; font-size: 0.82em; color: var(--color-text-light); }
+        .hsl-slider-row input[type="range"] { flex: 1; min-height: 30px; }
+        .hsl-slider-row span { flex: 0 0 48px; font-size: 0.82em; text-align: right; color: #8a9abe; font-family: monospace; }
+        .hsl-swatch { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #445; flex-shrink: 0; }
+        .hsl-hue-track {
+            background: linear-gradient(to right,
+                hsl(0,100%,50%), hsl(60,100%,50%), hsl(120,100%,50%),
+                hsl(180,100%,50%), hsl(240,100%,50%), hsl(300,100%,50%), hsl(360,100%,50%));
+        }
         .sidebar .close-btn {
             font-size: 2em;
             cursor: pointer;
@@ -1175,6 +1214,10 @@ NALA_HTML = """<!DOCTYPE html>
             <textarea id="my-prompt-area" class="my-prompt-area" placeholder="Dein persönlicher System-Prompt..."></textarea>
             <button class="my-prompt-save-btn" onclick="saveMyPrompt()">Speichern</button>
             <div id="my-prompt-status" class="my-prompt-status"></div>
+            <!-- Patch 128: Settings-Button fest am Unterrand des Sidebar -->
+            <div class="sidebar-settings-anchor">
+                <button class="sidebar-settings-btn" onclick="openSettingsModal()">⚙️ Einstellungen</button>
+            </div>
         </div>
         <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
 
@@ -1284,6 +1327,46 @@ NALA_HTML = """<!DOCTYPE html>
                 <button class="bubble-reset-btn" onclick="resetBubble('llm-text')" title="Zurücksetzen">↺</button>
             </div>
             <button class="export-opt-btn" style="margin-top:4px;" onclick="resetAllBubbles()">↺ Alle Bubble-Farben zurücksetzen</button>
+
+            <!-- Patch 128: HSL-Slider (16M Farben, Touch-freundlich) -->
+            <div class="hsl-group">
+                <h6>🎨 HSL-Slider: User-Bubble</h6>
+                <div class="hsl-slider-row">
+                    <div class="hsl-swatch" id="hsl-user-swatch"></div>
+                    <label>Hue</label>
+                    <input type="range" id="hsl-user-h" min="0" max="360" value="45" class="hsl-hue-track" oninput="applyHsl('user')">
+                    <span id="hsl-user-h-val">45</span>
+                </div>
+                <div class="hsl-slider-row">
+                    <label>Sat</label>
+                    <input type="range" id="hsl-user-s" min="0" max="100" value="80" oninput="applyHsl('user')">
+                    <span id="hsl-user-s-val">80%</span>
+                </div>
+                <div class="hsl-slider-row">
+                    <label>Lum</label>
+                    <input type="range" id="hsl-user-l" min="10" max="90" value="55" oninput="applyHsl('user')">
+                    <span id="hsl-user-l-val">55%</span>
+                </div>
+            </div>
+            <div class="hsl-group">
+                <h6>🎨 HSL-Slider: Bot-Bubble</h6>
+                <div class="hsl-slider-row">
+                    <div class="hsl-swatch" id="hsl-llm-swatch"></div>
+                    <label>Hue</label>
+                    <input type="range" id="hsl-llm-h" min="0" max="360" value="220" class="hsl-hue-track" oninput="applyHsl('llm')">
+                    <span id="hsl-llm-h-val">220</span>
+                </div>
+                <div class="hsl-slider-row">
+                    <label>Sat</label>
+                    <input type="range" id="hsl-llm-s" min="0" max="100" value="35" oninput="applyHsl('llm')">
+                    <span id="hsl-llm-s-val">35%</span>
+                </div>
+                <div class="hsl-slider-row">
+                    <label>Lum</label>
+                    <input type="range" id="hsl-llm-l" min="10" max="90" value="28" oninput="applyHsl('llm')">
+                    <span id="hsl-llm-l-val">28%</span>
+                </div>
+            </div>
         </div>
 
         <!-- Sektion C: Schriftgröße (Patch 86 / N-F09) -->
@@ -2557,6 +2640,41 @@ NALA_HTML = """<!DOCTYPE html>
     }
     function resetAllBubbles() {
         Object.keys(BUBBLE_KEYS).forEach(resetBubble);
+    }
+
+    // ── Patch 128: HSL-Slider für Bubble-Farben ──
+    function applyHsl(which) {
+        const prefix = which === 'user' ? 'hsl-user' : 'hsl-llm';
+        const h = parseInt(document.getElementById(prefix + '-h').value, 10);
+        const s = parseInt(document.getElementById(prefix + '-s').value, 10);
+        const l = parseInt(document.getElementById(prefix + '-l').value, 10);
+        document.getElementById(prefix + '-h-val').textContent = h;
+        document.getElementById(prefix + '-s-val').textContent = s + '%';
+        document.getElementById(prefix + '-l-val').textContent = l + '%';
+        const hslStr = 'hsl(' + h + ',' + s + '%,' + l + '%)';
+        const swatch = document.getElementById(prefix + '-swatch');
+        if (swatch) swatch.style.background = hslStr;
+        // Als CSS-Variable setzen + im picker synchronisieren, damit Theme-Save mitzieht
+        const css = which === 'user' ? '--bubble-user-bg' : '--bubble-llm-bg';
+        const lsKey = which === 'user' ? 'nala_bubble_user_bg' : 'nala_bubble_llm_bg';
+        document.documentElement.style.setProperty(css, hslStr);
+        try { localStorage.setItem(lsKey, hslStr); } catch (_) {}
+        // Sync zum <input type="color"> (braucht HEX)
+        const hex = hslToHex(h, s, l);
+        const pickerId = which === 'user' ? 'bc-user-bg' : 'bc-llm-bg';
+        const picker = document.getElementById(pickerId);
+        if (picker) picker.value = hex;
+    }
+
+    function hslToHex(h, s, l) {
+        s /= 100; l /= 100;
+        const k = n => (n + h / 30) % 12;
+        const a = s * Math.min(l, 1 - l);
+        const f = n => {
+            const c = l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+            return Math.round(255 * c).toString(16).padStart(2, '0');
+        };
+        return '#' + f(0) + f(8) + f(4);
     }
 
     // ── Patch 86: Schriftgröße (N-F09) ──

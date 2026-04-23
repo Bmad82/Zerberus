@@ -536,6 +536,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             <button type="button" class="hel-tab" data-tab="dialect" onclick="activateTab('dialect')">&#128483;&#65039; Dialekte</button>
             <button type="button" class="hel-tab" data-tab="sysctl" onclick="activateTab('sysctl')">&#128147; Sysctl</button>
             <button type="button" class="hel-tab" data-tab="provider" onclick="activateTab('provider')">&#10060; Provider</button>
+            <button type="button" class="hel-tab" data-tab="huginn" onclick="activateTab('huginn')">&#128020; Huginn</button>
             <button type="button" class="hel-tab" data-tab="nav" onclick="activateTab('nav')">&#128279; Links</button>
             <button type="button" class="hel-tab" data-tab="about" onclick="activateTab('about')">&#8505;&#65039; About</button>
         </nav>
@@ -851,6 +852,94 @@ ADMIN_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
+        <!-- Patch 127: Huginn (Telegram-Bot) Konfiguration -->
+        <div class="hel-section" data-tab="huginn" id="section-huginn">
+          <div class="hel-section-header" onclick="toggleSection('huginn')">
+            <span class="section-arrow">&#9654;</span> &#128020; Huginn (Telegram-Bot)
+          </div>
+          <div class="hel-section-body" id="body-huginn">
+            <div class="card">
+              <h2>&#128020; Huginn &mdash; Bullauge in Zerberus</h2>
+              <p style="color:#aaa; font-size:0.92em; margin-top:-6px;">
+                Patch 123: Vollwertiger Chat-Partner auf Telegram. Guard (Mistral Small 3) prueft jede Antwort, HitL fuer Code-Ausfuehrung und Gruppenbeitritt.
+              </p>
+              <div id="huginn-status" style="margin:12px 0; padding:10px; border-radius:8px; background:#1f1f1f;">
+                <span id="huginn-status-dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#888;margin-right:6px;"></span>
+                <span id="huginn-status-text">Lade...</span>
+              </div>
+
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px;">
+                <label style="display:flex;flex-direction:column;gap:4px;">
+                  <span style="color:#DAA520;font-size:0.92em;">Aktiviert</span>
+                  <select id="huginn-enabled" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                    <option value="false">Deaktiviert</option>
+                    <option value="true">Aktiviert</option>
+                  </select>
+                </label>
+                <label style="display:flex;flex-direction:column;gap:4px;">
+                  <span style="color:#DAA520;font-size:0.92em;">Admin Chat-ID</span>
+                  <input type="text" id="huginn-admin-chat-id" placeholder="z.B. 123456789" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                </label>
+                <label style="display:flex;flex-direction:column;gap:4px;grid-column:span 2;">
+                  <span style="color:#DAA520;font-size:0.92em;">Bot-Token (nur setzen wenn neu/geaendert)</span>
+                  <input type="password" id="huginn-bot-token" placeholder="wird maskiert angezeigt" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;font-family:monospace;">
+                  <span id="huginn-bot-token-masked" style="font-family:monospace;color:#888;font-size:0.88em;margin-top:2px;"></span>
+                </label>
+                <label style="display:flex;flex-direction:column;gap:4px;">
+                  <span style="color:#DAA520;font-size:0.92em;">Modell (OpenRouter)</span>
+                  <select id="huginn-model" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                    <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (Default)</option>
+                  </select>
+                  <span id="huginn-model-price" style="color:#888;font-size:0.85em;"></span>
+                </label>
+                <label style="display:flex;flex-direction:column;gap:4px;">
+                  <span style="color:#DAA520;font-size:0.92em;">Max Response-Laenge</span>
+                  <input type="number" id="huginn-max-length" value="4000" min="500" max="4096" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                </label>
+              </div>
+
+              <details style="margin-top:18px;">
+                <summary style="cursor:pointer;color:#DAA520;">&#128172; Gruppen-Verhalten</summary>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;padding-left:14px;">
+                  <label><input type="checkbox" id="hg-resp-name" checked> Reagiert auf "Huginn" im Text</label>
+                  <label><input type="checkbox" id="hg-resp-mention" checked> Reagiert auf @-Mention</label>
+                  <label><input type="checkbox" id="hg-resp-reply" checked> Reagiert auf Replies auf seine Messages</label>
+                  <label><input type="checkbox" id="hg-autonomous" checked> Autonome Einwuerfe (mit LLM-Validation)</label>
+                  <label style="grid-column:span 2;">
+                    Cooldown autonomous (Sekunden):
+                    <input type="number" id="hg-cooldown" value="300" min="30" max="3600" style="width:100px;padding:4px;background:#121212;color:#eee;border:1px solid #444;border-radius:4px;">
+                  </label>
+                </div>
+              </details>
+
+              <details style="margin-top:12px;">
+                <summary style="cursor:pointer;color:#DAA520;">&#128274; HitL (Human-in-the-Loop)</summary>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;padding-left:14px;">
+                  <label><input type="checkbox" id="hitl-code" checked> HitL vor Code-Ausfuehrung</label>
+                  <label><input type="checkbox" id="hitl-group" checked> HitL vor Gruppenbeitritt</label>
+                  <label style="grid-column:span 2;">
+                    HitL-Timeout (Sekunden):
+                    <input type="number" id="hitl-timeout" value="300" min="30" max="3600" style="width:100px;padding:4px;background:#121212;color:#eee;border:1px solid #444;border-radius:4px;">
+                  </label>
+                </div>
+              </details>
+
+              <div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap;">
+                <button type="button" onclick="huginnSave()" style="padding:10px 18px;min-height:44px;background:#DAA520;color:#111;border:none;border-radius:8px;cursor:pointer;font-weight:bold;">
+                  &#128190; Speichern
+                </button>
+                <button type="button" onclick="huginnReload()" style="padding:10px 18px;min-height:44px;background:#333;color:#eee;border:1px solid #555;border-radius:8px;cursor:pointer;">
+                  &#8635; Neu laden
+                </button>
+                <button type="button" onclick="huginnSetWebhook()" style="padding:10px 18px;min-height:44px;background:#2c5282;color:#eee;border:none;border-radius:8px;cursor:pointer;">
+                  &#128279; Webhook registrieren
+                </button>
+              </div>
+              <div id="huginn-save-status" style="margin-top:10px;color:#8f8;min-height:1.4em;"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Patch 100: About / Meilenstein -->
         <div class="hel-section" data-tab="about" id="section-about">
           <div class="hel-section-header" onclick="toggleSection('about')">
@@ -982,6 +1071,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                 if (id === 'gedaechtnis') loadRagStatus();
                 if (id === 'sysctl') loadPacemakerConfig();
                 if (id === 'provider') loadProviderBlacklist();
+                if (id === 'huginn') huginnReload();
             }
             // Aktiven Tab in die Mitte scrollen, falls Overflow
             const activeBtn = document.querySelector('.hel-tab.active');
@@ -991,6 +1081,125 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
         // Rückwärtskompat-Alias, falls Altcode noch toggleSection aufruft.
         function toggleSection(id) { activateTab(id); }
+
+        // --- Patch 127: Huginn (Telegram) Tab ---
+        async function huginnReload() {
+            const statusEl = document.getElementById('huginn-status-text');
+            const dotEl = document.getElementById('huginn-status-dot');
+            const saveStatus = document.getElementById('huginn-save-status');
+            if (saveStatus) saveStatus.textContent = '';
+            try {
+                const r = await fetch('/hel/admin/huginn/config');
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const cfg = await r.json();
+                document.getElementById('huginn-enabled').value = String(cfg.enabled);
+                document.getElementById('huginn-admin-chat-id').value = cfg.admin_chat_id || '';
+                document.getElementById('huginn-bot-token-masked').textContent =
+                    cfg.bot_token_masked ? ('aktueller Token: ' + cfg.bot_token_masked) : '(kein Token gesetzt)';
+                document.getElementById('huginn-bot-token').value = '';
+                document.getElementById('huginn-max-length').value = cfg.max_response_length || 4000;
+
+                // Modell-Dropdown mit _allModels fuellen wenn verfuegbar
+                const modelSel = document.getElementById('huginn-model');
+                const current = cfg.model || 'deepseek/deepseek-chat';
+                if (Array.isArray(_allModels) && _allModels.length > 0) {
+                    modelSel.innerHTML = '';
+                    for (const m of _allModels) {
+                        const opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.id + (m.pricing ? ` ($${(parseFloat(m.pricing.prompt||0)*1000000).toFixed(2)}/$${(parseFloat(m.pricing.completion||0)*1000000).toFixed(2)} 1M)` : '');
+                        if (m.id === current) opt.selected = true;
+                        modelSel.appendChild(opt);
+                    }
+                } else {
+                    modelSel.innerHTML = `<option value="${current}" selected>${current}</option>`;
+                }
+
+                const gb = cfg.group_behavior || {};
+                document.getElementById('hg-resp-name').checked = gb.respond_to_name !== false;
+                document.getElementById('hg-resp-mention').checked = gb.respond_to_mention !== false;
+                document.getElementById('hg-resp-reply').checked = gb.respond_to_direct_reply !== false;
+                document.getElementById('hg-autonomous').checked = gb.autonomous_interjection !== false;
+                document.getElementById('hg-cooldown').value = gb.interjection_cooldown_seconds || 300;
+
+                const hitl = cfg.hitl || {};
+                document.getElementById('hitl-code').checked = hitl.code_execution !== false;
+                document.getElementById('hitl-group').checked = hitl.group_join !== false;
+                document.getElementById('hitl-timeout').value = hitl.confirmation_timeout_seconds || 300;
+
+                if (cfg.enabled) {
+                    dotEl.style.background = '#3fb84e';
+                    statusEl.textContent = 'Aktiv';
+                } else {
+                    dotEl.style.background = '#888';
+                    statusEl.textContent = 'Deaktiviert';
+                }
+            } catch (e) {
+                statusEl.textContent = 'Fehler: ' + e.message;
+                dotEl.style.background = '#e74c3c';
+            }
+        }
+
+        async function huginnSave() {
+            const statusEl = document.getElementById('huginn-save-status');
+            statusEl.style.color = '#8f8';
+            statusEl.textContent = 'Speichere...';
+            const payload = {
+                enabled: document.getElementById('huginn-enabled').value === 'true',
+                admin_chat_id: document.getElementById('huginn-admin-chat-id').value.trim(),
+                model: document.getElementById('huginn-model').value,
+                max_response_length: parseInt(document.getElementById('huginn-max-length').value, 10) || 4000,
+                group_behavior: {
+                    respond_to_name: document.getElementById('hg-resp-name').checked,
+                    respond_to_mention: document.getElementById('hg-resp-mention').checked,
+                    respond_to_direct_reply: document.getElementById('hg-resp-reply').checked,
+                    autonomous_interjection: document.getElementById('hg-autonomous').checked,
+                    interjection_cooldown_seconds: parseInt(document.getElementById('hg-cooldown').value, 10) || 300,
+                    interjection_trigger: 'smart'
+                },
+                hitl: {
+                    code_execution: document.getElementById('hitl-code').checked,
+                    group_join: document.getElementById('hitl-group').checked,
+                    confirmation_timeout_seconds: parseInt(document.getElementById('hitl-timeout').value, 10) || 300
+                }
+            };
+            const tokenVal = document.getElementById('huginn-bot-token').value.trim();
+            if (tokenVal && !tokenVal.includes('\u2026')) {
+                payload.bot_token = tokenVal;
+            }
+            try {
+                const r = await fetch('/hel/admin/huginn/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                statusEl.textContent = '\u2705 Gespeichert. Server-Neustart fuer Webhook-Wechsel erforderlich.';
+                await huginnReload();
+            } catch (e) {
+                statusEl.style.color = '#f88';
+                statusEl.textContent = '\u274c Fehler: ' + e.message;
+            }
+        }
+
+        async function huginnSetWebhook() {
+            const statusEl = document.getElementById('huginn-save-status');
+            statusEl.style.color = '#8f8';
+            statusEl.textContent = 'Registriere Webhook...';
+            try {
+                const r = await fetch('/telegram/set_webhook');
+                const data = await r.json();
+                if (data.ok) {
+                    statusEl.textContent = '\u2705 Webhook registriert: ' + data.webhook_url;
+                } else {
+                    statusEl.style.color = '#f88';
+                    statusEl.textContent = '\u26a0 ' + (data.reason || 'unbekannter Fehler');
+                }
+            } catch (e) {
+                statusEl.style.color = '#f88';
+                statusEl.textContent = '\u274c ' + e.message;
+            }
+        }
 
         async function loadModelsAndBalance() {
             const balanceEl = document.getElementById('balanceDisplay');

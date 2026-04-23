@@ -2930,3 +2930,35 @@ Großer Schritt in Phase 4: fünf Patches in einer Session, 71 neue Unit-Tests, 
 - Offene Punkte (Patches 127+): Huginn-Tab im Hel-Frontend, Nala-Settings-Drawer, FAISS-Migration-Script + RAG-Eval auf neuem Embedder
 
 *Stand: 2026-04-23, Mega-Patch 122–126 — Phase 4 mit Schwung weiter.*
+
+### Patches 127–129 – Huginn-Hel-Tab, Settings-Drawer HSL, Embedder-Migration (2026-04-23)
+
+Zweiter Zyklus desselben Session-Tests (Token-Budget-Probe): die in Mega-Patch 122-126 bewusst verschobenen Frontend/Infrastruktur-Teile werden nachgeliefert.
+
+**Patch 127 – Huginn-Tab im Hel:**
+- Neuer Tab „🐤 Huginn" in der Hel-Tab-Leiste (zwischen „Links" und „About").
+- Frontend für die Patch-123-Endpoints `GET/POST /admin/huginn/config`: Status-Dot, Bot-Token-Input (Password-masked, rejecting maskierte Reload-Werte), Admin-Chat-ID, Modell-Dropdown (nutzt `_allModels` mit Preis pro 1M Tokens), Max-Response-Länge.
+- Gruppen-Verhalten + HitL als `<details>`-Blöcke mit Checkboxes.
+- Drei Action-Buttons: Speichern / Neu laden / Webhook registrieren.
+- Lazy-Load via `_HEL_LAZY_LOADED`-Pattern.
+
+**Patch 128 – Nala Settings-Anchor + HSL-Slider:**
+- Sticky-Button „⚙️ Einstellungen" unten im Burger-Sidebar (44px Touch-Target, Gold-Rand, öffnet bestehendes Settings-Modal).
+- Neuer HSL-Slider-Block im Settings-Modal unter Bubble-Farben: H/S/L pro Bubble (User + Bot) mit Live-Swatch, Wert-Readout und Regenbogen-Gradient auf Hue-Slider.
+- `hslToHex(h,s,l)` JS-Helper synchronisiert den HSL-Wert zum bestehenden `<input type="color">` damit Favoriten-Speicherung mitzieht.
+- LocalStorage-Persistenz für beide Bubbles. HSL ist **additiv** zu den bestehenden Color-Pickern, nicht ersetzend.
+
+**Patch 129 – FAISS Dual-Embedder Migration-Script:**
+- Neues Script `scripts/migrate_embedder.py` mit `--dry-run` (Default) und `--execute`.
+- Flow: Backup in `data/backups/pre_patch129_<ts>/`, Sprache pro Chunk mit `detect_language` auf den tatsächlichen Content (NICHT System-Prompt), pro Sprache eigener FAISS-Index mit dem passenden Embedder, Persist als `{lang}.index` + `{lang}_meta.json`.
+- Nicht-destruktiv: alte `faiss.index` + `metadata.json` bleiben bestehen. Umschaltung auf Dual erfolgt erst durch config.yaml-Flag (separater künftiger Patch).
+- Dry-Run auf dem realen Index: **61 Chunks → 61 DE / 0 EN** (Rosendornen/Codex Heroicus/Kadath sind reiner DE-Content, wie erwartet).
+- **5 neue Tests**.
+
+**Aktueller Stand nach Patches 127–129:**
+- Tests: **238 passed** offline (233 vorher + 5 neu)
+- RAG-Eval: unverändert 15 JA / 5 TEILWEISE / 0 NEIN (kein Reindex)
+- Neu: Huginn-Tab im Hel (Frontend komplett), HSL-Slider in Nala, Migrations-Script mit Dry-Run
+- Offene Punkte (Patch 130+): echte Dual-Embedder-Umschaltung in `rag/router.py`, Sancho-Panza-Veto, Projekt-Oberfläche
+
+*Stand: 2026-04-23, Patches 127–129 — Phase 4 erweitert.*
