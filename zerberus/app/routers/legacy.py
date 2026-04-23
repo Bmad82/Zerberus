@@ -121,6 +121,9 @@ async def chat_completions(
 
     # System-Prompt einfügen, falls nicht vorhanden
     sys_prompt = load_system_prompt(profile_name)
+    # Patch 118a: Decision-Box-Hinweis anhängen, wenn features.decision_boxes aktiv
+    from zerberus.core.prompt_features import append_decision_box_hint
+    sys_prompt = append_decision_box_hint(sys_prompt, settings)
     if sys_prompt and not any(m.role == "system" for m in req.messages):
         req.messages.insert(0, Message(role="system", content=sys_prompt))
 

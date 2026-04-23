@@ -13,7 +13,9 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5000 ^| findstr LISTENING') 
 )
 timeout /t 2 /nobreak >nul
 
-cd /d C:\Users\chris\Python\Rosa\Nala_Rosa\Zerberus
+REM Patch 117: Script-Verzeichnis verwenden statt hardcodiertem absoluten Pfad.
+REM %~dp0 expandiert zum Ordner, in dem start.bat liegt — portabel auf jedem System.
+cd /d "%~dp0"
 call venv\Scripts\activate
 
 echo Starte Server (HTTPS, Port 5000)...

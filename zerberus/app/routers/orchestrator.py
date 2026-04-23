@@ -540,6 +540,9 @@ async def _run_pipeline(
                 "\nWenn keine spezifischen Dokumentinformationen verfügbar sind, "
                 "beantworte allgemeine Fragen aus deinem Allgemeinwissen und führe normale Gespräche."
             )
+    # Patch 118a: Decision-Box-Hinweis anhängen, wenn features.decision_boxes aktiv
+    from zerberus.core.prompt_features import append_decision_box_hint
+    sys_prompt = append_decision_box_hint(sys_prompt, settings)
     messages = []
     if sys_prompt:
         messages.append({"role": "system", "content": sys_prompt})

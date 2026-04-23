@@ -751,11 +751,25 @@ ADMIN_HTML = """<!DOCTYPE html>
             <div class="card">
                 <h2>&#129504; Index-&#220;bersicht</h2>
                 <div id="ragIndexInfo" style="background:#252525; padding:15px; border-radius:8px; font-family:monospace; margin-bottom:15px;">Wird geladen...</div>
-                <h3 style="color:#ffa5a5; margin-bottom:8px;">Indizierte Quellen</h3>
+                <h3 style="color:#ffa5a5; margin-bottom:8px;">Indizierte Dokumente</h3>
                 <div id="ragSourcesList" style="background:#252525; padding:15px; border-radius:8px; min-height:40px;"></div>
                 <br>
-                <button onclick="clearRagIndex()" style="background:#888;">&#128465; Index leeren</button>
+                <button type="button" onclick="clearRagIndex()" style="background:#888;">&#128465; Index komplett leeren</button>
                 <div id="ragClearStatus" style="margin-top:8px;"></div>
+            </div>
+            <!-- Patch 115: Background Memory Extraction -->
+            <div class="card">
+                <h2>&#129504; Automatische Ged&#228;chtnis-Extraktion</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">
+                    L&#228;uft automatisch jede Nacht um 04:30 als Teil des Overnight-Jobs.
+                    Liest die User-Nachrichten der letzten 24 h, extrahiert konkrete Fakten
+                    via Cloud-LLM und schreibt neue Erkenntnisse ins RAG.
+                    Duplikate werden per Similarity-Check ausgesiebt.
+                </p>
+                <button type="button" id="memoryExtractBtn" onclick="triggerMemoryExtraction()" style="width:100%; padding:14px; font-size:1em; border-radius:10px; touch-action:manipulation;">
+                    &#129504; Extraktion jetzt starten
+                </button>
+                <div id="memoryExtractStatus" style="margin-top:12px; font-size:1em; word-break:break-word;"></div>
             </div>
           </div>
         </div>
@@ -1614,34 +1628,90 @@ ADMIN_HTML = """<!DOCTYPE html>
             reference: '#5d4037',
         };
 
+        // Patch 116: Gruppierte Dokumentenliste (eine Card pro Source) + Delete pro Doc
         async function loadRagStatus() {
-            const res = await fetch('/hel/admin/rag/status');
-            if (!res.ok) { document.getElementById('ragIndexInfo').innerText = 'Fehler beim Laden'; return; }
-            const data = await res.json();
-            document.getElementById('ragIndexInfo').innerText =
-                `Index-Gr\u00f6\u00dfe: ${data.total_chunks} Chunk(s)`;
-            const sourcesDiv = document.getElementById('ragSourcesList');
-            const meta = data.sources_meta || (data.sources || []).map(s => ({source: s, category: 'general'}));
-            if (meta.length > 0) {
-                // Gruppiere pro Source: Anzahl Chunks + gesehene Kategorien
-                const grouped = {};
-                meta.forEach(m => {
-                    const src = m.source || 'unbekannt';
-                    const cat = m.category || 'general';
-                    if (!grouped[src]) grouped[src] = { count: 0, cats: {} };
-                    grouped[src].count += 1;
-                    grouped[src].cats[cat] = (grouped[src].cats[cat] || 0) + 1;
-                });
-                sourcesDiv.innerHTML = Object.entries(grouped).map(([src, info]) => {
-                    const catBadges = Object.entries(info.cats).map(([cat, n]) => {
-                        const color = RAG_CATEGORY_COLORS[cat] || '#555';
-                        const label = info.cats[cat] === info.count ? cat : `${cat} (${n})`;
-                        return `<span style="background:${color}; padding:2px 8px; border-radius:10px; font-size:0.8em; margin-left:6px;">${label}</span>`;
-                    }).join('');
-                    return `<div style="padding:4px 0; border-bottom:1px solid #444;">[doc] <strong>${src}</strong> &mdash; ${info.count} Chunk(s)${catBadges}</div>`;
+            try {
+                const res = await fetch('/hel/admin/rag/documents');
+                if (!res.ok) { document.getElementById('ragIndexInfo').innerText = 'Fehler beim Laden'; return; }
+                const data = await res.json();
+                const activeInfo = (typeof data.total_chunks === 'number' && typeof data.total_documents === 'number')
+                    ? `${data.total_documents} Dokument(e), ${data.total_chunks} Chunk(s) gesamt`
+                    : `${(data.documents || []).length} Dokument(e)`;
+                document.getElementById('ragIndexInfo').innerText = activeInfo;
+                const sourcesDiv = document.getElementById('ragSourcesList');
+                const docs = data.documents || [];
+                if (docs.length === 0) {
+                    sourcesDiv.innerHTML = '<span style="color:#888;">Noch keine Dokumente indiziert.</span>';
+                    return;
+                }
+                sourcesDiv.innerHTML = docs.map(doc => {
+                    const color = RAG_CATEGORY_COLORS[doc.category] || '#555';
+                    const safeSrc = (doc.source || '').replace(/"/g, '&quot;');
+                    const srcDisplay = (doc.source || 'unbekannt').replace(/</g, '&lt;');
+                    return `
+                        <div class="rag-doc-card" style="background:#2a2a2a; border:1px solid #444; border-radius:10px; padding:12px 14px; margin-bottom:10px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                                <div style="flex:1; min-width:0; word-break:break-word;">
+                                    <strong style="font-size:1.02em;">\uD83D\uDCC4 ${srcDisplay}</strong>
+                                    <span style="background:${color}; padding:2px 8px; border-radius:10px; font-size:0.8em; margin-left:8px;">${doc.category || 'general'}</span>
+                                </div>
+                                <button type="button" onclick="deleteRagDocument('${safeSrc}')" style="background:#8B0000; color:#fff; padding:8px 14px; font-size:0.9em; border-radius:8px; min-height:44px; touch-action:manipulation;">&#128465; L\u00f6schen</button>
+                            </div>
+                            <div style="color:#aaa; font-size:0.85em; margin-top:6px;">
+                                ${doc.chunk_count} Chunk(s) &middot; ${doc.total_words.toLocaleString('de-DE')} W\u00f6rter
+                            </div>
+                        </div>
+                    `;
                 }).join('');
-            } else {
-                sourcesDiv.innerHTML = '<span style="color:#888;">Noch keine Dokumente indiziert.</span>';
+            } catch(e) {
+                document.getElementById('ragIndexInfo').innerText = 'Netzwerkfehler: ' + e.message;
+            }
+        }
+
+        async function deleteRagDocument(source) {
+            if (!source) return;
+            if (!confirm(`Dokument "${source}" wirklich l\u00f6schen? Alle Chunks dieser Quelle werden entfernt.`)) return;
+            try {
+                const res = await fetch('/hel/admin/rag/document?source=' + encodeURIComponent(source), { method: 'DELETE' });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    loadRagStatus();
+                } else {
+                    alert('Fehler: HTTP ' + res.status + ' \u2013 ' + (data.detail || JSON.stringify(data)));
+                }
+            } catch(e) {
+                alert('Netzwerkfehler: ' + e.message);
+            }
+        }
+
+        // Patch 115: Manueller Trigger f\u00fcr Background Memory Extraction
+        async function triggerMemoryExtraction() {
+            const btn = document.getElementById('memoryExtractBtn');
+            const status = document.getElementById('memoryExtractStatus');
+            if (!btn || !status) return;
+            if (!confirm('Ged\u00e4chtnis-Extraktion jetzt starten? Das liest alle User-Nachrichten der letzten 24h und kann 30\u201390 s dauern.')) return;
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            status.innerHTML = '\u23F3 Extraktion l\u00e4uft\u2026 (bitte warten)';
+            status.style.color = '#ffd700';
+            try {
+                const res = await fetch('/hel/admin/memory/extract', { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    const errors = (data.errors && data.errors.length) ? ' \u2014 Fehler: ' + data.errors.join(', ') : '';
+                    status.innerHTML = `\u2705 Fertig: <strong>${data.extracted || 0}</strong> Fakten extrahiert, <strong>${data.indexed || 0}</strong> neu indiziert, ${data.skipped || 0} Duplikate${errors}`;
+                    status.style.color = '#4ecdc4';
+                    loadRagStatus();
+                } else {
+                    status.innerHTML = '\u274C HTTP ' + res.status + ': ' + (data.detail || JSON.stringify(data));
+                    status.style.color = '#ff6b6b';
+                }
+            } catch(e) {
+                status.innerHTML = '\u274C Netzwerkfehler: ' + e.message;
+                status.style.color = '#ff6b6b';
+            } finally {
+                btn.disabled = false;
+                btn.style.opacity = '1';
             }
         }
 
@@ -2442,15 +2512,22 @@ async def rag_status():
     """
     from zerberus.modules.rag.router import _index, _metadata
     total = _index.ntotal if _index is not None else 0
-    sources = [m.get("source", "unbekannt") for m in _metadata]
+    # Patch 116: Soft-deleted Chunks aus der Listen-Ansicht ausblenden.
+    visible = [m for m in _metadata if m.get("deleted") is not True]
+    sources = [m.get("source", "unbekannt") for m in visible]
     sources_meta = [
         {
             "source": m.get("source", "unbekannt"),
             "category": m.get("category", "general"),
         }
-        for m in _metadata
+        for m in visible
     ]
-    return {"total_chunks": total, "sources": sources, "sources_meta": sources_meta}
+    return {
+        "total_chunks": total,
+        "active_chunks": len(visible),
+        "sources": sources,
+        "sources_meta": sources_meta,
+    }
 
 
 @router.delete("/admin/rag/clear")
@@ -2486,8 +2563,12 @@ async def rag_reindex():
         raise HTTPException(503, "RAG-Abhängigkeiten nicht installiert.")
 
     # Kopie der aktuellen Chunks sichern bevor Reset
-    chunks_to_reindex = [(m.get("text", ""), {k: v for k, v in m.items() if k != "text"})
-                         for m in current_meta if m.get("text", "").strip()]
+    # Patch 116: Soft-deleted Chunks beim Reindex weglassen (physische Bereinigung).
+    chunks_to_reindex = [
+        (m.get("text", ""), {k: v for k, v in m.items() if k not in ("text", "deleted")})
+        for m in current_meta
+        if m.get("text", "").strip() and m.get("deleted") is not True
+    ]
 
     if not chunks_to_reindex:
         return {"status": "ok", "message": "Index war leer — nichts zu reindizieren.", "reindexed": 0}
@@ -2506,6 +2587,94 @@ async def rag_reindex():
 
     logger.info(f"✅ RAG-Reindex abgeschlossen: {reindexed} Chunks neu indiziert")
     return {"status": "ok", "reindexed": reindexed}
+
+
+# ============================================================
+# Patch 116: Gruppierte Dokumentenliste + Soft-Delete pro Source
+# ============================================================
+
+@router.get("/admin/rag/documents")
+async def rag_documents():
+    """Gibt Dokumente gruppiert nach `source` zurück — ein Eintrag pro Datei."""
+    from zerberus.modules.rag.router import _index, _metadata
+    total_chunks = _index.ntotal if _index is not None else 0
+    grouped: dict[str, dict] = {}
+    for meta in _metadata:
+        if meta.get("deleted") is True:
+            continue
+        src = meta.get("source", "unbekannt")
+        cat = meta.get("category", "general")
+        wc = int(meta.get("word_count", 0) or 0)
+        if src not in grouped:
+            grouped[src] = {
+                "source": src,
+                "category": cat,
+                "chunk_count": 0,
+                "total_words": 0,
+                "categories": {},
+            }
+        grouped[src]["chunk_count"] += 1
+        grouped[src]["total_words"] += wc
+        grouped[src]["categories"][cat] = grouped[src]["categories"].get(cat, 0) + 1
+
+    documents = []
+    for src, info in grouped.items():
+        cats = info.pop("categories")
+        # Category für Badge: häufigste Kategorie (Fallback: general)
+        if cats:
+            info["category"] = max(cats.items(), key=lambda kv: kv[1])[0]
+        documents.append(info)
+
+    documents.sort(key=lambda d: d["source"].lower())
+    return {
+        "documents": documents,
+        "total_chunks": total_chunks,
+        "total_documents": len(documents),
+    }
+
+
+@router.delete("/admin/rag/document")
+async def rag_document_delete(source: str):
+    """Soft-Delete aller Chunks einer Source. FAISS-Index bleibt intakt;
+    Chunks mit `deleted: true` werden beim Reindex weggelassen und in
+    `/admin/rag/documents` nicht mehr gelistet.
+    """
+    from zerberus.modules.rag.router import _metadata, _resolve_paths, _save_metadata
+    settings = get_settings()
+    src = (source or "").strip()
+    if not src:
+        raise HTTPException(400, "source darf nicht leer sein.")
+
+    affected = 0
+    for meta in _metadata:
+        if meta.get("source") == src and not meta.get("deleted"):
+            meta["deleted"] = True
+            affected += 1
+
+    if affected == 0:
+        raise HTTPException(404, f"Keine Chunks mit source={src!r} gefunden.")
+
+    _, meta_path = _resolve_paths(settings)
+    _save_metadata(_metadata, meta_path)
+    logger.warning(f"[RAG-116] Soft-Delete: {affected} Chunk(s) aus {src!r} markiert")
+    return {"status": "ok", "source": src, "chunks_removed": affected}
+
+
+# ============================================================
+# Patch 115: Background Memory Extraction — manueller Trigger
+# ============================================================
+
+@router.post("/admin/memory/extract")
+async def memory_extract():
+    """Manueller Trigger für Background Memory Extraction.
+    Läuft synchron (wartet auf Ergebnis). Dupliziert die Logik nicht —
+    ruft `extract_memories()` aus dem Memory-Modul auf.
+    """
+    from zerberus.modules.memory.extractor import extract_memories
+    settings = get_settings()
+    mem_cfg = settings.modules.get("memory", {}) or {}
+    result = await extract_memories(mem_cfg)
+    return {"status": "ok", **result}
 
 
 # ============================================================

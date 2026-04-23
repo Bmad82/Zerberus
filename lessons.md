@@ -122,6 +122,29 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - **`retry: 5000` am Stream-Anfang:** EventSource-Reconnect-Interval ändert sich dauerhaft für diese Verbindung (SSE-Spec). 5 s ist zahm genug um Mobile-Reconnect-Stürme zu vermeiden.
 - **`window.__nalaSseWatchdogReset` als loses Coupling:** Das SSE-Listener-Binding lebt sessionübergreifend, aber der Watchdog gehört zu einer einzelnen fetch-Transaktion. Global-Funktion-Pointer (null wenn kein Request läuft) erlaubt das Cross-Wire ohne harte Abhängigkeit.
 
+## Background Memory Extraction (Patch 115)
+- **Overnight-Erweiterung statt eigener Cron:** Der 04:30-APScheduler-Job aus Patch 57 (BERT-Sentiment) wird am Ende um Memory-Extraction erweitert. Separater Scheduler wäre Duplizierung — Reihenfolge Sentiment-dann-Extraction ist egal, beide laufen read-only auf 24h-Nachrichten.
+- **Cosine aus L2 bei normalisierten Embeddings:** MiniLM-Embeddings sind per `normalize_embeddings=True` unit-normalized. FAISS IndexFlatL2 liefert L2-Distanz; Umrechnung `cos = 1 - L2²/2`. Threshold 0.9 (cos) entspricht L2 ≈ 0.447 — passend für "fast gleiche Aussagen" ohne Refrain-Safe-Fehlinterpretationen.
+- **Fail-Safe in Overnight-Job:** Exception aus `extract_memories()` darf den Overnight-Job NICHT abbrechen (Sentiment-Auswertung hängt nicht davon ab). `try/except` außen, fehlschlagende Extraction wird geloggt, Job endet normal.
+- **Source-Tag mit Datum:** `source: "memory_extraction_2026-04-23"` statt fixem Tag erlaubt späteres gezieltes Löschen/Audit per Datum via Soft-Delete (Patch 116). Kein Datums-Rollover-Bug, weil `datetime.utcnow().strftime("%Y-%m-%d")` pro Batch einmal gelesen wird.
+- **Prompt-Template mit `{messages}`-Placeholder:** Python `str.format()` auf Prompt-Konstante. Alle anderen `{}` im Prompt müssen als `{{}}` escaped werden, sonst KeyError. Lieblingsstelle: das JSON-Output-Beispiel — da müssen `[{{"fact": "..."}}]` doppelt geklammert sein.
+
+## RAG Soft-Delete + Gruppierte Dokumentenliste (Patch 116)
+- **FAISS kann nicht selektiv löschen:** `IndexFlatL2` hat kein `remove(idx)`. Zwei Optionen: (1) Rebuild (`_reset_sync` + alle überlebenden Chunks re-encoden) oder (2) Soft-Delete (Metadata-Flag `deleted: true`, beim Retrieval + Status-Listing filtern). Option 2 ist in O(1) statt O(N) und braucht kein erneutes Encoding — einziger Preis: Index wächst bis zum nächsten Reindex.
+- **Drei Filter-Stellen:** `_search_index()` (Retrieval), `/admin/rag/status` (Listing), `/admin/rag/reindex` (Rebuild-Quelle). Bei einer vergessenen Stelle lebt der gelöschte Chunk weiter. Grep-Checkpoint: `m.get("deleted") is True` muss in allen drei Pfaden stehen.
+- **`encodeURIComponent` für Query-Param mit Leerzeichen:** `source=Neon Kadath.txt` bricht bei URL-Concat, `?source=Neon%20Kadath.txt` funktioniert. JS `fetch('/…?source=' + encodeURIComponent(source))` — nie mit Template-Strings direkt.
+- **XSS-Hardening bei Card-Rendering:** `innerHTML` des gruppierten Listings enthält User-Daten (Dateiname). `source.replace(/"/g, '&quot;')` + `source.replace(/</g, '&lt;')` fängt Angle-Bracket- und Quote-Breaks. Datenherkunft ist intern (Admin-Uploads), aber defensiv kostet nichts.
+
+## Portabilität via `%~dp0` in .bat (Patch 117)
+- **`%~dp0` = Script-Directory:** Ersetzt hardcodiertes `cd /d C:\...`. Läuft aus jedem Verzeichnis, auf jedem System — das Script wechselt in seinen eigenen Ordner. Muss in Anführungszeichen stehen wenn Pfad Leerzeichen enthält: `cd /d "%~dp0"`.
+- **Python-Code war bereits portabel:** `Path("config.yaml")`, `Path("./data/vectors")`, `Path("bunker_memory.db")` alle relativ zum CWD. Kein Handlungsbedarf in `.py`-Dateien. Dokumentations-Markdowns enthalten weiterhin absolute Pfade für Chris-als-User — das sind keine Code-Referenzen, sondern Beispiele.
+
+## Decision-Boxes + Feature-Flags (Patch 118a)
+- **Marker-Parsing ohne `eval()`/innerHTML-Injection:** Regex findet `[DECISION]…[/DECISION]`-Blöcke, Inhalt geht durch `[OPTION:wert]` Label. Text ausserhalb der Marker wandert als `document.createTextNode` in die Bubble; nur die `<button>` werden strukturell gebaut. Kein `innerHTML` mit User/LLM-Content.
+- **Python-String-Falle bei JS-Regex-Charakterklassen:** `[^\n\r\[]+` im Triple-Quote-String wird beim Python-Parse zu echten Newlines → kaputtes JS-Regex (`Invalid regular expression`). Entweder `[^\\n\\r\\[]+` (Python-Doppel-Escape) oder einfacher: `(.+)` (matcht default kein `\n`). Lesson analog zu Patch 69c/100/111.
+- **Feature-Flag als Dict-Default in Settings:** `features: Dict[str, Any] = {"decision_boxes": True}` in `config.py`. config.yaml gitignored → Default muss im Pydantic-Model stehen (wie OpenRouter-Blacklist in Patch 102). `settings.features.get("decision_boxes", False)` greift nach frischem Clone auf True zurück.
+- **`append_decision_box_hint()` zentral:** Gemeinsamer Helper in `zerberus/core/prompt_features.py`, importiert in legacy.py UND orchestrator.py. Doppel-Injection per `"[DECISION]" in prompt`-Check verhindert. Prompt-Erweiterung ist sauber getrennt vom System-Prompt-Laden.
+
 ## Dateinamen-Konvention (Patch 100)
 - Projektspezifische CLAUDE.md IMMER als `CLAUDE_[PROJEKTNAME].md` benennen
 - Gleiches für Supervisor-Briefing: `SUPERVISOR_[PROJEKTNAME].md`

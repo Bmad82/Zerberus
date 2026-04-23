@@ -787,6 +787,34 @@ NALA_HTML = """<!DOCTYPE html>
         .export-select:focus { border-color: var(--color-gold); color: var(--color-gold); }
         .export-select option { background: var(--color-primary-mid); color: var(--color-text-light); }
 
+        /* ── Patch 118a: Entscheidungsboxen (Regel 9 UI) ── */
+        .decision-box {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 10px 0 6px 0;
+            padding: 10px;
+            background: rgba(255, 215, 0, 0.08);
+            border: 1px solid rgba(255, 215, 0, 0.35);
+            border-radius: 12px;
+        }
+        .decision-btn {
+            padding: 10px 18px;
+            min-height: 44px;
+            border: 1px solid #ffd700;
+            border-radius: 10px;
+            background: rgba(255, 215, 0, 0.15);
+            color: #ffd700;
+            font-size: 0.95em;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.18s, transform 0.1s;
+            touch-action: manipulation;
+        }
+        .decision-btn:hover { background: rgba(255, 215, 0, 0.28); }
+        .decision-btn:active { background: rgba(255, 215, 0, 0.45); transform: scale(0.97); }
+        .decision-btn:disabled { opacity: 0.5; cursor: default; }
+
         /* ── Patch 77: Session-Item-Struktur (A1) ── */
         .session-item-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 4px; }
         .session-title { font-size: 0.88em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; color: var(--color-text-light); }
@@ -1835,6 +1863,75 @@ NALA_HTML = """<!DOCTYPE html>
     });
 
     // ── Nachrichten anzeigen (Patch 65: Export-Dropdown / Patch 67: Toolbar + Tracking) ──
+    // Patch 118a: Rendert Bot-Text mit optionalen [DECISION][OPTION:…][/DECISION]-Markern
+    // als klickbare Buttons. Bleibt XSS-sicher: alles außerhalb der Marker geht als
+    // textContent in eigene Text-Nodes; nur die Buttons werden strukturell aufgebaut.
+    function renderBotContent(targetEl, text) {
+        targetEl.innerHTML = '';
+        const decisionRegex = /\[DECISION\]([\s\S]*?)\[\/DECISION\]/g;
+        // Matcht Option-Marker bis zum Zeilenende (. matcht kein \\n per default)
+        const optionRegex = /\[OPTION:([A-Za-z0-9_\-]+)\]\s+(.+)/g;
+        let lastIdx = 0;
+        let match;
+        let found = false;
+        while ((match = decisionRegex.exec(text)) !== null) {
+            found = true;
+            if (match.index > lastIdx) {
+                targetEl.appendChild(document.createTextNode(text.slice(lastIdx, match.index)));
+            }
+            const boxDiv = document.createElement('div');
+            boxDiv.className = 'decision-box';
+            const inner = match[1] || '';
+            let m;
+            let anyBtn = false;
+            optionRegex.lastIndex = 0;
+            while ((m = optionRegex.exec(inner)) !== null) {
+                const val = (m[1] || '').trim();
+                const label = (m[2] || '').trim();
+                if (!val || !label) continue;
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'decision-btn';
+                btn.textContent = label;
+                btn.dataset.value = val;
+                btn.onclick = () => sendDecision(val, label, boxDiv);
+                boxDiv.appendChild(btn);
+                anyBtn = true;
+            }
+            if (anyBtn) {
+                targetEl.appendChild(boxDiv);
+            } else {
+                // Keine validen Options → rohen Block belassen, damit nichts verschluckt wird
+                targetEl.appendChild(document.createTextNode(match[0]));
+            }
+            lastIdx = match.index + match[0].length;
+        }
+        if (!found) {
+            targetEl.textContent = text;
+            return;
+        }
+        if (lastIdx < text.length) {
+            targetEl.appendChild(document.createTextNode(text.slice(lastIdx)));
+        }
+    }
+
+    // Patch 118a: Schickt die gewählte Option als neue User-Nachricht ab.
+    // Deaktiviert alle Buttons in der Box, damit nicht doppelt geklickt werden kann.
+    function sendDecision(value, label, boxEl) {
+        if (boxEl) {
+            boxEl.querySelectorAll('.decision-btn').forEach(b => {
+                b.disabled = true;
+                if (b.dataset.value === value) {
+                    b.style.background = 'rgba(255, 215, 0, 0.45)';
+                }
+            });
+        }
+        const payload = label || value;
+        if (typeof sendMessage === 'function') {
+            sendMessage(payload);
+        }
+    }
+
     function addMessage(text, sender, tsOverride) {
         const now = new Date();
         const timeStr = tsOverride || now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
@@ -1842,7 +1939,11 @@ NALA_HTML = """<!DOCTYPE html>
 
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${sender === 'user' ? 'user-message' : 'bot-message'}`;
-        msgDiv.textContent = text;
+        if (sender === 'bot') {
+            renderBotContent(msgDiv, text);
+        } else {
+            msgDiv.textContent = text;
+        }
 
         const wrapper = document.createElement('div');
         wrapper.className = sender === 'user' ? 'msg-wrapper user-wrapper' : 'msg-wrapper';

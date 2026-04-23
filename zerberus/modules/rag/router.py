@@ -199,10 +199,17 @@ def _search_index(
 
     results = []
     dropped = 0
+    dropped_deleted = 0
     for dist, idx in zip(distances[0], indices[0]):
         if idx == -1:
             continue
         entry = _metadata[idx].copy()
+        # Patch 116: Soft-deleted Chunks (per /hel/admin/rag/document DELETE)
+        # werden im Retrieval übersprungen, bleiben aber physisch im Index,
+        # bis der nächste vollständige Reindex läuft.
+        if entry.get("deleted") is True:
+            dropped_deleted += 1
+            continue
         entry["score"] = float(1.0 / (1.0 + dist))
         entry["l2_distance"] = float(dist)
 

@@ -116,6 +116,27 @@ async def run_overnight_sentiment():
 
     logger.info(f"[Overnight] ===== Fertig: {count}/{len(rows)} Messages ausgewertet =====")
 
+    # Patch 115: Im Anschluss Memory-Extraction — Fakten aus 24h-Dialog
+    # ins FAISS-Index schreiben. Fail-Safe: Exceptions loggen, Overnight
+    # nicht abbrechen lassen.
+    try:
+        from zerberus.core.config import get_settings
+        from zerberus.modules.memory.extractor import extract_memories
+
+        settings = get_settings()
+        mem_cfg = settings.modules.get("memory", {}) or {}
+        if mem_cfg.get("extraction_enabled", True):
+            mem_result = await extract_memories(mem_cfg)
+            logger.warning(
+                f"[MEM-115] Overnight-Extraction: {mem_result['extracted']} Fakten, "
+                f"{mem_result['indexed']} neu, {mem_result['skipped']} Duplikate, "
+                f"{mem_result['batches']} Batch(es)"
+            )
+        else:
+            logger.info("[MEM-115] Memory-Extraction deaktiviert (config)")
+    except Exception as e:
+        logger.error(f"[MEM-115] Memory-Extraction fehlgeschlagen: {e}")
+
 
 def create_scheduler():
     """

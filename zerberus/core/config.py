@@ -106,6 +106,18 @@ class OpenRouterConfig(BaseModel):
     provider_blacklist: List[str] = ["chutes", "targon"]
 
 
+class MemoryExtractionConfig(BaseModel):
+    """Patch 115: Background Memory Extraction Defaults.
+    config.yaml-Override unter `modules.memory.*`.
+    """
+    extraction_enabled: bool = True
+    extraction_model: Optional[str] = None  # None → legacy.models.cloud_model
+    extraction_timeout: float = 45.0
+    max_batch_words: int = 2000
+    similarity_threshold: float = 0.9
+    categories: List[str] = ["personal", "technical", "preference", "relationship", "event"]
+
+
 class ProfileConfig(BaseModel):
     """Patch 61: Profil-Konfiguration mit optionalem Temperatur-Override."""
     display_name: str = ""
@@ -134,6 +146,7 @@ class Settings(BaseSettings):
     modules: Dict[str, Any] = {}
     profiles: Dict[str, Any] = {}  # Patch 61: ProfileConfig-Einträge (raw Dict, da nala.py direkt yaml liest)
     openrouter: OpenRouterConfig = OpenRouterConfig()  # Patch 63: Provider-Blacklist
+    features: Dict[str, Any] = {"decision_boxes": True}  # Patch 118a: Feature-Flags (config.yaml gitignored → Default explizit)
 
     class Config:
         env_file = ".env"
