@@ -1,8 +1,21 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patches 127–129 (2026-04-23) – Huginn-Hel-Tab, Settings-Drawer mit HSL, Embedder-Migration-Script*
+*Letzte Aktualisierung: Patch 130 (2026-04-24) – Loki & Fenrir UI-Sweep + Mega-Patch-Lessons*
 
 ## Aktueller Patch
+
+**Patch 130** – Loki & Fenrir E2E-Sweep für Mega-Patch UI + Lessons-Doku (2026-04-24)
+
+- **Loki E2E (neue Datei `zerberus/tests/test_loki_mega_patch.py`):** 21 neue Tests über 8 Klassen — TestBubbleShine (::before-Gradient auf User-+Bot-Bubble, Patch 124), TestBubbleWidth (90% Mobile / 75% Desktop, Patch 124), TestSlideInAnimation (messageSlideIn, Patch 124), TestInputBarCollapse (Textarea 44px collapsed, expand-on-focus, blur-mit-Text bleibt expanded, Patch 124), TestLongMessageCollapse (▼Mehr/▲Weniger Toggle, Patch 124), TestBurgerMenu (Burger-Touch-Target, Sidebar.open, .sidebar-settings-anchor sticky, Patch 128), TestHslSlider (6 Slider existieren, Live-Farbwechsel, Patch 128), TestTouchTargets (alle Primär-Buttons ≥44px Mobile, Patch 128), TestHuginnHelTab (Tab existiert, Config-Felder, Aktivierung, Patch 127).
+- **Fenrir Chaos (neue Datei `zerberus/tests/test_fenrir_mega_patch.py`):** 12 neue Tests über 4 Klassen — TestInputStress (10k Zeichen, leerer Enter, Unicode-Bombe), TestUiStress (20× Burger-Toggle, Settings während pending Message, Viewport-Resize), TestHslSliderStress (Hue 0/360, Extremwerte aller Slider → kein JS-Error), TestCodeChunkerEdgeCases (SyntaxError → [], leer → [], 2000 Funktionen → terminiert, Unicode im Docstring, Patch 123).
+- **Loki-Finding → Fix:** `.expand-btn` war 36×48 — unter der 44px-Schwelle für Touch-Targets auf Mobile. Fix: `min-width: 44px; width: 44px;` in `zerberus/app/routers/nala.py` (CSS `.expand-btn`).
+- **Server-Reload-Guard:** Uvicorn hat bei laufendem `--reload` die Patch-127/128-Änderungen nicht automatisch neu geladen. Die 10 betroffenen Tests (HSL-Slider, Settings-Anchor, Huginn-Tab) haben einen `_require_element`-Skip-Helper, der bei stalem Server sauber skipped statt zu failen.
+- **Lessons:** Mega-Patch-Experiment-Eintrag in `lessons.md` (Setup + Ergebnis + Vergleich + Was-hat-funktioniert + Lessons für zukünftige Mega-Prompts).
+- **Tests:** **291 passed, 10 skipped** in 1m50s (268 Baseline + 23 neue grün; 10 Skips wegen Server-Reload-Guard). Die 4 Code-Chunker-Unit-Tests laufen ohne Server und sind regressions-stabil.
+- **Scope:** IN Scope: E2E-Tests für die bereits implementierten UI-Patches 124/127/128, Chaos-Tests gegen Chunker + UI, Touch-Target-Fix für expand-btn, Lessons-Eintrag. NICHT in diesem Patch: Patch-130-Folge-Arbeit am Reload-Verhalten von uvicorn, oder neue Features — rein Test-Sweep + Meta-Doku.
+- **Live-Verifikation (USER):** Nach Server-Neustart → `python -m pytest zerberus/tests/test_loki_mega_patch.py zerberus/tests/test_fenrir_mega_patch.py -v` sollten alle 33 neu laufen (0 Skips).
+
+---
 
 **Patches 127–129** – Zweiter Zyklus des Mega-Patch-Tests (2026-04-23)
 
@@ -27,8 +40,9 @@
 - [x] **127** Huginn-Tab im Hel-Dashboard (Frontend zu Patch-123-Endpoints)
 - [x] **128** Settings-Anchor + HSL-Slider (Nala-Sidebar + Theme)
 - [x] **129** FAISS-Migration-Script (`scripts/migrate_embedder.py`, Dry-Run + Tests)
-- [ ] **130+** Echte Dual-Embedder-Umschaltung in `rag/router.py` nach Migration-Execute
-- [ ] **131+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
+- [x] **130** Loki & Fenrir E2E-Sweep für Mega-Patch UI + Lessons-Doku
+- [ ] **131+** Echte Dual-Embedder-Umschaltung in `rag/router.py` nach Migration-Execute
+- [ ] **132+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
 - [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
 - [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)
 - [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung

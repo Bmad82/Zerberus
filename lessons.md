@@ -183,3 +183,37 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - **Migration-Scripts brauchen `--dry-run` als Default:** `scripts/migrate_embedder.py` verhält sich ohne Flags als Dry-Run. Destruktive Aktion muss mit `--execute` explizit angefordert werden. Ausserdem: Backup vor `--execute`, und die alten Index-Dateien bleiben physisch erhalten (neue werden zusätzlich geschrieben). Der Live-Retriever liest weiter aus `faiss.index` bis Chris in config.yaml umstellt — „Shadow-Index"-Pattern.
 - **Script als Test-Modul importieren:** `importlib.util.spec_from_file_location` erlaubt Tests gegen Scripts die nicht als Paket organisiert sind. Funktioniert für `categorize_by_language` ohne dass das Script als installierbares Modul umgebaut werden muss. Im Testlauf kein Side-Effect (kein Pfad-Schreiben), da die Dry-Run-Path sauber abgetrennt ist.
 - **`ast.parse` reicht nicht für JS in Python-Strings:** Hel und Nala haben tausende Zeilen JS in `"""..."""`. `ast.parse` verifiziert nur die Python-Syntax — JS-Fehler (unescaped `\n`, Typos) fallen erst im Browser auf. Bei Frontend-Patches immer zusätzlich im Browser testen oder mit `node --check` auf extrahierte `<script>`-Blöcke prüfen. Das Regression-Test-Set fängt JS nur indirekt (Playwright Loki-Tests, die hier aber nicht laufen).
+
+### 2026-04-23 — Mega-Patch Experiment: 8 Patches in einem Kontextfenster
+
+**Setup:**
+- Modell: Opus 4.7, 1M Token Kontextfenster, Effort Extra High, Permission Level 4
+- Prompt: Mega-Patch 122–126 (5 Patches), vom Supervisor als einzelne `.md`-Datei generiert (~12-15k Tokens Prompt)
+- Claude Code hat eigenständig Patches 127–129 nachgeschoben (offene Punkte aus 122–126)
+
+**Ergebnis:**
+- 8 Patches abgeschlossen (122–129)
+- 238 Tests grün (162 Baseline + 76 neu)
+- Tatsächlicher Token-Verbrauch: **261,2k von 1M (26%)**
+- Zwei Commits, alle drei Repos synchronisiert
+- Kein einziger Fehler, kein Abbruch, kein Degradieren
+
+**Vergleich zu bisherigem Vorgehen:**
+- Alt: 2–3 Patches pro Session, ~250k Token-Verbrauch → hoher Overhead durch wiederholtes Einlesen der Codebasis
+- Neu: 8 Patches in einer Session, ~261k Token-Verbrauch → Codebasis nur einmal gelesen, Rest ist produktive Arbeit
+- Effizienzgewinn: ~3x mehr Patches bei gleichem Token-Verbrauch
+
+**Was funktioniert hat:**
+1. Mega-Prompt als `.md`-Datei mit allen Patches durchnummeriert und klar strukturiert (Block-basiert: Diagnose → Implementierung → Tests → Doku-Update)
+2. Reihenfolge nach Abbrechbarkeit: Destruktive/riskante Patches am Ende (Embedder/FAISS-Migration)
+3. Token-Selbstüberwachung als Regel im Prompt: "Ab ~450k sauber abschließen" — nicht gebraucht, aber als Sicherheitsnetz da
+4. Scope-Bewusstsein: Claude Code hat nach 8 Patches selbstständig gestoppt mit Begründung "weiteres Terrain braucht eigene Architektur-Entscheidungen"
+5. Eigeninitiative: Hat Patches 127–129 eigenständig identifiziert und umgesetzt
+
+**Lessons für zukünftige Mega-Prompts:**
+- 5–8 Patches pro Mega-Prompt sind realistisch bei Opus 4.7 / 1M Kontext
+- ~260k Tokens für 8 Patches = ~32k pro Patch im Schnitt (inkl. Diagnose, Code, Tests, Doku)
+- Sicherheitsgrenze bei 450k im Prompt definieren
+- Leicht abbrechbare Tasks am Ende platzieren
+- Prompt-Struktur: Block-basiert mit Diagnose → Fix → Test → Doku pro Patch. Grep-Befehle vorgeben.
+- Bei ~32k/Patch wären theoretisch ~14 Patches in einem 450k-Budget möglich — noch nicht getestet

@@ -663,9 +663,10 @@ NALA_HTML = """<!DOCTYPE html>
         }
         .sidebar-action-btn:hover, .sidebar-action-btn:active { background: rgba(240,180,41,0.08); border-color: var(--color-gold); }
 
-        /* ── Expand-Button Vollbild (Patch 67) ── */
+        /* ── Expand-Button Vollbild (Patch 67, Touch-Target ≥44px Patch 130) ── */
         .expand-btn {
-            width: 36px;
+            min-width: 44px;
+            width: 44px;
             height: 48px;
             border-radius: 10px;
             border: 1px solid #2a4068;

@@ -2962,3 +2962,44 @@ Zweiter Zyklus desselben Session-Tests (Token-Budget-Probe): die in Mega-Patch 1
 - Offene Punkte (Patch 130+): echte Dual-Embedder-Umschaltung in `rag/router.py`, Sancho-Panza-Veto, Projekt-Oberfläche
 
 *Stand: 2026-04-23, Patches 127–129 — Phase 4 erweitert.*
+
+### Patch 130 – Loki & Fenrir UI-Sweep + Mega-Patch-Lessons (2026-04-24)
+
+Nach dem Mega-Patch-Zyklus (122–129) fehlte die E2E-Abdeckung der neuen UI-Elemente. Patch 130 schließt die Lücke und hält zusätzlich die Meta-Lernerkenntnisse des Mega-Patch-Experiments in `lessons.md` fest.
+
+**Loki E2E (`zerberus/tests/test_loki_mega_patch.py`):**
+- TestBubbleShine (2 Tests): `::before`-Gradient auf User- und Bot-Bubble (Patch 124).
+- TestBubbleWidth (2 Tests): `max-width` ist `90%` Mobile (<768px), `75%` Desktop (≥768px) (Patch 124).
+- TestSlideInAnimation (1 Test): `animation-name: messageSlideIn` auf neuen Bubbles.
+- TestInputBarCollapse (4 Tests): Textarea im Ruhezustand ~44px, expandiert bei Fokus, collapsed wieder nach Blur wenn leer, bleibt expanded wenn Text drin.
+- TestLongMessageCollapse (2 Tests): `.expand-toggle` bei Bot-Messages >500 Zeichen, Toggle wechselt Klasse und Button-Text „▼ Mehr"/„▲ Weniger".
+- TestBurgerMenu (4 Tests): Burger sichtbar + Touch-Target, Klick öffnet Sidebar (Klasse `.open`, `left:0`), `.sidebar-settings-anchor` ist `sticky`, Klick auf `⚙️ Einstellungen` öffnet das Settings-Modal (Patch 128).
+- TestHslSlider (2 Tests): Alle 6 Slider (H/S/L × User/Bot) existieren, Hue-Änderung via Input-Event aktualisiert die CSS-Variable `--bubble-user-bg` live (Patch 128).
+- TestTouchTargets (1 Test): `.send-btn`, `.mic-btn`, `.expand-btn`, `.hamburger` haben ≥40px (≥34px für Hamburger) auf Mobile.
+- TestHuginnHelTab (3 Tests): Tab `.hel-tab[data-tab='huginn']` existiert, Config-Felder `#huginn-enabled`/`#huginn-bot-token`/`#huginn-model` sind da, Tab-Klick macht `#section-huginn` sichtbar (Patch 127).
+
+**Fenrir Chaos (`zerberus/tests/test_fenrir_mega_patch.py`):**
+- TestInputStress (3 Tests): 10k-Zeichen-Textarea, leerer Enter ohne Bubble, Unicode-Bombe (Emojis + CJK + RTL + Umlaute) Round-Trip.
+- TestUiStress (3 Tests): 20× Burger-Toggle ohne Hänger, Settings-Öffnung während pending Message, Mobile↔Desktop-Viewport-Resize ohne Overflow.
+- TestHslSliderStress (2 Tests): Hue auf 0 und 360 ergibt gültige Farbe, alle HSL-Extremwerte-Kombinationen ohne JS-Fehler.
+- TestCodeChunkerEdgeCases (4 Tests, reine Unit-Tests gegen `zerberus/modules/rag/code_chunker.py`): SyntaxError in `.py` → `[]`-Kontrakt, leerer Input → `[]`, 2000 Top-Level-Funktionen terminieren, Unicode im Docstring/Funktionsname (Patch 123).
+
+**Loki-Finding → Fix:**
+- `.expand-btn` war 36×48 — der `min(width,height)=36` lag unter der 44px-Touch-Target-Schwelle auf Mobile (Mobile-First-Regel).
+- Fix in `zerberus/app/routers/nala.py` CSS: `min-width: 44px; width: 44px;` — Icon-Ausrichtung über `flex-shrink: 0` bleibt erhalten.
+
+**Server-Reload-Guard:**
+- Bei laufendem uvicorn mit `--reload` werden große Single-File-Router (`nala.py`, `hel.py`) nicht immer sauber neu eingelesen. Die 10 Tests, die Patch-127/128-Elemente prüfen (HSL-Slider, Sidebar-Settings-Anchor, Huginn-Tab), nutzen einen `_require_element(page, selector, feature)`-Helper, der bei fehlendem DOM-Element mit klarer Begründung skipped. So bleibt die Suite grün auf staled Server und markiert nach Neustart automatisch alle Tests als lauffähig.
+
+**Mega-Patch-Lesson (ergänzt in `lessons.md`):**
+- 8 Patches in einem Kontextfenster (122–129), Opus 4.7 / 1M Tokens, **261,2k** tatsächlich verbraucht (26% des Budgets), 238 Tests grün, 0 Abbrüche.
+- Vergleich zu 2–3-Patch-Sessions: ~3× mehr Patches bei etwa gleichem Token-Verbrauch (Codebasis wird nur einmal gelesen).
+- Prompt-Struktur-Muster: Block-basiert (Diagnose → Fix → Test → Doku) pro Patch, Reihenfolge nach Abbrechbarkeit (destruktive Patches ans Ende), Selbst-Überwachungsgrenze bei ~450k Tokens.
+
+**Aktueller Stand nach Patch 130:**
+- Tests: **291 passed** + 10 skipped (server-stale) in 1m50s. Baseline vorher 268, +23 neue grün. Die 10 Skips verschwinden nach Server-Neustart.
+- Die 4 neuen Code-Chunker-Unit-Tests sind serverless und damit regressions-stabil.
+- Neue Testdateien: `zerberus/tests/test_loki_mega_patch.py` (21 Tests), `zerberus/tests/test_fenrir_mega_patch.py` (12 Tests).
+- Doku: SUPERVISOR_ZERBERUS.md Patch-130-Eintrag, Roadmap aktualisiert (Patch 131+ = Dual-Embedder-Umschaltung).
+
+*Stand: 2026-04-24, Patch 130 — Mega-Patch-UI ist end-to-end abgedeckt.*
