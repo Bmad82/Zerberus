@@ -1,8 +1,9 @@
 """
 Patch 102 (B-01): Tests für Whisper Phrasen-Repetition-Filter.
+Patch 113b (W-001b): Tests für Satz-Repetition-Filter.
 """
 import pytest
-from zerberus.core.cleaner import detect_phrase_repetition
+from zerberus.core.cleaner import detect_phrase_repetition, detect_sentence_repetition
 
 
 class TestPhraseRepetition:
@@ -42,3 +43,52 @@ class TestPhraseRepetition:
         assert "ein bisschen so ein bisschen so" not in result
         assert "Anfang" in result
         assert "Ende" in result
+
+
+class TestSentenceRepetition:
+    """Patch 113b (W-001b): Ganze Satz-Wiederholungen."""
+
+    def test_klassische_satz_repetition(self):
+        s = "Ich gehe nach Hause. Ich gehe nach Hause. Ich gehe nach Hause."
+        assert detect_sentence_repetition(s) == "Ich gehe nach Hause."
+
+    def test_zwei_identische_saetze(self):
+        s = "Hallo Welt. Hallo Welt."
+        assert detect_sentence_repetition(s) == "Hallo Welt."
+
+    def test_nur_konsekutive_duplikate_entfernen(self):
+        s = "Test. Anderer Satz. Test."
+        result = detect_sentence_repetition(s)
+        # Test → Anderer Satz → Test (nicht konsekutiv, bleibt)
+        assert result.count("Test.") == 2
+        assert "Anderer Satz" in result
+
+    def test_gemischt_konsekutiv_und_nicht(self):
+        s = "A. A. B. A."
+        assert detect_sentence_repetition(s) == "A. B. A."
+
+    def test_frage_ausruf_zaehlen(self):
+        s = "Bist du da? Bist du da? Geh!"
+        result = detect_sentence_repetition(s)
+        assert result.count("Bist du da?") == 1
+        assert "Geh!" in result
+
+    def test_case_insensitive_match(self):
+        s = "Hallo Welt. hallo welt."
+        # Case-normalisierter Vergleich → wird als Duplikat erkannt
+        assert detect_sentence_repetition(s) == "Hallo Welt."
+
+    def test_whitespace_normalisierung(self):
+        s = "Hallo Welt.   Hallo  Welt."
+        assert detect_sentence_repetition(s) == "Hallo Welt."
+
+    def test_einzelner_satz_bleibt(self):
+        s = "Nur ein Satz ohne Punkt"
+        assert detect_sentence_repetition(s) == s
+
+    def test_leerer_string(self):
+        assert detect_sentence_repetition("") == ""
+
+    def test_verschiedene_saetze_bleiben(self):
+        s = "Heute war es warm. Gestern hat es geregnet. Morgen soll es schneien."
+        assert detect_sentence_repetition(s) == s

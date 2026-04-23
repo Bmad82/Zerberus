@@ -11,35 +11,23 @@ from zerberus.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 def check_config_consistency():
-    """Prüft, ob config.json und get_settings() in kritischen Punkten übereinstimmen."""
+    """Seit Patch 105/112: config.yaml ist Single Source of Truth. config.json ist obsolet.
+
+    Falls config.json noch existiert (Alt-Installation), einmalig warnen —
+    sie wird nicht mehr gelesen. Löschung wird dem User überlassen.
+    """
     config_json_path = Path("config.json")
-    if not config_json_path.exists():
-        logger.warning("config.json nicht vorhanden – verwende ausschließlich get_settings()")
-        return
-
-    with open(config_json_path, "r") as f:
-        json_cfg = json.load(f).get("llm", {})
-
-    yaml_cfg = get_settings().legacy
-    # Kritische Parameter, die gleich sein müssen
-    critical_keys = {
-        "cloud_model": lambda: json_cfg.get("cloud_model") != yaml_cfg.models.cloud_model,
-        "temperature": lambda: abs(json_cfg.get("temperature", 0.7) - yaml_cfg.settings.ai_temperature) > 0.01,
-        "threshold": lambda: json_cfg.get("threshold", 10) != yaml_cfg.settings.threshold_length,
-    }
-    conflicts = []
-    for key, check in critical_keys.items():
-        if check():
-            conflicts.append(key)
-
-    if conflicts:
+    if config_json_path.exists():
         logger.warning(
-            "⚠️ Config‑Split erkannt: %s stimmen nicht zwischen config.json und config.yaml überein. "
-            "Bereinige config.yaml oder lösche config.json.",
-            ", ".join(conflicts)
+            "⚠️ config.json existiert noch, wird aber seit Patch 112 nicht mehr gelesen. "
+            "Kann gefahrlos gelöscht werden — config.yaml ist Single Source of Truth."
         )
-    else:
-        logger.info("✅ Config‑Konsistenz ok")
+    # get_settings() wird eh beim Start geladen — reine Sanity-Probe:
+    try:
+        _ = get_settings().legacy.models.cloud_model
+        logger.info("✅ Config‑Konsistenz ok (config.yaml)")
+    except Exception as e:  # pragma: no cover
+        logger.error("❌ config.yaml nicht lesbar: %s", e)
 
 def check_faiss_available():
     """Stellt sicher, dass FAISS importierbar ist (sonst keine RAG‑Funktion)."""

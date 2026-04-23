@@ -1302,7 +1302,7 @@ NALA_HTML = """<!DOCTYPE html>
         }
     })();
 
-    // ── SSE EventSource (Patch 46) ──
+    // ── SSE EventSource (Patch 46 / 114a: Heartbeat-Reset) ──
     function connectSSE() {
         if (evtSource) {
             evtSource.close();
@@ -1322,6 +1322,13 @@ NALA_HTML = """<!DOCTYPE html>
                 }
             } catch (_) {}
         };
+        // Patch 114a: Heartbeat-Events verlängern den Watchdog.
+        // Server sendet alle 5 s ein heartbeat-Event während LLM-Verarbeitung.
+        evtSource.addEventListener('heartbeat', () => {
+            if (typeof window.__nalaSseWatchdogReset === 'function') {
+                window.__nalaSseWatchdogReset();
+            }
+        });
         evtSource.onerror = () => {
             // Reconnect nach Fehler – EventSource macht das automatisch
         };
@@ -1633,13 +1640,30 @@ NALA_HTML = """<!DOCTYPE html>
         const myAbort = currentChatAbort;
         const reqSessionId = sessionId;  // Snapshot für Stale-Response-Check
 
-        // Patch 102 (B-09/B-17): Frontend-Timeout 45s — schützt vor Endlos-Hängen
-        const timeoutId = setTimeout(() => {
-            if (myAbort && !myAbort.signal.aborted) {
-                console.warn('[TIMEOUT-102] Keine Antwort nach 45s — fetch wird abgebrochen');
+        // Patch 114a: Heartbeat-Watchdog. Initial 15 s (GPU-Pfad), jedes SSE-Heartbeat
+        // aus `/nala/events` setzt den Timer zurück → CPU-Fallback bleibt handlungsfähig
+        // solange der Server alle 5 s lebenszeichen sendet. Hard-Stop nach 120 s gesamt.
+        const WATCHDOG_MS = 15000;
+        const WATCHDOG_MAX_MS = 120000;
+        let timeoutId = null;
+        const requestStartTs = Date.now();
+        const resetWatchdog = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (!myAbort || myAbort.signal.aborted) return;
+            if (Date.now() - requestStartTs > WATCHDOG_MAX_MS) {
+                console.warn('[TIMEOUT-114a] Hard-Stop nach 120s erreicht');
                 try { myAbort.abort('timeout'); } catch (_) {}
+                return;
             }
-        }, 45000);
+            timeoutId = setTimeout(() => {
+                if (myAbort && !myAbort.signal.aborted) {
+                    console.warn('[TIMEOUT-114a] Kein Heartbeat für 15s — fetch wird abgebrochen');
+                    try { myAbort.abort('timeout'); } catch (_) {}
+                }
+            }, WATCHDOG_MS);
+        };
+        window.__nalaSseWatchdogReset = resetWatchdog;
+        resetWatchdog();
 
         try {
             const response = await fetch('/v1/chat/completions', {
@@ -1679,7 +1703,10 @@ NALA_HTML = """<!DOCTYPE html>
                 showErrorBubble('Verbindungsfehler — bitte erneut versuchen', text, reqSessionId);
             }
         } finally {
-            clearTimeout(timeoutId);
+            if (timeoutId) clearTimeout(timeoutId);
+            if (window.__nalaSseWatchdogReset === resetWatchdog) {
+                window.__nalaSseWatchdogReset = null;
+            }
             if (currentChatAbort === myAbort) currentChatAbort = null;
             // Input nur freigeben wenn kein Timeout-Bubble aktiv ist (User soll Retry sehen können).
             // Bei Timeout bleibt Bubble + Retry-Button stehen — Input wird trotzdem freigegeben damit
@@ -2604,7 +2631,10 @@ async def sse_events(session_id: str = ""):
     """
     Server-Sent Events Endpunkt.
     Streamt Pipeline-Events (RAG-Suche, Intent, LLM-Start) live ans Frontend.
-    Timeout: 30 Sekunden ohne Event → Verbindung schließen.
+
+    Patch 114a: Heartbeat alle 5 s. Frontend-Watchdog wird bei jedem Heartbeat
+    zurückgesetzt, damit langsame CPU-Reranker-Läufe nicht den 15-s-Timeout auslösen.
+    Harte Obergrenze 300 s verhindert leaks.
     """
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id ist erforderlich")
@@ -2613,11 +2643,20 @@ async def sse_events(session_id: str = ""):
     q = bus.subscribe_sse(session_id)
 
     async def event_generator():
+        # Patch 114a: Retry-Hint für EventSource-Reconnect nach Disconnect.
+        yield "retry: 5000\n\n"
+        loop = asyncio.get_event_loop()
+        start_ts = loop.time()
+        MAX_DURATION = 300.0  # s — harte Obergrenze
+        HEARTBEAT_INTERVAL = 5.0  # s
         try:
             while True:
+                if loop.time() - start_ts > MAX_DURATION:
+                    # Stream sauber schließen — Client kann neu verbinden
+                    yield "event: timeout\ndata: max_duration\n\n"
+                    break
                 try:
-                    event = await asyncio.wait_for(q.get(), timeout=30.0)
-                    # Event-Typ auf SSE-Nachricht mappen
+                    event = await asyncio.wait_for(q.get(), timeout=HEARTBEAT_INTERVAL)
                     msg_template = _SSE_MESSAGES.get(event.type)
                     if msg_template:
                         message = msg_template.format(**event.data) if '{' in msg_template else msg_template
@@ -2627,8 +2666,9 @@ async def sse_events(session_id: str = ""):
                         payload = json.dumps({"type": "done", "message": ""}, ensure_ascii=False)
                         yield f"data: {payload}\n\n"
                 except asyncio.TimeoutError:
-                    # 30 Sekunden ohne Event → Verbindung schließen
-                    break
+                    # Patch 114a: Heartbeat statt Disconnect — hält die Verbindung
+                    # warm und signalisiert dem Client, dass der Server noch lebt.
+                    yield "event: heartbeat\ndata: processing\n\n"
         finally:
             bus.unsubscribe_sse(session_id, q)
 

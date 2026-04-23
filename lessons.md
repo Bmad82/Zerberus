@@ -101,6 +101,27 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - **`"general"` als Detection-Trigger behalten:** Nicht nur `"auto"`. Grund: Alt-Uploads mit `general` sind meist unbewusst gesetzt, die Auto-Detection verbessert ohne Opt-In. User-Override (narrative/technical/…) gewinnt immer.
 - **Python `\u{…}` in HTML-Strings bricht Parse:** Emoji-Literale wie `\u{1F50D}` sind ES6+ JS-Syntax, aber Python's String-Parser erwartet nach `\u` genau 4 Hex-Chars → `SyntaxError: truncated \uXXXX escape` beim Import. Entweder Emoji direkt einfügen oder `\\u{1F50D}` (doppel-escape). Analog zur Patch-69c/100-Lesson zu `\n` in JS-Strings.
 
+## GPU / PyTorch (Patch 111b)
+- **pip default = CPU-only:** `pip install torch` zieht `2.x.y+cpu`. Für GPU ist der CUDA-Extra-Index Pflicht: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 --force-reinstall`. CUDA-Version per `nvidia-smi` (Treiber rückwärtskompatibel, Driver 591.44 = CUDA 13.1 akzeptiert alle cu11x/cu12x-Wheels). RTX 3060 läuft stabil mit cu124 + torch 2.5.1.
+- **typing-extensions Ripple:** `torch 2.5.1+cu124` downgradet `typing_extensions` auf 4.9.0, `cryptography>=46` verlangt aber 4.13.2+. Nach jedem torch-Reinstall prüfen: `pip install --upgrade "typing-extensions>=4.13.2"`. Sichtbares Symptom: `ImportError: cannot import name 'TypeIs' from 'typing_extensions'`.
+- **`+cu124`-Suffix als Beweis:** `pip list | grep torch` muss `torch 2.5.1+cu124` zeigen (mit Plus-Suffix). Ohne Suffix = CPU-only oder noch aus der `-orch`-Umbenennung mitten im Install. Erst `torch.cuda.is_available() == True` UND `torch.cuda.get_device_name(0)` zeigt echten GPU-Status.
+- **Frei VRAM nach Whisper/BERT:** Auf 12-GB-Karte bleiben nach Windows-Desktop-Usage ~11 GB frei. MiniLM + bge-reranker-v2-m3 brauchen zusammen <2 GB — reichlich Luft. Patch 111's 2-GB-Threshold ist konservativ aber korrekt.
+
+## DB-Dedup / Insert-Guard (Patch 113a)
+- **Schema-Check vor Dedup-Query:** Die `interactions`-Tabelle hat `content`+`role`, NICHT `user_message` wie oft in externen Beispielen angenommen. Vor jedem Dedup-SQL `PRAGMA table_info(interactions)` laufen lassen.
+- **Dedup-Scope ≠ alle Rollen:** `whisper_input` hat häufig `session_id=NULL` (Dictate-Direct-Logging) — nur `role IN ('user','assistant')` mit konkreter session_id deduplizieren. Der Insert-Guard in `store_interaction` prüft session_id vorher explizit, damit Whisper-Log-Pipeline unberührt bleibt.
+- **30-Sekunden-Fenster ist der Sweet Spot:** LLM-Call + Retry-Button bei Timeout liegen typischerweise 15-45s auseinander. 30s fängt die meisten Double-Inserts ab ohne legitime schnelle Nachsendungen zu blocken.
+
+## Whisper Sentence-Repetition (Patch 113b / W-001b)
+- **Wort-Dedup ≠ Satz-Dedup:** `detect_phrase_repetition` (Patch 102) cappt N-Gramme bis 6 Wörter. Ganze Sätze > 6 Wörter ("Ich gehe nach Hause.") rutschten durch. `detect_sentence_repetition` splittet an `(?<=[.!?])\s+` und dedupliziert **konsekutive** Sätze (case-insensitive, whitespace-collapsed).
+- **Reihenfolge zwingend:** Erst Mikro (Phrase), dann Makro (Sentence) — sonst würden Sätze mit internen Phrase-Loops erst korrekt gekürzt und dann eventuell zu früh als gleich erkannt.
+- **Nicht-konsekutive behalten:** `"A. B. A."` bleibt `"A. B. A."` (Refrain-Safe). Nur direkte Nachbarschaft fällt weg.
+
+## SSE-Heartbeat + Watchdog-Reset (Patch 114a)
+- **Heartbeat statt fixem Timeout:** Server sendet alle 5 s `event: heartbeat\ndata: processing\n\n` während LLM-Verarbeitung. Frontend `addEventListener('heartbeat', …)` setzt den 15-s-Watchdog zurück. Hard-Stop bei 120 s total verhindert Leaks. CPU-Fallback (kein GPU) bleibt so bis zum harten Limit funktionsfähig, GPU-Pfad bekommt straffe 15-s-UX.
+- **`retry: 5000` am Stream-Anfang:** EventSource-Reconnect-Interval ändert sich dauerhaft für diese Verbindung (SSE-Spec). 5 s ist zahm genug um Mobile-Reconnect-Stürme zu vermeiden.
+- **`window.__nalaSseWatchdogReset` als loses Coupling:** Das SSE-Listener-Binding lebt sessionübergreifend, aber der Watchdog gehört zu einer einzelnen fetch-Transaktion. Global-Funktion-Pointer (null wenn kein Request läuft) erlaubt das Cross-Wire ohne harte Abhängigkeit.
+
 ## Dateinamen-Konvention (Patch 100)
 - Projektspezifische CLAUDE.md IMMER als `CLAUDE_[PROJEKTNAME].md` benennen
 - Gleiches für Supervisor-Briefing: `SUPERVISOR_[PROJEKTNAME].md`

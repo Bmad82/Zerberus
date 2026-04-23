@@ -6,7 +6,7 @@ import uuid
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, joinedload
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text, select, func, text
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from zerberus.core.config import get_settings
 
@@ -148,6 +148,29 @@ async def store_interaction(
     effective_profile_key = profile_key if profile_key else (profile_name or None)
 
     async with _async_session_maker() as session:
+        # Patch 113a: Dedup-Guard — identische Nachricht innerhalb 30 s für dieselbe Session
+        # überspringen. Verhindert Doppel-Inserts bei Timeout-Retries + Parallelpfaden
+        # (legacy.py + orchestrator.py). Kein Guard für `whisper_input` mit session_id=NULL,
+        # weil das Diagnose-Logging aus der Dictate-Tastatur ist (eigene Pipeline).
+        if session_id and role in ("user", "assistant"):
+            dup_stmt = (
+                select(Interaction.id)
+                .where(
+                    Interaction.session_id == session_id,
+                    Interaction.role == role,
+                    Interaction.content == content,
+                    Interaction.timestamp >= datetime.utcnow() - timedelta(seconds=30),
+                )
+                .limit(1)
+            )
+            existing = (await session.execute(dup_stmt)).scalar_one_or_none()
+            if existing is not None:
+                logger.warning(
+                    f"[DEDUP-113] Duplikat erkannt (role={role}, session={session_id[:8]}, "
+                    f"id={existing}), überspringe Insert"
+                )
+                return
+
         interaction = Interaction(
             session_id=session_id,
             profile_name=profile_name or "",

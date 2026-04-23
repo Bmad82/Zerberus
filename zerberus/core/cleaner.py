@@ -94,6 +94,32 @@ def detect_phrase_repetition(text: str,
             words = result
     return ' '.join(words)
 
+def detect_sentence_repetition(text: str) -> str:
+    """
+    Patch 113b (W-001b): Entfernt konsekutive Satz-Wiederholungen.
+
+    Beispiel: 'Ich gehe nach Hause. Ich gehe nach Hause.' → 'Ich gehe nach Hause.'
+    Nicht-konsekutive Wiederholungen bleiben erhalten (z.B. Refrain in Lyrics).
+    Läuft NACH detect_phrase_repetition (erst Mikro-, dann Makro-Dedup).
+    """
+    if not text:
+        return text
+    # Split an . ! ? gefolgt von Whitespace. Interpunktion bleibt am Satz hängen.
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    if len(sentences) < 2:
+        return text
+    deduped = [sentences[0]]
+    for s in sentences[1:]:
+        # Normalisiert vergleichen: lowercase + whitespace-collapsed
+        norm_curr = re.sub(r'\s+', ' ', s.strip().lower())
+        norm_prev = re.sub(r'\s+', ' ', deduped[-1].strip().lower())
+        if norm_curr and norm_curr == norm_prev:
+            logger.warning(f"[W-001b] Satz-Wiederholung entfernt: '{s[:60]}'")
+            continue
+        deduped.append(s)
+    return ' '.join(deduped)
+
+
 def clean_transcript(text: str) -> str:
     """Wendet alle Cleaner-Regeln an."""
     if not text:
@@ -140,6 +166,8 @@ def clean_transcript(text: str) -> str:
     enabled, min_len, max_len, max_reps = _get_repetition_filter_settings()
     if enabled:
         text = detect_phrase_repetition(text, min_len, max_len, max_reps)
+        # Patch 113b (W-001b): Satz-Dedup nach Wort-/Phrasen-Dedup (erst Mikro, dann Makro).
+        text = detect_sentence_repetition(text)
     text = fuzzy_correct(text)
     return text.strip()
 

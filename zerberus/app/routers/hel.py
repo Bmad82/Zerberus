@@ -91,13 +91,11 @@ async def debug_trace(session_id: str, request: Request):
             last_assistant = m
             break
 
-    # Aktive Konfiguration (aus get_settings und config.json)
+    # Patch 112: config.yaml ist Single Source of Truth. config.json nur noch
+    # als Legacy-Hinweis anzeigen, falls Datei noch existiert.
     settings = get_settings()
-    config_json = {}
     config_json_path = Path("config.json")
-    if config_json_path.exists():
-        with open(config_json_path, "r") as f:
-            config_json = jsonlib.load(f)
+    legacy_json_present = config_json_path.exists()
 
     return {
         "session_id": session_id,
@@ -109,7 +107,7 @@ async def debug_trace(session_id: str, request: Request):
                 "temperature": settings.legacy.settings.ai_temperature,
                 "threshold": settings.legacy.settings.threshold_length,
             },
-            "from_json": config_json.get("llm", {}),
+            "legacy_config_json_present": legacy_json_present,
         },
         "active_modules": ["emotional", "nudge", "preparer", "rag"],  # später dynamisch
     }
@@ -136,9 +134,9 @@ async def debug_state():
         result = await session.execute(text("SELECT COUNT(DISTINCT session_id) FROM interactions"))
         session_count = result.scalar() or 0
 
-    # Config‑Hash
+    # Patch 112: Hash von config.yaml (Single Source of Truth)
     config_hash = None
-    config_path = Path("config.json")
+    config_path = Path("config.yaml")
     if config_path.exists():
         with open(config_path, "rb") as f:
             config_hash = hashlib.sha256(f.read()).hexdigest()[:8]
@@ -160,7 +158,6 @@ async def debug_state():
 WHISPER_CLEANER_PATH = Path("whisper_cleaner.json")
 FUZZY_DICT_PATH = Path("fuzzy_dictionary.json")
 DIALECT_PATH = Path("dialect.json")
-CONFIG_PATH = Path("config.json")
 SYSTEM_PROMPT_PATH = Path("system_prompt.json")
 
 # HTML-Template mit HTML-Entities für Emojis
