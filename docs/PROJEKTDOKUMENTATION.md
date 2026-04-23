@@ -2860,16 +2860,18 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 - 118a: Decision-Boxes in Nala (`[DECISION][OPTION:x]Label[/DECISION]` → klickbare Buttons)
 - 118b: Neon Kadath indiziert (category=lore), RAG-Eval 15 JA / 5 TEILWEISE / 0 NEIN, sync_repos.ps1 erstellt, Repo-Sync-Pflicht in CLAUDE_ZERBERUS.md
 
-**Phase 4 Start (119–120):**
+**Phase 4 Start (119–121):**
 - 119: Whisper Docker Auto-Restart Watchdog (whisper_watchdog.py, Hel-Button, 116 Tests grün)
 - 119b: Hotfix — PROJEKTDOKUMENTATION.md-Pflichtschritt in CLAUDE_ZERBERUS.md verankert + Patches 101–119 nachgetragen, sync_repos.ps1 auf `docs/PROJEKTDOKUMENTATION.md` korrigiert
 - 120: "Ach-laber-doch-nicht"-Guard (`zerberus/hallucination_guard.py`, Mistral Small 3 via OpenRouter, zustandslos, fail-open, SKIP bei <50 Tokens, WARNUNG haengt Qualitaetshinweis an die Antwort). W-001b Long-Subsequence-Fix (fing bisher nur 6-Wort-Phrasen und Saetze mit Interpunktion — jetzt auch lange 17–19-Wort-Loops ohne Punkte). Neue Architektur-Doku `docs/AUDIO_SENTIMENT_ARCHITEKTUR.md` mit 5-Schicht-Pipeline (Whisper → BERT → Prosodie [GEPLANT] → DeepSeek → Guard). **138 Tests grün** (+22: 8 Long-Subseq + 14 Guard).
+- 121: Konsolidierung — Memory-Router-Import-Fix (main.py Modul-Loader prüft `router.py`-Existenz und loggt Helper-Pakete als INFO-Skip statt ERROR), RAG Einzel-Delete (Patch 116) verifiziert — Confirm-Dialog, DELETE-Endpoint, Retrieval-Filter, Reindex-Physikal-Cleanup konsistent. Lessons Session 2026-04-23 nachgetragen. 138 Tests grün (keine neuen Tests — trivialer Import-Guard + Doku).
 
-**Aktueller Stand nach Patch 120:**
+**Aktueller Stand nach Patch 121:**
 - Tests: 138 passed
 - RAG-Eval: 15 JA / 5 TEILWEISE / 0 NEIN
 - GPU: torch 2.5.1+cu124, RTX 3060 12GB
 - Modelle: deepseek/deepseek-v3.2 (Haupt), mistralai/mistral-small-24b-instruct-2501 (Guard), beide via OpenRouter
 - Repos: Zerberus (public), Ratatoskr (doc-mirror), Claude (global templates)
+- Serverstart: sauber, keine Modul-Loader-Errors mehr
 
-*Stand: 2026-04-23, Patch 120 — Phase 4 in Arbeit.*
+*Stand: 2026-04-23, Patch 121 — Phase 4 in Arbeit.*

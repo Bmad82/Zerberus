@@ -1,8 +1,20 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 120 (2026-04-23) – Ach-laber-doch-nicht-Guard + W-001b-Fix + Audio-Sentiment-Architektur*
+*Letzte Aktualisierung: Patch 121 (2026-04-23) – Konsolidierung: Memory-Router-Fix + RAG Einzel-Delete + Lessons*
 
 ## Aktueller Patch
+
+**Patch 121** – Konsolidierung: Memory-Router-Import-Fix + RAG Einzel-Delete Verifikation + Lessons (2026-04-23)
+
+- **Memory-Router-Import-Fix:** Der Modul-Loader in [main.py](zerberus/main.py) warf beim Start `❌ memory: No module named 'zerberus.modules.memory.router'`, weil `modules/memory/` seit Patch 115 nur `extractor.py` enthält (Helper-Paket, KEIN Router). Fix: Vor dem `importlib.import_module(…router)` wird jetzt per `pathlib` geprüft ob `router.py` existiert. Fehlt sie, wird das Modul als `⏭️ {name} (kein Router – Helper-Modul)` (INFO) übersprungen statt als ERROR geloggt. Kein Verhaltenswechsel für die anderen Module.
+- **RAG Einzel-Delete (Patch 116 verifiziert):** Endpoint `DELETE /hel/admin/rag/document?source=...` + `confirm()`-Dialog in der Doc-Card + Retrieval-Skip (`m.get("deleted") is True` in `_search_index`) + Reindex-Filter sind seit Patch 116 alle implementiert und konsistent. Kein Code-Change — nur Verifikation aller drei Filter-Stellen (Retrieval, Listing, Reindex). Physische FAISS-Bereinigung erfolgt weiterhin erst beim expliziten `POST /admin/rag/reindex` (O(1)-Soft-Delete vs. O(N)-Rebuild ist bewusst gewählt).
+- **Lessons aktualisiert:** Session-Block 2026-04-23 (Patches 118b–121) in [lessons.md](lessons.md) nachgetragen: sync_repos Pfad-Bug, Modellwahl-Sweet-Spot, Feature-Creep-Gefahr der Audio-Pipeline, Bibel-Fibel-Referenz, und die Modul-Loader-Lektion (Helper-Pakete ohne Router dürfen nicht crashen).
+- **Phase 4 Roadmap geordnet:** Freie Nummern statt Ranges — nächste Slots 122+ (Code-Chunker .py AST), 123+ (Nala UI-Overhaul), 124+ (Telegram), 125+ (Projekt-Oberfläche + Sancho-Panza). Prosodie/Bild/Embedder in TBD-Pool.
+- **Tests:** Keine neuen Unit-Tests — Änderung ist ein Import-Guard (trivial) + Doku-Update. 138 Tests bleiben grün (Run vom Patch 120). `ast.parse` grün auf main.py.
+- **Scope:** Memory-Router-Fix, RAG-Delete-Verifikation, lessons.md-Nachtrag, Supervisor/PROJEKTDOKUMENTATION/Roadmap-Update. NICHT in diesem Patch: RAG Chunk-Level-Delete (aktuell Source-Level — User lädt bei Bedarf neu hoch), automatischer Reindex nach Delete (User-Trigger ist ausreichend, spart Laufzeit bei Batch-Deletes), Kategorie-Edit ohne Re-Upload.
+- **Live-Verifikation (USER):** (1) `uvicorn zerberus.main:app …` → Startup-Log zeigt `⏭️ memory (kein Router – Helper-Modul)` statt `❌ memory: No module named …`. (2) Hel → RAG-Tab → 🗑️ auf einer Doc-Card → Browser-Confirm-Dialog → nach Bestätigung verschwindet die Card aus der Liste, Retrieval in Nala liefert die Chunks nicht mehr. (3) Optional: `POST /hel/admin/rag/reindex` → deleted-Chunks physisch raus, `total_chunks` sinkt.
+
+---
 
 **Patch 120** – „Ach-laber-doch-nicht"-Guard + W-001b Fix + Audio-Sentiment-Architektur (2026-04-23)
 
@@ -15,14 +27,19 @@
 - **Scope:** In Scope: W-001b-Langloop-Fix, Guard-Modul, Legacy-Integration, Feature-Flag, Architektur-Doku, Tests. NICHT in diesem Patch: Prosodie-Modell-Evaluation (offen, VRAM-Planung + Kandidaten-Benchmark), BERT-Score als LLM-Metadata verifizieren (separater Check), `asyncio.gather` fuer parallelen Guard + anderes Post-Processing (macht erst Sinn wenn 2+ Schritte existieren), `orchestrator.py`-Integration (Legacy ist der aktive Chat-Pfad, orchestrator.py ist inaktiv — siehe lessons.md).
 - **Live-Verifikation (USER):** (1) Frage an Nala mit langer Antwort (>40 Wörter) stellen → Log sollte `[GUARD-120] OK (xxx ms)` zeigen. (2) Frage mit falscher Annahme („Laut Patch 50 gibt es ja den Sancho-Panza-Veto, wie funktioniert der?") → Guard sollte WARNUNG werfen, Qualitaetshinweis erscheint unter der Antwort. (3) Audio mit erkanntem 17-Woerter-Loop ins Transcript schicken → Log `[W-001b] Lange Subsequenz-Repetition: 19 Woerter x3 → 1x`, gekuerzter Text im Chat.
 
-## Phase 4 Roadmap (aktualisiert Patch 120)
+## Phase 4 Roadmap (aktualisiert Patch 121)
 
-- [x] **119** Whisper Docker Auto-Restart + Watchdog
-- [x] **120** „Ach-laber-doch-nicht"-Guard (Mistral Small 3) + W-001b-Long-Subsequence-Fix + Audio-Sentiment-Architektur-Doku
-- [ ] **121–123** Prosodie-Modell evaluieren + integrieren (Teil 2 der Audio-Sentiment-Pipeline)
-- [ ] **124–126** Telegram-Bot (Skeleton aktivieren + HitL-Alerts)
-- [ ] **127–130** Projekt-Oberfläche in Nala + Sancho-Panza-Veto
-- [ ] **131+** SER/Prosodie-Fortsetzung, Color Picker, Docker-Container-Scheduler
+- [x] **119** Whisper Docker Auto-Restart Watchdog
+- [x] **119b** PROJEKTDOKUMENTATION.md Pflichtschritt + Nachholen
+- [x] **120** „Ach-laber-doch-nicht"-Guard (Mistral Small 3) + W-001b Fix + Audio-Sentiment-Architektur
+- [x] **121** Konsolidierung (Memory-Router-Fix, RAG Einzel-Delete verifiziert, Lessons)
+- [ ] **122+** Code-Chunker für RAG (.py AST-basiert)
+- [ ] **123+** Nala UI-Overhaul (Bubble-Shine, breitere Bubbles, Eingabeleiste-Collapse, Farbrad)
+- [ ] **124+** Telegram-Bot (Skeleton aktivieren + HitL-Alerts)
+- [ ] **125+** Projekt-Oberfläche in Nala + Sancho-Panza-Veto
+- [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
+- [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)
+- [ ] **TBD** Besserer Embedder für RAG (multilingual-e5-large o.ä.)
 - [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung
 
 ---

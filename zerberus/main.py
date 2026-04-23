@@ -182,6 +182,11 @@ async def lifespan(app: FastAPI):
             module_name = module_info.name
             mod_cfg = settings.modules.get(module_name, {})
             if mod_cfg.get("enabled", True):
+                # Module ohne router.py (z.B. "memory" — reines Helper-Paket) graceful ueberspringen
+                router_file = modules_path / module_name / "router.py"
+                if not router_file.exists():
+                    logger.info(f"  ⏭️  {module_name} (kein Router – Helper-Modul)")
+                    continue
                 try:
                     module = importlib.import_module(f"zerberus.modules.{module_name}.router")
                     if hasattr(module, "router"):

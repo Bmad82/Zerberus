@@ -150,3 +150,15 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Gleiches für Supervisor-Briefing: `SUPERVISOR_[PROJEKTNAME].md`
 - In Patch-Prompts IMMER den vollen Dateinamen verwenden
 - Hintergrund: Patch 100 — Claude Code hat die projektspezifische Datei mit der globalen verwechselt
+
+## Session 2026-04-23 (Patches 118b–121)
+
+- **Ratatoskr-Sync vergessen:** sync_repos.ps1 erstellt (Patch 118b), PROJEKTDOKUMENTATION.md lag in docs/ nicht im Root (Pfad-Bug in sync_repos.ps1 gefixt Patch 119b)
+- **PROJEKTDOKUMENTATION.md Pflichtschritt:** Muss nach jedem Patch aktualisiert werden — als Regel in CLAUDE_ZERBERUS.md verankert
+- **Patch-Nummern:** Keine Nummern freihalten für "Reserve" — lückenlos durchnummerieren, bei Bedarf spätere Patches mit Suffix (127a etc.)
+- **Modellwahl:** Nicht automatisch das neueste/größte Modell nehmen. Für jeden Job den Sweet Spot finden: Guard = Mistral Small 3 (billig, schnell), Prosodie = Gemma 4 E4B (Audio-fähig), Transkription = Whisper (spezialisiert)
+- **Feature-Creep-Gefahr:** Audio-Sentiment-Pipeline braucht eigenes Architektur-Dokument (docs/AUDIO_SENTIMENT_ARCHITEKTUR.md) damit der Scope klar bleibt
+- **Free-Tier-Modelle:** Sind Werbung, überlastet, schlechte Qualität. Paid bevorzugen, auch wenn nur Cents.
+- **Bibel-Fibel:** Token-Optimierungs-Regelwerk (im Claude-Projekt). Potenzial für komprimierte System-Prompts an DeepSeek → weniger Tokens pro Call
+- **W-001b lebt:** Satz-Repetitions-Loop wurde vom Patch 113b Regex nicht gefangen. Subsequenz-Matcher (Patch 120) als Ergänzung nötig.
+- **Modul-Loader darf nicht hart crashen:** `main.py` iteriert `pkgutil.iter_modules()` und importiert stur `modules/<x>/router.py`. Helper-Pakete ohne Router (z.B. `memory` seit Patch 115 — nur `extractor.py`) müssen vor dem Import per `router.py`-Existenzcheck abgefangen und als INFO-Skip geloggt werden, nicht als ERROR. Sonst verwirrt der Serverstart-Output.
