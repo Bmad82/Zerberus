@@ -282,6 +282,27 @@ async def chat_completions(
         await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
         answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
 
+    # Patch 120: Ach-laber-doch-nicht Guard — fail-open, haengt bei WARNUNG einen Qualitaetshinweis an.
+    if settings.features.get("hallucination_guard", True):
+        try:
+            from zerberus.hallucination_guard import check_response
+            _rag_hits_local = locals().get("rag_hits") or []
+            _guard_ctx = ""
+            if _rag_hits_local:
+                _guard_ctx = "\n".join(
+                    f"[{h.get('source','?')}|{h.get('category','general')}] {h.get('text','')}"
+                    for h in _rag_hits_local[:5]
+                )
+            _guard = await check_response(
+                user_message=last_user_msg,
+                assistant_response=answer,
+                rag_context=_guard_ctx,
+            )
+            if _guard.get("verdict") == "WARNUNG":
+                answer = f"{answer}\n\n---\n⚠️ *Qualitaetshinweis: {_guard.get('reason', 'Guard hat angeschlagen.')}*"
+        except Exception as _guard_err:
+            logger.warning(f"[GUARD-120] fail-open, Ausnahme wurde ignoriert: {_guard_err}")
+
     try:
         await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
         await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)

@@ -120,6 +120,48 @@ def detect_sentence_repetition(text: str) -> str:
     return ' '.join(deduped)
 
 
+def detect_long_subsequence_repetition(text: str, min_len: int = 8) -> str:
+    """
+    Patch 120 (W-001b Erweiterung): Entfernt lange zusammenhaengende Subsequenz-
+    Loops die weder vom Phrase-Filter (max_len=6 Woerter, Patch 102) noch vom
+    Satz-Filter (braucht Interpunktion, Patch 113b) gefasst werden.
+
+    Beispiel (alles in einem Atemzug, keine Punkte):
+        'in der mittagspause wenn ich nach hause fahre ... cool
+         in der mittagspause wenn ich nach hause fahre ... cool
+         in der mittagspause wenn ich nach hause fahre'
+    → 'in der mittagspause wenn ich nach hause fahre ... cool in der mittagspause ...'
+      (Nur eine vollstaendige Kopie + Rest-Prefix bleibt.)
+
+    Algorithmus: Sucht die groesste Periode P (min_len ≤ P ≤ n/2), fuer die
+    words[0:P] == words[P:2P] gilt — also direkte Wiederholung vom Anfang weg.
+    Greift auf den ersten Loop der am Textanfang sitzt (dominanter Whisper-
+    Fehlermodus). Staffelungen mitten im Text bleiben dem Phrase-Filter ueberlassen.
+    """
+    if not text:
+        return text
+    words = text.split()
+    n = len(words)
+    if n < 2 * min_len:
+        return text
+    max_period = n // 2
+    for period in range(max_period, min_len - 1, -1):
+        if words[:period] == words[period:2 * period]:
+            # Zaehle alle aufeinanderfolgenden vollstaendigen Wiederholungen
+            reps = 2
+            while (reps + 1) * period <= n and \
+                    words[reps * period:(reps + 1) * period] == words[:period]:
+                reps += 1
+            tail = words[reps * period:]
+            keep = words[:period] + tail
+            logger.warning(
+                f"[W-001b] Lange Subsequenz-Repetition: {period} Woerter x{reps} "
+                f"→ 1x (+{len(tail)} Woerter Rest)"
+            )
+            return ' '.join(keep)
+    return text
+
+
 def clean_transcript(text: str) -> str:
     """Wendet alle Cleaner-Regeln an."""
     if not text:
@@ -168,6 +210,9 @@ def clean_transcript(text: str) -> str:
         text = detect_phrase_repetition(text, min_len, max_len, max_reps)
         # Patch 113b (W-001b): Satz-Dedup nach Wort-/Phrasen-Dedup (erst Mikro, dann Makro).
         text = detect_sentence_repetition(text)
+        # Patch 120 (W-001b Erweiterung): Lange zusammenhaengende Subsequenz-Loops
+        # (17-Woerter-Saetze ohne Interpunktion, die weder Phrase- noch Satz-Filter fassen).
+        text = detect_long_subsequence_repetition(text)
     text = fuzzy_correct(text)
     return text.strip()
 

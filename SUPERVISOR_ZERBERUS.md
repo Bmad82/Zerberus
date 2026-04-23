@@ -1,8 +1,31 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 119 (2026-04-23) – Phase 4 gestartet, Whisper-Watchdog live*
+*Letzte Aktualisierung: Patch 120 (2026-04-23) – Ach-laber-doch-nicht-Guard + W-001b-Fix + Audio-Sentiment-Architektur*
 
 ## Aktueller Patch
+
+**Patch 120** – „Ach-laber-doch-nicht"-Guard + W-001b Fix + Audio-Sentiment-Architektur (2026-04-23)
+
+- **W-001b Hotfix:** Der bestehende Repetitions-Detektor ([cleaner.py](zerberus/core/cleaner.py)) greift jetzt auch bei langen zusammenhaengenden Subsequenz-Loops ohne Interpunktion. Das war der Bug der durchrutschte: ein 17–19-Woerter-Satz („in der mittagspause wenn ich nach hause fahre ... cool") wiederholte sich 3x am Stueck — weder der Phrase-Filter (max 6 Woerter, Patch 102) noch der Satz-Filter (braucht `.!?`, Patch 113b) fanden ihn. Neue Funktion `detect_long_subsequence_repetition(text, min_len=8)` findet die groesste Periode P (min 8, max n/2) mit `words[0:P] == words[P:2P]` und kollabiert alle konsekutiven vollen Kopien auf eine; tailender Rest-Prefix bleibt erhalten. Lauft in `clean_transcript()` nach Phrase- und Satz-Dedup (erst Mikro, dann Makro, dann Mega).
+- **Ach-laber-doch-nicht Guard:** Neues Modul [`zerberus/hallucination_guard.py`](zerberus/hallucination_guard.py). `check_response(user_message, assistant_response, rag_context="")` ruft Mistral Small 3 (`mistralai/mistral-small-24b-instruct-2501`) via OpenRouter, Zero-Shot-Prompt auf Deutsch, JSON-Antwortformat `{"verdict": "OK"|"WARNUNG", "reason": "..."}`. Zustandslos — sieht NIE den Chatverlauf, nur User-Input + Antwort + optional RAG-Kontext (Top-5 Hits, 2000 Zeichen Cap). **Fail-open** an allen Fehlerpfaden (HTTP non-200, Timeout, JSON-Parse, generische Exception → verdict ERROR → Antwort geht unveraendert durch). **SKIP** bei geschaetzten <50 Tokens (~37 Woerter) — kurze Antworten lohnen den API-Call nicht. **Markdown-Code-Fences** werden vor dem JSON-Parse entfernt (`_parse_verdict`).
+- **Integration in legacy.py:** Hook nach dem LLM-Call und vor `store_interaction` (Zeile ~290), sodass die Warnung im DB-Archiv landet und dem User in der Response ausgeliefert wird. RAG-Kontext wird aus `locals().get("rag_hits")` rekonstruiert (Top-5, kurz gestrippt). Bei WARNUNG wird an `answer` ein Suffix angehaengt: `\n\n---\n⚠️ *Qualitaetshinweis: <reason>*`. Try/except um den gesamten Block — Guard kann unter keinen Umstaenden den Chat brechen.
+- **Feature-Flag:** `settings.features["hallucination_guard"]` in [config.py:149](zerberus/core/config.py) (Default `True`). Wird zusammen mit `decision_boxes` und `whisper_watchdog` hart auf True gesetzt, weil `config.yaml` gitignored ist.
+- **Architektur-Dokument:** Neues [`docs/AUDIO_SENTIMENT_ARCHITEKTUR.md`](docs/AUDIO_SENTIMENT_ARCHITEKTUR.md) beschreibt die 5-Schicht-Pipeline (Whisper → BERT → Prosodie [GEPLANT] → DeepSeek → Guard), Kandidaten-Modelle (Gemma 4 E4B, emotion2vec, wav2vec2, HuBERT, Voxtral), VRAM-Budget auf der RTX 3060, Kosten-Tabelle und Roadmap. Prosodie ist der noch fehlende Baustein — erst damit versteht Nala wirklich WIE etwas gemeint ist.
+- **Tests:** [test_cleaner.py](zerberus/tests/test_cleaner.py) um `TestLongSubsequenceRepetition` (8 Tests: Mittagspause-Beispiel, 2-/3-Kopien, Rest-Tail, min_len-Grenze, kein Loop, Empty, Single-Word, custom min_len). [test_hallucination_guard.py](zerberus/tests/test_hallucination_guard.py) mit 14 Tests (SKIP-Schwelle, fehlender API-Key, OK/WARNUNG-Parsing, Markdown-Fences, Malformed JSON, HTTP 500, Timeout, generic Exception, RAG-Kontext-Weitergabe, Modul-Konstanten). **138 passed in 11.69 s** offline (116 vorher + 22 neu, keine Regressionen). `ast.parse` grün auf allen geänderten Dateien.
+- **Scope:** In Scope: W-001b-Langloop-Fix, Guard-Modul, Legacy-Integration, Feature-Flag, Architektur-Doku, Tests. NICHT in diesem Patch: Prosodie-Modell-Evaluation (offen, VRAM-Planung + Kandidaten-Benchmark), BERT-Score als LLM-Metadata verifizieren (separater Check), `asyncio.gather` fuer parallelen Guard + anderes Post-Processing (macht erst Sinn wenn 2+ Schritte existieren), `orchestrator.py`-Integration (Legacy ist der aktive Chat-Pfad, orchestrator.py ist inaktiv — siehe lessons.md).
+- **Live-Verifikation (USER):** (1) Frage an Nala mit langer Antwort (>40 Wörter) stellen → Log sollte `[GUARD-120] OK (xxx ms)` zeigen. (2) Frage mit falscher Annahme („Laut Patch 50 gibt es ja den Sancho-Panza-Veto, wie funktioniert der?") → Guard sollte WARNUNG werfen, Qualitaetshinweis erscheint unter der Antwort. (3) Audio mit erkanntem 17-Woerter-Loop ins Transcript schicken → Log `[W-001b] Lange Subsequenz-Repetition: 19 Woerter x3 → 1x`, gekuerzter Text im Chat.
+
+## Phase 4 Roadmap (aktualisiert Patch 120)
+
+- [x] **119** Whisper Docker Auto-Restart + Watchdog
+- [x] **120** „Ach-laber-doch-nicht"-Guard (Mistral Small 3) + W-001b-Long-Subsequence-Fix + Audio-Sentiment-Architektur-Doku
+- [ ] **121–123** Prosodie-Modell evaluieren + integrieren (Teil 2 der Audio-Sentiment-Pipeline)
+- [ ] **124–126** Telegram-Bot (Skeleton aktivieren + HitL-Alerts)
+- [ ] **127–130** Projekt-Oberfläche in Nala + Sancho-Panza-Veto
+- [ ] **131+** SER/Prosodie-Fortsetzung, Color Picker, Docker-Container-Scheduler
+- [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung
+
+---
 
 **Patch 119** – Whisper Docker Auto-Restart + Phase 4 Roadmap (2026-04-23) — *Phase 4 gestartet*
 
@@ -13,16 +36,6 @@
 - **Tests:** [`zerberus/tests/test_whisper_watchdog.py`](zerberus/tests/test_whisper_watchdog.py) — 10 Tests (Health-Check 200/500/Netzwerk-Fehler, Docker-Restart Erfolg/Failure/Timeout/FileNotFound, Konstanten-Smoke-Tests). Nutzt `asyncio.run` statt `pytest-asyncio` (nicht installiert). **116 passed in 10.59 s** offline (vorher 106, +10 neu, keine Regressionen). `ast.parse` grün auf allen geänderten Python-Dateien. `node --check` grün auf beide `<script>`-Blöcke in [hel.py](zerberus/app/routers/hel.py).
 - **Scope:** In Scope: Watchdog-Modul + Lifespan-Hook, Hel-Button, Tests, Config-Flag. NICHT in diesem Patch: Docker-Scheduler-UI (Backlog 131+), Prometheus-Metriken fürs Watchdog-Verhalten, Konfigurierbares Intervall per config.yaml (aktuell hardcoded 3600 s — wenn jemand anderes Intervall will, reicht der Feature-Flag zum Abschalten + manueller Restart-Button).
 - **Live-Verifikation (USER):** (1) Server-Restart → Startup-Log zeigt `✅ Whisper-Watchdog (stuendlicher Docker-Restart aktiv)` nach dem Overnight-Scheduler. (2) Im Hel-„Systemsteuerung"-Tab sollte die neue Card sichtbar sein, Button → Toast „✅ Restart erfolgreich, Whisper antwortet wieder". Dauer insgesamt ~15 s. (3) Nach 1 h echtem Betrieb: Log-Zeile `[WATCHDOG-119] … Geplanter stuendlicher Restart` → `Container-Restart erfolgreich` → `Whisper nach Restart gesund`.
-
-## Phase 4 Roadmap (aktualisiert Patch 119)
-
-- [x] **119** Whisper Docker Auto-Restart + Watchdog
-- [ ] **120** (Reserve)
-- [ ] **121–123** „Ach-laber-doch-nicht"-Halluzinations-Detektor
-- [ ] **124–126** Telegram-Bot (Skeleton aktivieren + HitL-Alerts)
-- [ ] **127–130** Projekt-Oberfläche in Nala + Sancho-Panza-Veto
-- [ ] **131+** SER/Prosodie, Color Picker, Docker-Container-Scheduler
-- [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung
 
 ---
 

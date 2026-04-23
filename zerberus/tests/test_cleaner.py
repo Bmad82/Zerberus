@@ -1,9 +1,14 @@
 """
 Patch 102 (B-01): Tests für Whisper Phrasen-Repetition-Filter.
 Patch 113b (W-001b): Tests für Satz-Repetition-Filter.
+Patch 120 (W-001b Erweiterung): Tests für Long-Subsequence-Filter.
 """
 import pytest
-from zerberus.core.cleaner import detect_phrase_repetition, detect_sentence_repetition
+from zerberus.core.cleaner import (
+    detect_phrase_repetition,
+    detect_sentence_repetition,
+    detect_long_subsequence_repetition,
+)
 
 
 class TestPhraseRepetition:
@@ -92,3 +97,58 @@ class TestSentenceRepetition:
     def test_verschiedene_saetze_bleiben(self):
         s = "Heute war es warm. Gestern hat es geregnet. Morgen soll es schneien."
         assert detect_sentence_repetition(s) == s
+
+
+class TestLongSubsequenceRepetition:
+    """Patch 120 — lange Subsequenz-Loops ohne Interpunktion."""
+
+    def test_mittagspause_beispiel(self):
+        """Konkreter Bug aus Patch 120: 17-Woerter-Satz x3, ohne Punkte."""
+        block = (
+            "in der mittagspause wenn ich nach hause fahre wo ich frueh "
+            "mitgekriegt habe oh was ist das neu cool"
+        )
+        s = f"{block} {block} {block}"
+        result = detect_long_subsequence_repetition(s)
+        # Nur eine vollstaendige Kopie darf uebrig bleiben
+        assert result == block
+        # Block-Laenge bleibt erhalten (19 Woerter)
+        assert len(result.split()) == 19
+
+    def test_drei_kopien_mit_rest(self):
+        """Nach den Wiederholungen kommt noch Rest-Text — der bleibt erhalten."""
+        block = "a b c d e f g h i"
+        tail = "j k"
+        s = f"{block} {block} {block} {tail}"
+        result = detect_long_subsequence_repetition(s)
+        assert result == f"{block} {tail}"
+
+    def test_nur_zwei_kopien(self):
+        """Zwei Kopien reichen — alle bis auf eine entfernen."""
+        block = "eins zwei drei vier fuenf sechs sieben acht"
+        s = f"{block} {block}"
+        result = detect_long_subsequence_repetition(s)
+        assert result == block
+
+    def test_unter_min_len_bleibt(self):
+        """Wiederholungen unter 8 Woertern gehen an Phrase-Filter, nicht hier."""
+        s = "a b c a b c a b c"
+        # min_len=8, also keine Verkuerzung
+        assert detect_long_subsequence_repetition(s) == s
+
+    def test_kein_loop_bleibt_unveraendert(self):
+        s = "das ist ein ganz normaler satz ohne jede wiederholung von phrasen oder saetzen"
+        assert detect_long_subsequence_repetition(s) == s
+
+    def test_leerer_string(self):
+        assert detect_long_subsequence_repetition("") == ""
+
+    def test_single_word(self):
+        assert detect_long_subsequence_repetition("hallo") == "hallo"
+
+    def test_custom_min_len(self):
+        """min_len=4 erlaubt kuerzere Loops."""
+        block = "a b c d"
+        s = f"{block} {block} {block}"
+        result = detect_long_subsequence_repetition(s, min_len=4)
+        assert result == block
