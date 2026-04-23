@@ -2034,6 +2034,87 @@ async def get_balance():
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"OpenRouter nicht erreichbar: {e}")
 
+@router.get("/admin/huginn/config")
+async def get_huginn_config():
+    """Patch 123: Liefert die Telegram/Huginn-Konfiguration fuer den Hel-Tab.
+    Der bot_token wird maskiert zurueckgegeben."""
+    settings = get_settings()
+    mod_cfg = dict(settings.modules.get("telegram", {}) or {})
+    # Token maskieren - nie im Klartext ans Frontend
+    token = mod_cfg.get("bot_token", "") or ""
+    if token and token != "YOUR_TELEGRAM_BOT_TOKEN":
+        masked = f"{token[:4]}…{token[-4:]}" if len(token) > 8 else "***"
+    else:
+        masked = ""
+    return {
+        "enabled": bool(mod_cfg.get("enabled", False)),
+        "bot_token_masked": masked,
+        "admin_chat_id": mod_cfg.get("admin_chat_id", ""),
+        "allowed_group_ids": mod_cfg.get("allowed_group_ids", []),
+        "model": mod_cfg.get("model", "deepseek/deepseek-chat"),
+        "max_response_length": mod_cfg.get("max_response_length", 4000),
+        "group_behavior": mod_cfg.get("group_behavior", {}),
+        "hitl": mod_cfg.get("hitl", {}),
+    }
+
+
+@router.post("/admin/huginn/config")
+async def post_huginn_config(request: Request):
+    """Patch 123: Speichert Huginn-Config in config.yaml.
+    Akzeptiert nur definierte Felder - kein blindes YAML-Update."""
+    import yaml as _yaml
+    data = await request.json()
+    config_path = Path("config.yaml")
+    if not config_path.exists():
+        raise HTTPException(404, "config.yaml nicht gefunden")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = _yaml.safe_load(f) or {}
+
+    modules = cfg.setdefault("modules", {})
+    tg = modules.setdefault("telegram", {})
+
+    # Nur erlaubte Felder durchreichen
+    for key in (
+        "enabled", "admin_chat_id", "allowed_group_ids",
+        "model", "max_response_length",
+    ):
+        if key in data:
+            tg[key] = data[key]
+    if "bot_token" in data and data["bot_token"]:
+        # Token nur schreiben wenn explizit gesetzt (nicht bei maskierten "…")
+        if "…" not in str(data["bot_token"]):
+            tg["bot_token"] = data["bot_token"]
+    if "group_behavior" in data and isinstance(data["group_behavior"], dict):
+        gb = tg.setdefault("group_behavior", {})
+        for k in (
+            "respond_to_name", "respond_to_mention", "respond_to_direct_reply",
+            "autonomous_interjection", "interjection_cooldown_seconds",
+            "interjection_trigger",
+        ):
+            if k in data["group_behavior"]:
+                gb[k] = data["group_behavior"][k]
+    if "hitl" in data and isinstance(data["hitl"], dict):
+        hitl = tg.setdefault("hitl", {})
+        for k in ("code_execution", "group_join", "confirmation_timeout_seconds"):
+            if k in data["hitl"]:
+                hitl[k] = data["hitl"][k]
+
+    temp_fd, temp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            _yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        os.replace(temp_path, config_path)
+    except Exception as e:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise HTTPException(500, f"Speichern fehlgeschlagen: {e}")
+
+    return {"status": "ok"}
+
+
 @router.get("/admin/whisper_cleaner")
 async def get_whisper_cleaner():
     return JSONResponse(content=load_json_or_empty(WHISPER_CLEANER_PATH))
@@ -2356,7 +2437,17 @@ _RAG_CATEGORIES = {
 _EXTENSION_CATEGORY_MAP: dict[str, str] = {
     ".py":   "technical",
     ".js":   "technical",
+    ".jsx":  "technical",
+    ".mjs":  "technical",
+    ".cjs":  "technical",
     ".ts":   "technical",
+    ".tsx":  "technical",
+    ".html": "technical",
+    ".htm":  "technical",
+    ".css":  "technical",
+    ".scss": "technical",
+    ".sass": "technical",
+    ".sql":  "technical",
     ".json": "technical",
     ".yaml": "technical",
     ".yml":  "technical",
@@ -2424,7 +2515,18 @@ async def rag_upload(
 
     raw_bytes = await file.read()
 
+    # Patch 122: Code-Dateien (.py/.js/.ts/.html/.css/.sql/...) werden als UTF-8-Text
+    # geladen und später durch den AST/Regex-Chunker geschickt. Prose-Dateien laufen
+    # weiter durch den klassischen _chunk_text.
+    _CODE_SUFFIXES = {
+        ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+        ".html", ".htm", ".css", ".scss", ".sass", ".sql",
+        ".yaml", ".yml",
+    }
+
     if suffix in (".txt", ".md"):
+        text = raw_bytes.decode("utf-8", errors="replace")
+    elif suffix in _CODE_SUFFIXES:
         text = raw_bytes.decode("utf-8", errors="replace")
     elif suffix == ".docx":
         if not _DOCX_OK:
@@ -2479,11 +2581,78 @@ async def rag_upload(
         except Exception as e:
             raise HTTPException(422, f"CSV konnte nicht gelesen werden: {e}")
     else:
-        raise HTTPException(422, f"Nicht unterstütztes Format '{suffix}'. Erlaubt: .txt, .md, .docx, .pdf, .json, .csv")
+        raise HTTPException(
+            422,
+            f"Nicht unterstütztes Format '{suffix}'. Erlaubt: .txt, .md, .docx, .pdf, .json, .csv, "
+            f".py, .js/.jsx/.ts/.tsx, .html, .css/.scss, .yaml/.yml, .sql"
+        )
 
     text = text.strip()
     if not text:
         raise HTTPException(400, "Datei ist leer oder enthält keinen lesbaren Text.")
+
+    # Patch 122: Code-Chunker-Weiche. Für bekannte Code-Extensions versuchen wir
+    # den semantischen Chunker (AST/Regex). Liefert er etwas zurück, überspringen
+    # wir die klassische Prose-Pipeline und speichern die reichhaltige Metadata.
+    from zerberus.modules.rag.code_chunker import (
+        chunk_code, is_code_file, describe_chunker,
+    )
+
+    code_chunks: list[dict] = []
+    chunker_strategy = "prose"
+    if is_code_file(filename):
+        try:
+            code_chunks = chunk_code(text, filename)
+        except Exception as e:
+            logger.warning(f"[CHUNK-122] Code-Chunker für {filename} fehlgeschlagen: {e} — Fallback Prose")
+            code_chunks = []
+        if code_chunks:
+            chunker_strategy = describe_chunker(filename)
+
+    if code_chunks:
+        logger.info(
+            f"[RAG-Chunking-122] Doc={filename}, Category={category}, "
+            f"Strategy={chunker_strategy}, Chunks={len(code_chunks)}"
+        )
+        await _ensure_init(settings)
+        indexed = 0
+        chunk_preview: list[str] = []
+        for chunk in code_chunks:
+            content = chunk.get("content", "")
+            meta = chunk.get("metadata", {})
+            vec = await asyncio.to_thread(_encode, content)
+            word_count = len(content.split())
+            extra_meta = {
+                "source": filename,
+                "word_count": word_count,
+                "category": category,
+                "chunk_type": meta.get("chunk_type"),
+                "name": meta.get("name"),
+                "language": meta.get("language"),
+                "start_line": meta.get("start_line"),
+                "end_line": meta.get("end_line"),
+                "chunker_strategy": chunker_strategy,
+            }
+            await asyncio.to_thread(_add_to_index, vec, content, extra_meta, settings)
+            indexed += 1
+            if len(chunk_preview) < 8:
+                label = meta.get("name") or meta.get("chunk_type") or "chunk"
+                chunk_preview.append(f"{meta.get('chunk_type','?')}:{label}")
+
+        logger.info(
+            f"✅ RAG-Upload (Code) abgeschlossen: {indexed}/{len(code_chunks)} Chunks aus "
+            f"'{filename}' indiziert (Strategy: {chunker_strategy}, Kategorie: {category})"
+        )
+        return {
+            "status": "ok",
+            "filename": filename,
+            "category": category,
+            "auto_detected": auto_detected,
+            "chunks_indexed": indexed,
+            "merged_residuals": 0,
+            "chunker_strategy": chunker_strategy,
+            "chunk_preview": chunk_preview,
+        }
 
     # Patch 110: Chunking-Strategie pro Category (CHUNK_CONFIGS). chunk_size / overlap /
     # min_chunk_words kommen aus dem Profil. config.yaml `modules.rag.min_chunk_words`
@@ -2514,7 +2683,8 @@ async def rag_upload(
         word_count = len(chunk.split())
         await asyncio.to_thread(
             _add_to_index, vec, chunk,
-            {"source": filename, "word_count": word_count, "category": category},
+            {"source": filename, "word_count": word_count, "category": category,
+             "chunker_strategy": "prose"},
             settings,
         )
         indexed += 1
@@ -2530,6 +2700,8 @@ async def rag_upload(
         "auto_detected": auto_detected,
         "chunks_indexed": indexed,
         "merged_residuals": merged_count,
+        "chunker_strategy": "prose",
+        "chunk_preview": [],
     }
 
 

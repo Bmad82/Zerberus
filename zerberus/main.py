@@ -197,13 +197,32 @@ async def lifespan(app: FastAPI):
             else:
                 logger.info(f"  ⏭️  {module_name} (deaktiviert)")
 
+    # --- Huginn / Telegram (Patch 123) ---
+    try:
+        from zerberus.modules.telegram.router import startup_huginn
+        await startup_huginn(settings)
+    except Exception as _hg_err:
+        logger.warning(f"[HUGINN-123] Startup-Hook fehlgeschlagen: {_hg_err}")
+
     logger.info("=" * 60)
     logger.info("✨ ZERBERUS PRO 4.0 READY")
     logger.info("=" * 60)
-    
+
     yield
-    
+
     logger.info("🛑 Shutting down...")
+    # --- Huginn Webhook deregistrieren ---
+    try:
+        _tg_cfg = settings.modules.get("telegram", {}) or {}
+        if _tg_cfg.get("enabled", False):
+            from zerberus.modules.telegram.bot import deregister_webhook, HuginnConfig
+            _cfg = HuginnConfig.from_dict(_tg_cfg)
+            if _cfg.bot_token:
+                await deregister_webhook(_cfg.bot_token)
+                logger.info("[HUGINN-123] Webhook deregistriert")
+    except Exception:
+        pass
+
     if _scheduler is not None:
         try:
             _scheduler.shutdown(wait=False)

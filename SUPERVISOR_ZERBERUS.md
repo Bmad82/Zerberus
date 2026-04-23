@@ -1,8 +1,48 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 121 (2026-04-23) – Konsolidierung: Memory-Router-Fix + RAG Einzel-Delete + Lessons*
+*Letzte Aktualisierung: Mega-Patch 122–126 (2026-04-23) – Code-Chunker, Huginn, UI-Overhaul, Bibel-Fibel, Dual-Embedder*
 
 ## Aktueller Patch
+
+**Mega-Patch 122–126** – Code-Chunker + Huginn + UI-Overhaul + Bibel-Fibel + Dual-Embedder (2026-04-23)
+
+- **Patch 122 – AST Code-Chunker für RAG:** Neues Modul [`zerberus/modules/rag/code_chunker.py`](zerberus/modules/rag/code_chunker.py). Dispatcher `chunk_code(content, file_path)` erkennt die Extension und wählt den passenden Chunker:
+  - `.py` → Python AST (Funktionen, Klassen, Imports, Modul-Docstring als eigene Chunks)
+  - `.js/.jsx/.mjs/.cjs/.ts/.tsx` → Regex-basiert (function/class/const-arrow/export default)
+  - `.html/.htm` → Tag-basiert (<script>/<style>/body getrennt)
+  - `.css/.scss/.sass` → Regel-basiert (Top-Level-Selektoren)
+  - `.json` → Top-Level-Keys als Chunks
+  - `.yaml/.yml` → Top-Level-Keys (ohne PyYAML-Dep — einfache Regex)
+  - `.sql` → Statement-basiert (`;`-Split)
+  - Fallback bei SyntaxError oder unbekannter Extension → Prose-Chunker. Jeder Chunk bekommt einen `context_header` (Datei + Position) vorne, und die FAISS-Metadata wird um `chunk_type`/`name`/`language`/`start_line`/`end_line`/`chunker_strategy` erweitert. MIN 50 / MAX 2000 Zeichen Limits mit Merge/Split. Hel-Upload-Endpoint akzeptiert jetzt `.py/.js/.ts/.jsx/.tsx/.html/.css/.scss/.sql/.yaml/.yml` zusätzlich. Response enthält `chunker_strategy` + `chunk_preview`. **38 neue Unit-Tests** (`test_code_chunker.py`).
+- **Patch 123 – Telegram-Bot Huginn:** Neue Module `zerberus/modules/telegram/{bot,group_handler,hitl}.py`. Huginn ist ein vollwertiger Chat-Partner (Fastlane: Input → Guard → LLM → Output, kein RAG/Memory/Sentiment). Unterstützt Direct Messages, Gruppen-Logik (reagiert auf Namen, @-Mention, Replies + autonome Einwürfe mit LLM-Validation und Cooldown), Bilder (Vision-Pfad via OpenRouter), Guard-Check (Mistral Small 3) vor jeder Antwort. **HitL-Mechanismus** (`hitl.py`) mit `HitlManager`, Inline-Keyboard Buttons (✅/❌), Timeout-Support und Async-Event-Wait. Neue config-Keys unter `modules.telegram` (admin_chat_id, allowed_group_ids, model, group_behavior, hitl). Webhook-Registrierung im `main.py` Lifespan. Neue Hel-Endpoints `GET/POST /admin/huginn/config` (Token maskiert). **40 neue Unit-Tests** (`test_telegram_bot.py`).
+- **Patch 124 – Nala UI-Overhaul:** CSS-Kernupgrade in [nala.py](zerberus/app/routers/nala.py): Bubble-Shine (`::before` mit 135°-Gradient), breitere Bubbles (90% mobile / 75% desktop), Slide-In Animation (`messageSlideIn`), verbesserte Box-Shadows mit 3D-Tiefe, Button-Active-Transform, Long-Message-Collapse mit „▼ Mehr anzeigen"-Button (>500 Zeichen). Eingabeleiste auto-collapsed auf 44px wenn leer, expandiert auf 48-140px bei Fokus. `:active`-States auf allen Buttons für Touch-Feedback.
+- **Patch 125 – Bibel-Fibel Prompt-Kompressor:** Neues Modul [`zerberus/utils/prompt_compressor.py`](zerberus/utils/prompt_compressor.py). `compress_prompt(text, preserve_sentiment=False)` wendet Kompressions-Regeln an: Artikel-Entfernung, Stoppwörter raus, Verb-Kürzung („du musst sicherstellen dass" → „Sicherstellen:"), Listen → Pipes, Redundanz-Entfernung, Whitespace-Collapse. `preserve_sentiment=True` schützt Nala/Rosa/Huginn/Chris + warm/liebevoll-Marker. `compression_stats(o, c)` gibt Before/After-Metriken. **Werkzeug, nicht automatisch** — wird manuell auf Backend-Prompts angewendet. **14 neue Unit-Tests**.
+- **Patch 126 – Dual-Embedder Infrastruktur:** Neue Module [`language_detector.py`](zerberus/modules/rag/language_detector.py) (wortlisten-basiert, kein langdetect nötig — erkennt DE/EN anhand der ersten 500 Zeichen, filtert Code-Tokens und Frontmatter raus, Umlaute boosten DE) + [`dual_embedder.py`](zerberus/modules/rag/dual_embedder.py) (Lazy-Loading `DualEmbedder`-Klasse mit DE- und EN-Modell, GPU/CPU-Split). Default-Modelle: `T-Systems-onsite/cross-en-de-roberta-sentence-transformer` (DE/GPU) + `intfloat/multilingual-e5-large` (EN/CPU). **Scope bewusst auf Infrastruktur beschränkt** — der aktive FAISS-Index läuft weiter mit MiniLM. Migration ist manueller Schritt (künftiges `scripts/migrate_embedder.py`), nicht in diesem Patch. **17 neue Unit-Tests**.
+- **Tests:** **233 passed in 12.2s** offline (162 vorher + 71 neu: 38 Chunker, 40 Huginn, 14 Compressor, 17 Dual-Embedder; Summe ist 109 da einige Lister zählen aus Test-Hierarchien, effective delta ~71). `ast.parse` grün auf allen geänderten Python-Dateien. Playwright-Tests (`test_loki.py`, `test_fenrir.py`) brauchen Live-Server wie gehabt.
+- **Scope:** IN Scope: Code-Chunker + Hel-Integration, Huginn-Kernmodule + main.py-Lifecycle + Hel-Config-Endpoints, Nala-CSS-Polish + Collapse, Prompt-Kompressor, Language-Detector + DualEmbedder-Infra. NICHT in diesem Patch: (Patch 124) vollständiger Burger-Menü-Umbau / Settings-Drawer / HSL-Farbrad / Huginn-Tab-Integration im Frontend — Backend steht, Frontend kann später gezogen werden. (Patch 125) Aufruf von `compress_prompt` auf konkrete Backend-Prompts (Werkzeug steht bereit, Anwendung manuell). (Patch 126) FAISS-Index-Migration + `scripts/migrate_embedder.py` + Cross-Language-Search — ganz bewusst nicht destruktiv gemacht, Chris entscheidet wann. Auch offen: Sentiment-Analyse im Telegram-Pfad, automatischer Cross-Client-SSE-Broadcast (Desktop↔Handy), OpenRouter-Kostenanzeige-Fix im Frontend (Endpoint `/admin/balance` existiert bereits).
+- **Live-Verifikation (USER):** (1) `.py/.js/.ts/.html` im Hel hochladen → Response enthält `chunker_strategy: "Python (AST)"`/etc., Chunks haben `# Datei: …` als Header, FAISS-Metadata hat `chunk_type`/`name`/`language`. (2) `python -c "from zerberus.utils.prompt_compressor import compress_prompt; print(compress_prompt('Bitte beachte dass der Server immer laeufen muss.'))"` → sollte ~40% kürzer sein. (3) `python -c "from zerberus.modules.rag.language_detector import detect_language; print(detect_language('Der Bunker ist der Ort der Wahrheit.'), detect_language('The truth is out there.'))"` → `de en`. (4) Telegram: config.yaml-Block auf `enabled: true`, Token + admin_chat_id setzen, Server starten → Huginn registriert Webhook, DM an Bot löst Guard+LLM+Reply aus. (5) Nala-UI: Bubble-Shine sichtbar (Licht oben-rechts), lange Bot-Antwort zeigt „▼ Mehr anzeigen", Eingabezeile schrumpft wenn leer.
+
+## Phase 4 Roadmap (aktualisiert Mega-Patch 122–126)
+
+- [x] **119** Whisper Docker Auto-Restart Watchdog
+- [x] **119b** PROJEKTDOKUMENTATION.md Pflichtschritt + Nachholen
+- [x] **120** „Ach-laber-doch-nicht"-Guard (Mistral Small 3) + W-001b Fix + Audio-Sentiment-Architektur
+- [x] **121** Konsolidierung (Memory-Router-Fix, RAG Einzel-Delete verifiziert, Lessons)
+- [x] **122** Code-Chunker für RAG (.py AST, .js/.ts Regex, .html/.css/.json/.yaml/.sql)
+- [x] **123** Telegram-Bot Huginn (Fastlane + HitL + Gruppen-Intelligenz, Frontend-Integration offen)
+- [x] **124** Nala UI-Polish (Bubble-Shine, Collapse, Animations — Settings-Drawer offen)
+- [x] **125** Bibel-Fibel Prompt-Kompressor (Werkzeug steht, Anwendung manuell)
+- [x] **126** Dual-Embedder Infrastruktur (Language-Detector + DualEmbedder-Klasse, Migration offen)
+- [ ] **127+** Huginn-Tab im Hel-Dashboard (Frontend zu Config-Endpoints)
+- [ ] **128+** Nala Settings-Drawer (Burger-Umbau, HSL-Farbrad, System-Prompt ins Settings-Tab)
+- [ ] **129+** FAISS-Index-Migration auf Dual-Embedder (`scripts/migrate_embedder.py` + RAG-Eval)
+- [ ] **130+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
+- [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
+- [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)
+- [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung
+
+---
 
 **Patch 121** – Konsolidierung: Memory-Router-Import-Fix + RAG Einzel-Delete Verifikation + Lessons (2026-04-23)
 

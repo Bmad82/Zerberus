@@ -364,27 +364,93 @@ NALA_HTML = """<!DOCTYPE html>
             gap: 12px;
             background: var(--color-primary);
         }
+        /* Patch 124: Breitere Bubbles auf Mobile, enger auf Desktop. */
         .message {
-            max-width: 80%;
+            max-width: 90%;
             padding: 13px 18px;
             border-radius: 20px;
             word-wrap: break-word;
-            animation: fadeIn 0.3s;
+            animation: messageSlideIn 0.22s ease-out;
             font-size: var(--font-size-base);
+            position: relative;
+            overflow: hidden;
+        }
+        @media (min-width: 768px) {
+            .message { max-width: 75%; }
+        }
+        /* Patch 124: Subtiler Shine-Effekt (Licht von oben-rechts) auf alle Bubbles. */
+        .message::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 70%;
+            height: 60%;
+            background: linear-gradient(
+                135deg,
+                rgba(255,255,255,0.14) 0%,
+                rgba(255,255,255,0.05) 40%,
+                transparent 65%
+            );
+            border-radius: inherit;
+            pointer-events: none;
+            z-index: 0;
+        }
+        .message > * { position: relative; z-index: 1; }
+        .message:active::before { background: linear-gradient(135deg, rgba(255,255,255,0.20), rgba(255,255,255,0.08) 45%, transparent 70%); }
+        @keyframes messageSlideIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
         }
         .user-message {
             align-self: flex-end;
             color: var(--bubble-user-text);
             background: var(--bubble-user-bg);
             border-radius: 18px 18px 4px 18px;
-            box-shadow: 0 1px 6px rgba(240,180,41,0.15);
+            box-shadow: 0 2px 6px rgba(240,180,41,0.18), 0 1px 2px rgba(0,0,0,0.15);
         }
         .bot-message {
             align-self: flex-start;
             background: var(--bubble-llm-bg);
             color: var(--bubble-llm-text);
             border-radius: 18px 18px 18px 4px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            box-shadow: 0 3px 8px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+        }
+        /* Patch 124: Long-message Collapse mit Gradient-Fade + "Mehr"-Button. */
+        .message.collapsed { max-height: 220px; overflow: hidden; }
+        .message.collapsed::after {
+            content: '';
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            height: 60px;
+            background: linear-gradient(to bottom, transparent, var(--bubble-llm-bg));
+            pointer-events: none;
+            z-index: 2;
+        }
+        .message.user-message.collapsed::after {
+            background: linear-gradient(to bottom, transparent, var(--bubble-user-bg));
+        }
+        .expand-toggle {
+            display: block;
+            margin-top: 6px;
+            padding: 6px 10px;
+            min-height: 32px;
+            background: rgba(240,180,41,0.14);
+            border: 1px solid rgba(240,180,41,0.35);
+            color: var(--color-gold);
+            border-radius: 8px;
+            font-size: 0.85em;
+            cursor: pointer;
+            position: relative;
+            z-index: 3;
+        }
+        .expand-toggle:active { background: rgba(240,180,41,0.22); transform: translateY(1px); }
+        /* Patch 124: Buttons wirken leicht erhoben - 3D-Feedback bei :active. */
+        button:not(.expand-toggle), .btn {
+            transition: transform 0.12s ease, box-shadow 0.12s ease;
+        }
+        button:not(.expand-toggle):active, .btn:active {
+            transform: translateY(1px);
         }
         .input-area {
             display: flex;
@@ -403,7 +469,7 @@ NALA_HTML = """<!DOCTYPE html>
             gap: 10px;
             align-items: flex-end;
         }
-        /* Patch 67: textarea statt input */
+        /* Patch 67: textarea statt input. Patch 124: collapsed/expanded Sanft-Toggle. */
         #text-input {
             flex: 1;
             padding: 10px 16px;
@@ -413,15 +479,16 @@ NALA_HTML = """<!DOCTYPE html>
             outline: none;
             background: var(--color-primary);
             color: var(--color-text-light);
-            transition: border 0.2s, box-shadow 0.2s;
+            transition: border 0.2s, box-shadow 0.2s, height 0.2s ease, min-height 0.2s ease;
             resize: none;
             overflow-y: hidden;
-            min-height: 48px;
+            min-height: 44px;
             max-height: 140px;
             line-height: 1.45;
             font-family: inherit;
         }
-        #text-input:focus { border-color: var(--color-gold); box-shadow: 0 0 0 2px rgba(240,180,41,0.15); }
+        #text-input:not(:focus):placeholder-shown { min-height: 44px; max-height: 44px; }
+        #text-input:focus { border-color: var(--color-gold); box-shadow: 0 0 0 2px rgba(240,180,41,0.15); min-height: 48px; max-height: 140px; }
         .send-btn, .mic-btn {
             width: 50px;
             height: 50px;
@@ -1948,6 +2015,20 @@ NALA_HTML = """<!DOCTYPE html>
         const wrapper = document.createElement('div');
         wrapper.className = sender === 'user' ? 'msg-wrapper user-wrapper' : 'msg-wrapper';
         wrapper.appendChild(msgDiv);
+
+        // Patch 124: Lange Messages kollabieren, "Mehr"-Button zum Ausklappen.
+        if (text && text.length > 500) {
+            msgDiv.classList.add('collapsed');
+            const toggleBtn = document.createElement('button');
+            toggleBtn.type = 'button';
+            toggleBtn.className = 'expand-toggle';
+            toggleBtn.textContent = '▼ Mehr anzeigen';
+            toggleBtn.addEventListener('click', function() {
+                const isCollapsed = msgDiv.classList.toggle('collapsed');
+                toggleBtn.textContent = isCollapsed ? '▼ Mehr anzeigen' : '▲ Weniger';
+            });
+            wrapper.appendChild(toggleBtn);
+        }
 
         // Patch 67: Toolbar mit Timestamp + Kopieren-Button
         // Patch 98: Wiederholen + Bearbeiten nur an User-Bubbles

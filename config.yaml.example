@@ -229,13 +229,29 @@ modules:
       publish:
         - zerberus/commands
 
-  # Telegram-Bot (aktuell deaktiviert)
+  # Telegram-Bot "Huginn" (Patch 123) - vollwertiger Chat-Partner
   # bot_token: BotFather-Token von https://t.me/BotFather
+  # admin_chat_id: deine User-ID fuer HitL-Bestaetigungen
   telegram:
     enabled: false
     bot_token: YOUR_TOKEN_HERE
     webhook_url: https://yourdomain.com/telegram/webhook
     allowed_users: []
+    admin_chat_id: ""
+    allowed_group_ids: []
+    model: "deepseek/deepseek-chat"
+    max_response_length: 4000
+    group_behavior:
+      respond_to_name: true
+      respond_to_mention: true
+      respond_to_direct_reply: true
+      autonomous_interjection: true
+      interjection_cooldown_seconds: 300
+      interjection_trigger: "smart"
+    hitl:
+      code_execution: true
+      group_join: true
+      confirmation_timeout_seconds: 300
 
   # WhatsApp via Twilio (aktuell deaktiviert)
   # account_sid und auth_token: aus deinem Twilio-Dashboard
