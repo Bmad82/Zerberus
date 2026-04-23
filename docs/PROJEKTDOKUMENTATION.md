@@ -2830,3 +2830,45 @@ pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-c
 - **Easter Egg als Meilenstein-Dokumentation:** Der About-Tab in Hel ist gleichzeitig das Kolophon dieses Projekts — Architektur, Tests, RAG-Stand, alles auf einer Seite. Das ist die ehrlichste Form einer Version-Anzeige. Kein separates `/version`-Endpoint nötig, kein README-Abschnitt der veraltet — der About-Tab zeigt den aktuellen Stand aus der Quelle.
 
 *Stand: 2026-04-19, Patch 100 — Meilenstein 🏺.*
+
+---
+
+### Patches 101–119 (2026-04-20 bis 2026-04-23)
+
+**Phase 1 (101–107) — Infrastruktur-Fixes:**
+- 101–104: Template-Konsolidierung, R-07 Multi-Chunk-Aggregation
+- 105–106: Llama-Hardcode-Fix, Reranker-Threshold auf 0.05
+- 107: Split-Brain config.json/yaml gefixt (Hel schrieb json, LLMService las yaml), TRANSFORM-Intent (RAG-Skip bei Übersetzen/Lektorieren), 71 Tests grün, Modell jetzt deepseek/deepseek-v3.2
+
+**Phase 2 (108–111) — RAG Category-Tags + GPU:**
+- 108: RAG Category-Tags beim Upload (Dropdown in Hel, Metadata pro Chunk)
+- 108b: RAG-Eval Q12–Q20 entwickelt (Codex, Kadath, Cross-Doc)
+- 109: SSE-Fallback (`retryOrRecover` pollt `/archive/session/{id}`) + Theme-Hardening (rgba-Defaults, Reset-Fix)
+- 110: Upload-Formate erweitert (.md/.json/.pdf/.csv) + Chunking-Weiche pro Category
+- 111: GPU-Code für Embedding + Reranker (device.py, Auto/CUDA/CPU) + Auto-Category-Detection + Query-Router (Category-Boost)
+- 111b: Torch GPU-Hotfix (cu124, RTX 3060 erkannt)
+
+**Phase 3 (112–118) — Stabilisierung + Features:**
+- 112: Config-Split config.json→.bak bereinigt
+- 113a: DB-Dedup (35 Zeilen entfernt) + Insert-Guard (30s-Window)
+- 113b: W-001b Whisper Satz-Repetitions-Erkennung
+- 114a: SSE-Heartbeat alle 5s + Client-Watchdog-Reset
+- 114b: RAG-Eval mit GPU: 11 JA / 5 TEILWEISE / 4 NEIN
+- 115: Background Memory Extraction (extractor.py, Overnight-Integration, Hel-Button)
+- 116: Hel RAG-Tab: Gruppierte Dokumenten-Cards + Soft-Delete
+- 117: Relative Pfade in start.bat
+- 118a: Decision-Boxes in Nala (`[DECISION][OPTION:x]Label[/DECISION]` → klickbare Buttons)
+- 118b: Neon Kadath indiziert (category=lore), RAG-Eval 15 JA / 5 TEILWEISE / 0 NEIN, sync_repos.ps1 erstellt, Repo-Sync-Pflicht in CLAUDE_ZERBERUS.md
+
+**Phase 4 Start (119):**
+- 119: Whisper Docker Auto-Restart Watchdog (whisper_watchdog.py, Hel-Button, 116 Tests grün)
+- 119b: Hotfix — PROJEKTDOKUMENTATION.md-Pflichtschritt in CLAUDE_ZERBERUS.md verankert + Patches 101–119 nachgetragen, sync_repos.ps1 auf `docs/PROJEKTDOKUMENTATION.md` korrigiert
+
+**Aktueller Stand nach Patch 119:**
+- Tests: 116 passed
+- RAG-Eval: 15 JA / 5 TEILWEISE / 0 NEIN
+- GPU: torch 2.5.1+cu124, RTX 3060 12GB
+- Modell: deepseek/deepseek-v3.2 via OpenRouter
+- Repos: Zerberus (public), Ratatoskr (doc-mirror), Claude (global templates)
+
+*Stand: 2026-04-23, Patch 119 — Phase 4 gestartet.*

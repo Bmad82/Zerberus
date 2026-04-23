@@ -19,21 +19,24 @@ if (-not $patchMsg) { $patchMsg = "Sync" }
 
 # --- Ratatoskr Sync ---
 Write-Host "=== Ratatoskr Sync ===" -ForegroundColor Cyan
+# (srcRel, dstRel) — Quelle relativ zu Zerberus, Ziel relativ zu Ratatoskr.
+# PROJEKTDOKUMENTATION.md liegt unter docs/ in Zerberus, wird aber flach nach Ratatoskr-Root kopiert.
 $ratatoskrFiles = @(
-    "SUPERVISOR_ZERBERUS.md",
-    "CLAUDE_ZERBERUS.md",
-    "PROJEKTDOKUMENTATION.md",
-    "lessons.md",
-    "backlog_nach_patch83.md",
-    "README.md"
+    @("SUPERVISOR_ZERBERUS.md",      "SUPERVISOR_ZERBERUS.md"),
+    @("CLAUDE_ZERBERUS.md",          "CLAUDE_ZERBERUS.md"),
+    @("docs\PROJEKTDOKUMENTATION.md","PROJEKTDOKUMENTATION.md"),
+    @("lessons.md",                  "lessons.md"),
+    @("backlog_nach_patch83.md",     "backlog_nach_patch83.md"),
+    @("README.md",                   "README.md")
 )
-foreach ($f in $ratatoskrFiles) {
-    $src = Join-Path $zerberus $f
+foreach ($pair in $ratatoskrFiles) {
+    $src = Join-Path $zerberus $pair[0]
+    $dst = Join-Path $ratatoskr $pair[1]
     if (Test-Path $src) {
-        Copy-Item $src (Join-Path $ratatoskr $f) -Force
-        Write-Host "  copy: $f"
+        Copy-Item $src $dst -Force
+        Write-Host "  copy: $($pair[0]) -> $($pair[1])"
     } else {
-        Write-Host "  skip (nicht vorhanden): $f" -ForegroundColor DarkGray
+        Write-Host "  skip (nicht vorhanden): $($pair[0])" -ForegroundColor DarkGray
     }
 }
 
