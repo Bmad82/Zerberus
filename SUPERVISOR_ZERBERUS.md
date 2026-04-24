@@ -1,8 +1,20 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 160 (2026-04-25) – Whisper Timeout-Hardening + Short-Audio-Guard*
+*Letzte Aktualisierung: Patch 161 (2026-04-25) – Huginn-Roadmap v2 + Review-Konsolidierung (Doku)*
 
 ## Aktueller Patch
+
+**Patch 161** — Huginn-Roadmap v2 + Review-Konsolidierung (2026-04-25)
+
+- **Reiner Doku-Patch, kein Code-Change.** Zwei Referenz-Dokumente in [`docs/`](docs/) abgelegt, damit künftige Patch-Prompts sie verlinken statt sie nochmal in den Kontext zu kippen.
+- **[`docs/huginn_roadmap_v2.md`](docs/huginn_roadmap_v2.md)** — Patch-Sequenz 160 → 169+ in fünf Phasen (A Sicherheits-Fundament, B Intent-Router + Policy, C HitL + Datei-Output, D Sandbox + Stresstests, E Rosa-Skelett). Architektur-Leitlinie: Interfaces statt Hardcodes, Config-driven Severity, Transport-Agnostik (Telegram = nur ein Frontend, Rosa-internal-Messenger dockt an dieselbe Pipeline). Weil dieser Doku-Patch die Nummer 161 belegt, sind die in der Roadmap angegebenen Patch-Nummern um +1 verschoben (Original 161 → effektiv 162 = Input-Sanitizer + Telegram-Hardening); der Renumber-Hinweis steht im Roadmap-Header.
+- **[`docs/huginn_review_final.md`](docs/huginn_review_final.md)** — 7-Reviewer-Architektur-Review (Mistral/Grok/Copilot/GPT-5/Gemini 3 Pro/Opus/DeepSeek) auf 49 deduplizierte Findings konsolidiert. Tier 1 (5+ Reviewer-Konsens): K1 fehlender Input-Guard, K2 Docker-Kernel-Sharing, K3 Prompt-Injection via Gruppe, K4 OpenRouter SPOF, K5 Datei-Output ohne Content-Review, K6 Guard kennt User-Prompt nicht, K7 Vision ohne Pre-Check. Plus 8 Tier-2-Findings (3–4 Reviewer), 39 scharfe Einzelfunde, 15 fehlende Intents, 10 offene Architektur-Entscheidungen. Jedes künftige Patch-Prompt nennt die Finding-IDs und kann hier nachschlagen.
+- **Phase-4-Roadmap aktualisiert:** Roadmap-Eintrag `[x] 161` (Doku) + Folge-Patches (`[ ] 162` Input-Sanitizer, `[ ] 163` Rate-Limiting + Graceful Degradation, etc.) mit Verweis auf das Roadmap-Dokument.
+- **Tests:** Keine Test-Änderungen (Doku-Patch). Bestand: **538 passed** offline (aus Patch 160), unverändert.
+- **Scope:** IN Scope: Zwei `.md`-Dateien in `docs/`, SUPERVISOR-Eintrag, Roadmap-Item, lessons.md-Verweis. NICHT: Code-Änderungen, Patch-Doku in `docs/PROJEKTDOKUMENTATION.md` (Pflichtschritt liegt beim Supervisor).
+- **Live-Verifikation (USER):** (1) `ls docs/` zeigt `huginn_roadmap_v2.md` und `huginn_review_final.md`. (2) Beide Dateien sind nach Sync auch in Ratatoskr verfügbar (`sync_repos.ps1` zieht `docs/PROJEKTDOKUMENTATION.md` flach nach Ratatoskr-Root, die anderen `docs/`-Dateien aktuell nicht — Hinweis im Roadmap-Doku). (3) Roadmap-Eintrag `[x] 161` ist in der Phase-4-Liste sichtbar.
+
+---
 
 **Patch 160** — Whisper Timeout-Hardening + Short-Audio-Guard (2026-04-25)
 
@@ -190,7 +202,16 @@
 - [x] **158** Huginn-Persona (Hel-Textarea) + Guard-Kontext (`caller_context`) + Guard-WARNUNG nicht mehr blockierend
 - [x] **159** Lessons-Konsolidierung + Doku-Update
 - [x] **160** Whisper Timeout-Hardening + Short-Audio-Guard + Retry (zentraler `whisper_client`)
-- [ ] **161+ Huginn-Roadmap** Intent-Router mit Aufwands-Kalibrierung (dynamischer Sarkasmus-Level im System-Prompt), natürliche HitL-Sprache ("Soll ich?" statt Callback-Buttons), Docker-Sandbox für Code-Execution
+- [x] **161** Huginn-Roadmap v2 + Review-Konsolidierung (Doku in `docs/huginn_roadmap_v2.md` + `docs/huginn_review_final.md`)
+- [ ] **162** Input-Sanitizer + Telegram-Hardening (Phase A — Findings K1, K3, O1, O2, O3, D8, D9, D10, N8 — siehe `docs/huginn_roadmap_v2.md`)
+- [ ] **163** Rate-Limiting + Graceful Degradation (Phase A — N3, D1, K4, O10)
+- [ ] **164** Intent-Router (LLM-gestützt via JSON-Header) (Phase B — P2, O4, O12)
+- [ ] **165** Policy→Persona Pipeline (Phase B — G3, O5, N6, O6, D3)
+- [ ] **166** HitL-Hardening (Phase C — N2, N4, D2, P4, P8, O3)
+- [ ] **167** Datei-Output + Aufwands-Kalibrierung (Phase C — K5, P5, P6, D7)
+- [ ] **168** Docker-Sandbox-Anbindung (Phase D — K2, G1, G7, D4, O8)
+- [ ] **169** Guard-Stresstests (Phase D — K6, N1, N5)
+- [ ] **170+** Rosa-Skelett — Message-Bus-Abstraktion + Transport-Agnostik (Phase E)
 - [ ] **TBD** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
 - [ ] **TBD** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
 - [ ] **TBD** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
