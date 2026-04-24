@@ -23,7 +23,10 @@ def setup_logging(level: str = "INFO"):
         format=log_format,
         handlers=handlers
     )
-    
+
+    for _noisy in ("httpx", "apscheduler", "apscheduler.scheduler",
+                   "apscheduler.executors", "sentence_transformers"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
     logger = logging.getLogger("zerberus")
-    logger.info(f"🚀 Logging initialized with level {level}")
     return logger

@@ -63,7 +63,7 @@ def get_rag_device(config_override: str | None = None) -> str:
 
     if override == "cuda":
         if available:
-            logger.warning(f"[GPU-111] Device per Config erzwungen: cuda ({name}, {free_gb:.1f}/{total_gb:.1f} GB frei)")
+            logger.info(f"[GPU-111] Device per Config erzwungen: cuda ({name}, {free_gb:.1f}/{total_gb:.1f} GB frei)")
             return "cuda"
         logger.warning("[GPU-111] Config verlangt cuda, aber kein CUDA verfügbar — Fallback auf cpu")
         return "cpu"
@@ -77,7 +77,7 @@ def get_rag_device(config_override: str | None = None) -> str:
         logger.warning(f"[GPU-111] Nur {free_gb:.1f} GB VRAM frei (< {_MIN_FREE_VRAM_GB} GB) — Fallback auf cpu")
         return "cpu"
 
-    logger.warning(f"[GPU-111] CUDA aktiv: {name}, {free_gb:.1f}/{total_gb:.1f} GB frei")
+    logger.info(f"[GPU-111] CUDA aktiv: {name}, {free_gb:.1f}/{total_gb:.1f} GB frei")
     return "cuda"
 
 
@@ -85,6 +85,6 @@ def log_gpu_status() -> None:
     """Einmaliger Startup-Log-Eintrag zu GPU-Zustand."""
     available, free_gb, total_gb, name = _cuda_state()
     if available:
-        logger.warning(f"[GPU-111] GPU: {name}, {free_gb:.1f}/{total_gb:.1f} GB frei")
+        logger.info(f"[GPU-111] GPU: {name}, {free_gb:.1f}/{total_gb:.1f} GB frei")
     else:
         logger.info("[GPU-111] Kein CUDA verfügbar — alle RAG-Modelle laufen auf CPU")

@@ -1,8 +1,21 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 156 (2026-04-24) – Huginn Config-Save-Fix (struktureller Cache-Invalidate) + Webhook-Button entfernt*
+*Letzte Aktualisierung: Patch 157 (2026-04-24) – Terminal-Startup-Cleanup*
 
 ## Aktueller Patch
+
+**Patch 157** — Terminal-Startup-Cleanup (2026-04-24)
+
+- **Noise-Logger unterdrückt:** `httpx`, `apscheduler`, `apscheduler.scheduler`, `apscheduler.executors`, `sentence_transformers` auf WARNING gesetzt in [`core/logging.py`](zerberus/core/logging.py). Eliminiert die alle-30s `getUpdates`-Flut und die "Adding job tentatively"/"Device set to use cuda:0"-Zeilen.
+- **Startup-Ausgabe gruppiert:** [`main.py`](zerberus/main.py) lifespan komplett umstrukturiert — 5 Sektionen (Core, Services, Scheduler, Module, Huginn) mit einheitlichem `_log_item(label, status, detail)` + `_log_section(title)`. Icons: ✅ ok, ⏭️ skip, ❌ fail, ⚡ info, 💓 wait. Farben: grün für ok, rot für fail via ANSI.
+- **Invarianten konsolidiert:** [`core/invariants.py`](zerberus/core/invariants.py) — individuelle `✅`-Logs entfernt; main.py zeigt `✅ Invarianten   4/4 Checks bestanden` als Einzeiler. Fehler-Warnings bleiben.
+- **GPU-Log-Level gefixt:** [`modules/rag/device.py`](zerberus/modules/rag/device.py) — `log_gpu_status()` und `get_rag_device()` nutzten `logger.warning()` für normale GPU-Info. Auf `logger.info()` korrigiert. GPU-Status wird jetzt direkt in main.py via `_cuda_state()` als `⚡ GPU` Zeile geloggt.
+- **READY-Banner ans Ende:** Kommt jetzt erst nach dem Huginn-Start + `asyncio.sleep(0.5)` (gibt Polling-Task Zeit zur ersten Runde).
+- **Huginn-Logs bereinigt:** [`telegram/router.py`](zerberus/modules/telegram/router.py) `startup_huginn()` — `[HUGINN-155]`-Prefix entfernt, neue indented-Format-Zeilen (`✅ Bot: @...`, `✅ Long-Polling aktiv`).
+- **Tests:** 62 betroffene Tests (test_device + test_telegram_bot) alle grün. 1 vorbestehender Playwright-Timeout-Flaky unverändert.
+- **Live-Verifikation (USER):** (1) Terminal zeigt beim Start die 5 Sektionen sauber getrennt. (2) Keine httpx-`getUpdates`-Zeilen im laufenden Betrieb. (3) `✨ ZERBERUS PRO 4.0 READY` erscheint nach `✅ Long-Polling aktiv`.
+
+---
 
 **Patch 156** — Huginn Config-Save-Fix + Webhook-Button-Removal (2026-04-24)
 

@@ -114,31 +114,33 @@ async def startup_huginn(settings: Settings) -> Optional["asyncio.Task"]:
     import asyncio
     mod_cfg = settings.modules.get("telegram", {}) or {}
     if not mod_cfg.get("enabled", False):
-        logger.info("[HUGINN-123] Telegram-Modul deaktiviert - kein Bot-Start")
         return None
     cfg = HuginnConfig.from_dict(mod_cfg)
     if not cfg.bot_token:
-        logger.warning("[HUGINN-155] bot_token fehlt - Bot nicht gestartet")
+        logger.warning("    ❌ bot_token fehlt — Bot nicht gestartet")
         return None
 
-    # Manager schon mal anlegen (gemeinsam fuer beide Modi)
     _get_managers(settings)
 
-    # getMe() → _bot_user_id cachen fuer was_bot_added_to_group()
     global _bot_user_id
     me = await get_me(cfg.bot_token)
     if me and me.get("id"):
         _bot_user_id = int(me["id"])
-        logger.info(f"[HUGINN-155] Bot-Identitaet: @{me.get('username','?')} (id={_bot_user_id})")
+        logger.info(f"    ✅ Bot: @{me.get('username', '?')} (id={_bot_user_id})")
+    else:
+        logger.warning("    ⚠️ Bot-Identität nicht abrufbar (getMe fehlgeschlagen)")
 
     mode = str(mod_cfg.get("mode", "polling")).lower()
     if mode == "webhook":
         webhook_url = mod_cfg.get("webhook_url", "")
         if webhook_url and not webhook_url.startswith("https://yourdomain"):
             ok = await register_webhook(cfg.bot_token, webhook_url)
-            logger.info(f"[HUGINN-123] Webhook-Register: {ok}")
+            if ok:
+                logger.info("    ✅ Webhook registriert")
+            else:
+                logger.warning("    ❌ Webhook-Registrierung fehlgeschlagen")
         else:
-            logger.warning("[HUGINN-155] mode=webhook aber keine gueltige webhook_url")
+            logger.warning("    ⚠️ mode=webhook aber keine gültige webhook_url")
         return None
 
     # mode=polling (Default) — Background-Task starten
@@ -149,6 +151,7 @@ async def startup_huginn(settings: Settings) -> Optional["asyncio.Task"]:
         long_polling_loop(cfg.bot_token, _handler),
         name="huginn-long-polling",
     )
+    logger.info("    ✅ Long-Polling aktiv")
     return task
 
 

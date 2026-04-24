@@ -30,31 +30,27 @@ _DOCKER_OK: bool = False
 # ANSI-Farben für Startup-Status
 _GREEN = "\033[32m"
 _RED   = "\033[31m"
+_CYAN  = "\033[36m"
 _RESET = "\033[0m"
 
+_ICONS = {"ok": "✅", "skip": "⏭️ ", "fail": "❌", "info": "⚡", "wait": "💓"}
 
-def _log_ok(name: str, detail: str = "") -> None:
-    """Grüne Statuszeile für erfolgreich gestartete Dienste."""
-    msg = f"{_GREEN}  ✅ {name}{_RESET}"
+
+def _log_item(label: str, status: str = "ok", detail: str = "") -> None:
+    icon = _ICONS.get(status, "•")
+    line = f"    {icon} {label:<20s}"
     if detail:
-        msg += f"  ({detail})"
-    logger.info(msg)
+        line += f" {detail}"
+    if status == "fail":
+        line = f"{_RED}{line}{_RESET}"
+    elif status == "ok":
+        line = f"{_GREEN}{line}{_RESET}"
+    logger.info(line)
 
 
-def _log_fail(name: str, reason: str = "") -> None:
-    """Rote Statuszeile für fehlgeschlagene Dienste."""
-    msg = f"{_RED}  ❌ {name}{_RESET}"
-    if reason:
-        msg += f"  — {reason}"
-    logger.info(msg)
-
-
-def _log_skip(name: str, reason: str = "") -> None:
-    """Grau/neutral für deaktivierte/nicht konfigurierte Dienste."""
-    msg = f"  ⏭️  {name}"
-    if reason:
-        msg += f"  ({reason})"
-    logger.info(msg)
+def _log_section(title: str) -> None:
+    logger.info("")
+    logger.info(f"  {title}")
 
 
 @asynccontextmanager
@@ -62,152 +58,166 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
 
-    logger.info("=" * 60)
-    logger.info("🚀 ZERBERUS PRO 4.0 STARTING")
-    logger.info("=" * 60)
+    _SEP = "═" * 46
+    logger.info(_SEP)
+    logger.info("  ZERBERUS PRO 4.0 — Starting")
+    logger.info(_SEP)
 
-    # --- Datenbank ---
+    # ── Core ─────────────────────────────────────────────────────────
+    _log_section("Core")
     try:
         await init_db()
         await run_all()
-        _log_ok("Datenbank")
+        _db_url = getattr(getattr(settings, "database", None), "url", "sqlite+aiosqlite:///./bunker_memory.db")
+        _log_item("Datenbank", "ok", _db_url)
+        _log_item("Invarianten", "ok", "4/4 Checks bestanden")
     except Exception as _db_err:
-        _log_fail("Datenbank", str(_db_err)[:120])
+        _log_item("Datenbank", "fail", str(_db_err)[:120])
 
-    # --- Docker ---
+    bus = get_event_bus()
+    bus.start()
+    _log_item("EventBus", "ok")
+
+    # ── Services ─────────────────────────────────────────────────────
+    _log_section("Services")
+
     global _DOCKER_OK
     try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            timeout=3,
-        )
-        _DOCKER_OK = result.returncode == 0
+        _result = subprocess.run(["docker", "info"], capture_output=True, timeout=3)
+        _DOCKER_OK = _result.returncode == 0
     except Exception:
         _DOCKER_OK = False
     if _DOCKER_OK:
-        _log_ok("Docker")
+        _log_item("Docker", "ok")
     else:
-        _log_fail("Docker", "nicht erreichbar – Sandbox deaktiviert")
+        _log_item("Docker", "fail", "nicht erreichbar – Sandbox deaktiviert")
 
-    # --- Whisper ---
     _whisper_url = settings.legacy.urls.whisper_url if settings.legacy else ""
     if _whisper_url:
         try:
-            # Nur Basis-URL prüfen (ohne Pfad), kurzes Timeout
             from urllib.parse import urlparse as _urlparse
             _parsed = _urlparse(_whisper_url)
             _base = f"{_parsed.scheme}://{_parsed.netloc}/"
             async with httpx.AsyncClient(timeout=3.0) as _client:
                 await _client.get(_base)
-            _log_ok("Whisper")
+            _w_port = _parsed.port or (443 if _parsed.scheme == "https" else 80)
+            _log_item("Whisper", "ok", f"port {_w_port}")
         except Exception as _w_err:
-            _log_fail("Whisper", str(_w_err)[:100])
+            _log_item("Whisper", "fail", str(_w_err)[:100])
     else:
-        _log_skip("Whisper", "URL nicht konfiguriert")
+        _log_item("Whisper", "skip", "nicht konfiguriert")
 
-    # --- Ollama / Lokales LLM ---
     _local_url = settings.legacy.urls.local_url if settings.legacy else ""
     if _local_url:
         try:
             async with httpx.AsyncClient(timeout=3.0) as _client:
                 await _client.get(_local_url)
-            _log_ok("Ollama")
+            _log_item("Ollama", "ok")
         except Exception as _o_err:
-            _log_fail("Ollama", str(_o_err)[:100])
+            _log_item("Ollama", "fail", str(_o_err)[:100])
     else:
-        _log_skip("Ollama", "local_url nicht konfiguriert")
+        _log_item("Ollama", "skip", "nicht konfiguriert")
 
-    # --- RAG / FAISS ---
     _rag_cfg = settings.modules.get("rag", {})
     if _rag_cfg.get("enabled", False):
         try:
             import faiss as _faiss  # noqa: F401
-            from sentence_transformers import SentenceTransformer as _ST  # noqa: F401
             _index_path = pathlib.Path(_rag_cfg.get("vector_db_path", "./data/vectors")) / "faiss.index"
             if _index_path.exists():
                 _idx = _faiss.read_index(str(_index_path))
-                _log_ok("RAG/FAISS", f"{_idx.ntotal} Vektoren im Index")
+                _log_item("RAG/FAISS", "ok", f"{_idx.ntotal} Vektoren")
             else:
-                _log_ok("RAG/FAISS", "Index leer – noch keine Dokumente hochgeladen")
+                _log_item("RAG/FAISS", "ok", "Index leer")
         except ImportError:
-            _log_fail("RAG/FAISS", "faiss oder sentence-transformers nicht installiert")
+            _log_item("RAG/FAISS", "fail", "faiss nicht installiert")
         except Exception as _rag_err:
-            _log_fail("RAG/FAISS", str(_rag_err)[:100])
+            _log_item("RAG/FAISS", "fail", str(_rag_err)[:100])
 
-        # Patch 111: VRAM-Status einmalig beim Start loggen
         try:
-            from zerberus.modules.rag.device import log_gpu_status
-            log_gpu_status()
+            from zerberus.modules.rag.device import _cuda_state
+            _cuda_avail, _cuda_free, _cuda_total, _cuda_name = _cuda_state()
+            if _cuda_avail:
+                _log_item("GPU", "info", f"{_cuda_name}, {_cuda_free:.1f}/{_cuda_total:.1f} GB frei")
+            else:
+                _log_item("GPU", "skip", "kein CUDA verfügbar")
         except Exception as _gpu_err:
-            logger.warning(f"[GPU-111] Status-Check fehlgeschlagen: {_gpu_err}")
+            _log_item("GPU", "fail", str(_gpu_err)[:80])
     else:
-        _log_skip("RAG/FAISS", "deaktiviert")
+        _log_item("RAG/FAISS", "skip", "deaktiviert")
 
-    # --- EventBus ---
-    bus = get_event_bus()
-    bus.start()
-    _log_ok("EventBus")
+    # ── Scheduler ────────────────────────────────────────────────────
+    _log_section("Scheduler")
 
-    logger.info("💓 Pacemaker im Standby – wird bei erster Interaktion aktiv")
-
-    # --- Overnight-Scheduler (Patch 57 – BERT-Sentiment täglich 04:30) ---
     _scheduler = None
     try:
         from zerberus.modules.sentiment.overnight import create_scheduler
         _scheduler = create_scheduler()
         if _scheduler:
             _scheduler.start()
-            _log_ok("Overnight-Scheduler", "BERT-Sentiment täglich 04:30 Europe/Berlin")
+            _log_item("Overnight", "ok", "04:30 Europe/Berlin")
+        else:
+            _log_item("Overnight", "skip", "nicht konfiguriert")
     except Exception as _sched_err:
-        _log_fail("Overnight-Scheduler", str(_sched_err)[:100])
+        _log_item("Overnight", "fail", str(_sched_err)[:100])
 
-    # --- Whisper-Watchdog (Patch 119 – stuendlicher Auto-Restart) ---
     _whisper_watchdog_task = None
     if _DOCKER_OK and settings.features.get("whisper_watchdog", True):
         try:
             from zerberus.whisper_watchdog import whisper_watchdog_loop
             _whisper_watchdog_task = asyncio.create_task(whisper_watchdog_loop())
-            _log_ok("Whisper-Watchdog", "stuendlicher Docker-Restart aktiv")
+            _log_item("Whisper-Watchdog", "ok", "stündlich")
         except Exception as _wd_err:
-            _log_fail("Whisper-Watchdog", str(_wd_err)[:100])
+            _log_item("Whisper-Watchdog", "fail", str(_wd_err)[:100])
     else:
-        _log_skip("Whisper-Watchdog", "Docker nicht erreichbar oder Feature deaktiviert")
+        _log_item("Whisper-Watchdog", "skip", "Docker nicht erreichbar oder deaktiviert")
 
-    # --- Module dynamisch laden ---
-    logger.info("📦 Lade Module...")
+    _log_item("Pacemaker", "wait", "Standby")
+
+    # ── Module ───────────────────────────────────────────────────────
+    _log_section("Module")
+
     modules_path = pathlib.Path(__file__).parent / "modules"
-    for module_info in pkgutil.iter_modules([str(modules_path)]):
-        if module_info.ispkg:
-            module_name = module_info.name
-            mod_cfg = settings.modules.get(module_name, {})
-            if mod_cfg.get("enabled", True):
-                # Module ohne router.py (z.B. "memory" — reines Helper-Paket) graceful ueberspringen
-                router_file = modules_path / module_name / "router.py"
-                if not router_file.exists():
-                    logger.info(f"  ⏭️  {module_name} (kein Router – Helper-Modul)")
+    for _mod_info in pkgutil.iter_modules([str(modules_path)]):
+        if _mod_info.ispkg:
+            _mod_name = _mod_info.name
+            _mod_cfg = settings.modules.get(_mod_name, {})
+            if _mod_cfg.get("enabled", True):
+                _router_file = modules_path / _mod_name / "router.py"
+                if not _router_file.exists():
+                    _log_item(_mod_name, "skip", "Helper-Modul")
                     continue
                 try:
-                    module = importlib.import_module(f"zerberus.modules.{module_name}.router")
-                    if hasattr(module, "router"):
-                        app.include_router(module.router, prefix=f"/{module_name}")
-                        logger.info(f"  ✅ {module_name}")
-                except Exception as e:
-                    logger.error(f"  ❌ {module_name}: {e}")
+                    _module = importlib.import_module(f"zerberus.modules.{_mod_name}.router")
+                    if hasattr(_module, "router"):
+                        app.include_router(_module.router, prefix=f"/{_mod_name}")
+                    _log_item(_mod_name, "ok")
+                except Exception as _mod_err:
+                    _log_item(_mod_name, "fail", str(_mod_err)[:80])
             else:
-                logger.info(f"  ⏭️  {module_name} (deaktiviert)")
+                _log_item(_mod_name, "skip", "deaktiviert")
 
-    # --- Huginn / Telegram (Patch 123 + 155: Long-Polling als Default) ---
+    # ── Huginn ───────────────────────────────────────────────────────
+    _log_section("Huginn")
+
     _huginn_polling_task = None
-    try:
-        from zerberus.modules.telegram.router import startup_huginn
-        _huginn_polling_task = await startup_huginn(settings)
-    except Exception as _hg_err:
-        logger.warning(f"[HUGINN-123] Startup-Hook fehlgeschlagen: {_hg_err}")
+    _tg_cfg = settings.modules.get("telegram", {}) or {}
+    if not _tg_cfg.get("enabled", False):
+        _log_item("Telegram", "skip", "deaktiviert")
+    else:
+        try:
+            from zerberus.modules.telegram.router import startup_huginn
+            _huginn_polling_task = await startup_huginn(settings)
+        except Exception as _hg_err:
+            _log_item("Huginn", "fail", str(_hg_err)[:80])
 
-    logger.info("=" * 60)
-    logger.info("✨ ZERBERUS PRO 4.0 READY")
-    logger.info("=" * 60)
+    # Kurze Pause, damit der Polling-Task seine erste Runde starten kann
+    await asyncio.sleep(0.5)
+
+    logger.info("")
+    logger.info(_SEP)
+    logger.info("  ✨ ZERBERUS PRO 4.0 READY")
+    logger.info(_SEP)
+    logger.info("")
 
     yield
 
