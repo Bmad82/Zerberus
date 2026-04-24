@@ -137,6 +137,22 @@ async def run_overnight_sentiment():
     except Exception as e:
         logger.error(f"[MEM-115] Memory-Extraction fehlgeschlagen: {e}")
 
+    # Patch 134: DB-Deduplizierung — entfernt identische Retry-Messages
+    # aus der Dictate-App (Android-Tastatur). Soft-Delete via integrity=-1.0.
+    try:
+        from zerberus.utils.db_dedup import deduplicate_interactions
+        dedup_result = await deduplicate_interactions(
+            window_seconds=60, dry_run=False, do_backup=True
+        )
+        logger.warning(
+            f"[DEDUP-134] Overnight: {dedup_result['scanned']} Rows gescannt, "
+            f"{dedup_result['duplicate_groups']} Gruppen, "
+            f"{dedup_result['removed']} Duplikate soft-deleted, "
+            f"Backup={dedup_result['backup']}"
+        )
+    except Exception as e:
+        logger.error(f"[DEDUP-134] DB-Deduplizierung fehlgeschlagen: {e}")
+
 
 def create_scheduler():
     """

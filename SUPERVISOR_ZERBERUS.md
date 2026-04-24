@@ -1,8 +1,22 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 130 (2026-04-24) – Loki & Fenrir UI-Sweep + Mega-Patch-Lessons*
+*Letzte Aktualisierung: Mega-Patch 131–136 (2026-04-24) – Vision, Memory-Store, FAISS-Switch, DB-Dedup, Pipeline-Dedup, Kostenanzeige*
 
 ## Aktueller Patch
+
+**Mega-Patch 131–136** — Zweites Mega-Patch-Experiment (2026-04-24)
+
+- **Patch 131 — Huginn Vision + Hel Vision-Dropdown:** Neue Module `zerberus/core/vision_models.py` (8-Modell-Registry mit Tier-Klassen: budget/mid/premium, sortiert nach Input-Preis) und `zerberus/utils/vision.py` (`analyze_image()` mit data-URL-Builder für PNG/JPEG/GIF/WebP, Fail-Safe für API-Key/HTTP/Timeout). Hel bekommt eine Vision-Card im LLM-Tab mit Modell-Dropdown, Enable-Toggle, Max-Bildgröße, Save/Reload-Buttons. Huginn (Telegram) schaltet automatisch auf Vision-Modell um, wenn Bilder dabei sind — DeepSeek V3.2 bleibt für Text. Neuer Config-Block `vision:` in config.yaml. Drei Endpoints: `GET/POST /admin/vision/config`, `GET /admin/vision/models`. **19 neue Tests.**
+- **Patch 132 — Background Memory Extraction + Structured Store:** Neue DB-Tabelle `memories` (category/subject/fact/confidence/source_tag/embedding_index/extracted_at/is_active) neben dem bestehenden FAISS-Vector-Store. `_store_memory_structured()` in extractor.py schreibt jeden neu extrahierten Fakt ZUSÄTZLICH in den strukturierten Store (Duplikat-Check auf exaktem category+fact). Vier Hel-Endpoints: `GET /admin/memory/list` (filterbar nach Kategorie), `GET /admin/memory/stats` (Aggregat), `POST /admin/memory/add` (manuell), `DELETE /admin/memory/{id}` (Soft-Delete via is_active=0). **9 neue Tests.**
+- **Patch 133 — FAISS Dual-Embedder Switch + Backup:** Non-destruktiver Switch-Mechanismus in `rag/router.py` via Config-Flag `modules.rag.use_dual_embedder` (Default **false** = Legacy MiniLM bleibt aktiv). Bei `true` wird DualEmbedder geladen + `de.index`/`de_meta.json` gelesen; fehlen sie → Fallback auf Legacy. `_encode()` nutzt dynamisch den aktiven Embedder. Backup des aktuellen Index (61 Chunks) in `data/backups/pre_patch133_<ts>/` angelegt. Dry-Run bestätigt die Baseline (61 DE / 0 EN) aus Patch 129. Tatsächlicher `--execute` bleibt manueller Schritt (Modell-Downloads + Server-Restart nötig). **5 neue Tests.**
+- **Patch 134 — DB-Deduplizierung (Overnight-Job):** Neue Utility `zerberus/utils/db_dedup.py` mit `deduplicate_interactions(window_seconds=60, dry_run, do_backup)`. Zweizeiger-Sliding-Window pro (profile_key, role, content)-Gruppe, Soft-Delete via `integrity=-1.0` (physisch bleibt die Row). Automatisches DB-Backup vor jeder Aktion. Overnight-Integration in `sentiment/overnight.py` nach der Memory-Extraction. Zwei Hel-Endpoints: `POST /admin/dedup/scan` (Dry-Run), `POST /admin/dedup/execute` (mit Backup). **9 neue Tests.**
+- **Patch 135 — Pipeline-Dedup `X-Already-Cleaned`-Header:** Chirurgischer Fix in `legacy.py::audio_transcriptions` und `nala.py::voice_endpoint`: Header `X-Already-Cleaned: true` überspringt den `clean_transcript()`-Aufruf. Für die Dictate-Android-Tastatur, die bereits gecleanten Text sendet — aktuell idempotent (harmlos), aber Voraussetzung für künftige nicht-idempotente Regeln. **6 neue Tests.**
+- **Patch 136 — Kostenanzeige-Fix (Hel LLM-Tab):** Bug: Frontend multiplizierte `last_cost` mit 1_000_000 und zeigte "$X pro 1M Tokens" — nutzlos. Fix: Endpoint `/admin/balance` liefert neue Felder `last_cost_usd`/`last_cost_eur`/`today_total_usd`/`today_total_eur`/`balance_eur` (USD→EUR-Kurs 0.92). Neue `_get_today_total_cost()`-Helper summiert Tagesgesamt aus `costs`-Tabelle. Fallback-Pfad liefert Kost-Daten aus lokaler DB auch bei OpenRouter-Error. Frontend zeigt: „Kontostand: 12,45 € ($13,53) / Letzte Anfrage: 0,0034 € / Heute gesamt: 0,1500 €". Zweiter Bug an Zeile 1784 (per-message cost display) gleich mitgefixt. **8 neue Tests.**
+- **Tests:** **308 passed** offline in 15s (252 Baseline + 56 neue). Alle Patches haben klare Unit-Tests. Playwright-Tests unverändert (Server-Reload-abhängig, siehe Patch 130).
+- **Scope:** IN Scope: alle 6 Patches vollständig inkl. Tests und Doku. NICHT in diesem Patch: echte `--execute`-FAISS-Migration (Modell-Downloads erforderlich, dem User überlassen); neue Nala-Vision-UI (nur Huginn-Integration implementiert); Alembic-Migration für `memories`-Tabelle (nutzt `Base.metadata.create_all` via init_db).
+- **Live-Verifikation (USER):** (1) Hel → LLM-Tab → Vision-Card zeigt 8 Modelle mit Preisen; Save schreibt in config.yaml `vision:`-Block. (2) Telegram-Bild an Huginn → automatisch Vision-Modell (qwen2.5-vl-7b-instruct als Default) analysiert. (3) `GET /hel/admin/memory/stats` zeigt Total + Kategorie-Breakdown. (4) `POST /hel/admin/dedup/scan` liefert duplicate_groups + removed (ohne zu schreiben). (5) Hel LLM-Tab zeigt "Kontostand: X,XX €" statt "pro 1M Tokens". (6) Dictate-Header `X-Already-Cleaned: true` skippt Cleaning (Log-Zeile `[PIPELINE-135]`).
+
+---
 
 **Patch 130** – Loki & Fenrir E2E-Sweep für Mega-Patch UI + Lessons-Doku (2026-04-24)
 
@@ -41,8 +55,14 @@
 - [x] **128** Settings-Anchor + HSL-Slider (Nala-Sidebar + Theme)
 - [x] **129** FAISS-Migration-Script (`scripts/migrate_embedder.py`, Dry-Run + Tests)
 - [x] **130** Loki & Fenrir E2E-Sweep für Mega-Patch UI + Lessons-Doku
-- [ ] **131+** Echte Dual-Embedder-Umschaltung in `rag/router.py` nach Migration-Execute
-- [ ] **132+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
+- [x] **131** Huginn Vision + Hel Vision-Dropdown (Bild-Analyse via qwen2.5-vl)
+- [x] **132** Background Memory Extraction + Structured Store (SQLite `memories`-Tabelle)
+- [x] **133** FAISS Dual-Embedder Switch-Mechanismus (Config-Flag, non-destruktiv)
+- [x] **134** DB-Deduplizierung (Overnight-Job + Hel-Endpoints)
+- [x] **135** Pipeline-Dedup `X-Already-Cleaned`-Header
+- [x] **136** Kostenanzeige-Fix (EUR-Anzeige, heute gesamt)
+- [ ] **137+** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
+- [ ] **138+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
 - [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
 - [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)
 - [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung

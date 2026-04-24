@@ -3003,3 +3003,67 @@ Nach dem Mega-Patch-Zyklus (122–129) fehlte die E2E-Abdeckung der neuen UI-Ele
 - Doku: SUPERVISOR_ZERBERUS.md Patch-130-Eintrag, Roadmap aktualisiert (Patch 131+ = Dual-Embedder-Umschaltung).
 
 *Stand: 2026-04-24, Patch 130 — Mega-Patch-UI ist end-to-end abgedeckt.*
+
+### Mega-Patch 131–136 – Vision + Memory-Store + FAISS-Switch + DB-Dedup + Pipeline-Dedup + Kostenanzeige (2026-04-24)
+
+Zweites Mega-Patch-Experiment nach 122–129. Sechs fokussierte Patches in einer Session.
+
+**Patch 131 – Huginn Vision + Hel Vision-Dropdown:**
+- Neue Registry `zerberus/core/vision_models.py`: 8 Vision-Modelle (qwen2.5-vl, gemini 2.5, claude 4.5, gpt-4o), sortiert nach Input-Preis, mit Tiers (budget/mid/premium).
+- Utility `zerberus/utils/vision.py`: `analyze_image(image_data|image_url, prompt, model, max_tokens, timeout, max_bytes)`. Auto-Erkennung MIME-Type (PNG/JPEG/GIF/WebP) → data-URL. Fail-Safe für `no_image`, `image_too_large`, `missing_api_key`, `http_*`, `exception_*`.
+- Config-Block `vision:` in config.yaml (enabled/model/max_image_size_mb/supported_formats).
+- Huginn (`zerberus/modules/telegram/router.py::_process_text_message`): wenn photo_file_ids gesetzt, wird `pick_vision_model()` gerufen und das Vision-Modell verwendet — DeepSeek V3.2 (Hauptmodell) hat keinen Vision-Support.
+- Hel LLM-Tab: neue Card mit Vision-Modell-Dropdown (Tier-Badges + Preis im Option-Text), Enable-Toggle, Max-MB-Input, Save/Reload. JS-Funktionen `visionReload()`/`visionSave()`. Lazy-Load beim Öffnen des LLM-Tabs.
+- Drei Endpoints: `GET /admin/vision/config`, `POST /admin/vision/config` (Model-Whitelist-Check: nur Vision-Registry-Einträge akzeptiert), `GET /admin/vision/models`.
+- **19 neue Tests** (`test_vision.py`).
+
+**Patch 132 – Background Memory Extraction + Structured Store:**
+- Neue SQLAlchemy-Tabelle `Memory` in `zerberus/core/database.py`: id/category/subject/fact/confidence/source_conversation_id/source_tag/embedding_index/extracted_at/is_active. Wird via `Base.metadata.create_all` beim Serverstart angelegt.
+- `_store_memory_structured()` in `zerberus/modules/memory/extractor.py`: schreibt jeden neu extrahierten Fakt auch in den strukturierten Store, mit exaktem Duplikat-Check auf `category + fact`.
+- Integration direkt nach `_add_to_index` im Extraction-Flow: vec_idx wird als `embedding_index` gespeichert — erlaubt spätere Verknüpfung von Structured zu Vector.
+- Vier Hel-Endpoints: `GET /admin/memory/list?category=X&limit=N`, `GET /admin/memory/stats` (total + by_category + last_extraction), `POST /admin/memory/add` (manueller Insert mit source_tag="manual"), `DELETE /admin/memory/{id}` (Soft-Delete: is_active=0).
+- **9 neue Tests** (`test_memory_store.py`).
+
+**Patch 133 – FAISS Dual-Embedder Switch-Mechanismus:**
+- Neue Modul-Globals `_dual_embedder` + `_use_dual` in `rag/router.py`.
+- `_init_sync()` liest `modules.rag.use_dual_embedder` (Default **false**). Bei true: lädt DualEmbedder + `de.index`/`de_meta.json`; fehlen sie → automatischer Fallback auf Legacy MiniLM mit Warning-Log.
+- `_encode()` nutzt dynamisch den aktiven Embedder (`_dual_embedder.embed()` vs. `_model.encode()`).
+- config.yaml: `use_dual_embedder: false` explizit dokumentiert (Pre-Patch-133-Verhalten bleibt aktiv).
+- Backup des aktuellen MiniLM-Index (61 Chunks) in `data/backups/pre_patch133_<ts>/`.
+- Dry-Run von `scripts/migrate_embedder.py` bestätigt: 61 DE / 0 EN (unverändert seit Patch 129).
+- Echter `--execute` bleibt manueller Schritt (Modell-Downloads + Server-Restart erforderlich; Chris entscheidet mit RAG-Eval-Vergleich).
+- **5 neue Tests** (`test_rag_dual_switch.py`).
+
+**Patch 134 – DB-Deduplizierung (Overnight-Job):**
+- Neue Utility `zerberus/utils/db_dedup.py`: `deduplicate_interactions(db_path, window_seconds=60, dry_run, do_backup)`.
+- Zweizeiger-Sliding-Window-Algorithmus: pre-grouped nach (profile_key, role, content) für O(n log n) statt O(n²). Duplikate im Zeitfenster ≤ 60 s werden soft-gelöscht (integrity=-1.0).
+- Automatisches DB-Backup vor jeder echten Aktion (`backup_db()` in `backups/`-Subverzeichnis).
+- Loggt jedes Duplikat mit `[DEDUP-134] Duplikat: id=X → Original id=Y, Δ=Zs`.
+- Overnight-Integration in `sentiment/overnight.py` direkt nach der Memory-Extraction.
+- Zwei Hel-Endpoints: `POST /admin/dedup/scan` (Dry-Run), `POST /admin/dedup/execute`.
+- Hintergrund: Patch-113a-Guard deckt nur 30-s-Fenster + gleiche session_id ab. Der Overnight-Pass ist die zweite Verteidigungslinie für session-übergreifende Dictate-Retries.
+- **9 neue Tests** (`test_db_dedup.py`).
+
+**Patch 135 – Pipeline-Dedup `X-Already-Cleaned`-Header:**
+- Chirurgischer Fix in `legacy.py::audio_transcriptions` und `nala.py::voice_endpoint`: Header `X-Already-Cleaned: true` (case-insensitive) überspringt den `clean_transcript()`-Aufruf. Log-Line `[PIPELINE-135] Cleaner übersprungen`.
+- audio_transcriptions bekam zusätzlich `request: Request` als Parameter (vorher nur `file` + `settings`).
+- Aktueller Status idempotent (harmlos) — Patch ist Vorsorge für künftige non-idempotente Cleaning-Regeln.
+- **6 neue Tests** (`test_pipeline_dedup.py`).
+
+**Patch 136 – Kostenanzeige-Fix (Hel LLM-Tab):**
+- Bug in `loadModelsAndBalance()`: `parseFloat(balance.last_cost || 0) * 1_000_000` interpretierte die tatsächlichen Kosten einer einzelnen Anfrage als „pro Token" und multiplizierte mit 1M — Anzeige war sinnlos.
+- Fix im `GET /admin/balance`-Endpoint: liefert jetzt `last_cost_usd`/`last_cost_eur`/`today_total_usd`/`today_total_eur`/`balance_eur` (USD→EUR-Kurs 0.92 statisch). `last_cost` bleibt als Alias für Backward-Compat.
+- Neue `_get_today_total_cost()`-Helper summiert `costs.cost` ab `date('now', 'start of day')`.
+- Fallback-Pfad: auch bei OpenRouter-HTTP-Error oder -Netzwerkfehler werden die Cost-Felder aus der lokalen DB geliefert (statt 502).
+- Frontend-Anzeige: „Kontostand: 12,45 € ($13,53) / Letzte Anfrage: 0,0034 € / Heute gesamt: 0,1500 €".
+- Zweiter Bug an Zeile 1784 (per-message cost in der Message-Tabelle) gleich mitgefixt.
+- **8 neue Tests** (`test_cost_display.py`).
+
+**Aktueller Stand nach Mega-Patch 131–136:**
+- Tests: **308 passed** offline (252 vorher + 56 neue). Non-Playwright-Teile sind regressions-stabil.
+- RAG: unverändert (use_dual_embedder=false → Legacy MiniLM aktiv). Dry-Run bestätigt Baseline 61 DE / 0 EN.
+- Neue Module: `zerberus/core/vision_models.py`, `zerberus/utils/vision.py`, `zerberus/utils/db_dedup.py`. Neue Tabelle: `memories`.
+- Neue Hel-Endpoints (9): Vision (3), Memory (4), Dedup (2).
+- Offene Punkte (Patch 137+): echte `scripts/migrate_embedder.py --execute` mit RAG-Eval-Vergleich; Sancho-Panza-Veto; Nala-Vision-Upload-UI.
+
+*Stand: 2026-04-24, Mega-Patch 131–136 — zweites 6-Patch-Experiment erfolgreich.*

@@ -169,6 +169,52 @@ def _is_duplicate(fact_vec, threshold: float) -> bool:
     return cosine >= threshold
 
 
+async def _store_memory_structured(
+    fact_text: str,
+    category: str,
+    source_tag: str,
+    confidence: float = 0.8,
+    embedding_index: int | None = None,
+) -> int | None:
+    """Patch 132: Schreibt einen Fakt zus\u00e4tzlich in die strukturierte `memories`-Tabelle.
+
+    Returns: ID der neu eingef\u00fcgten Zeile oder None bei Fehler.
+    Duplikat-Check: Exakter content-Match auf category+fact wird \u00fcbersprungen.
+    """
+    try:
+        from zerberus.core.database import _async_session_maker
+        from sqlalchemy import text as sa_text
+    except Exception as e:
+        logger.warning(f"[MEM-132] DB-Import fehlgeschlagen: {e}")
+        return None
+
+    try:
+        async with _async_session_maker() as session:
+            # Exakte Duplikat-Pr\u00fcfung
+            existing = await session.execute(sa_text(
+                "SELECT id FROM memories WHERE category = :cat AND fact = :fact AND is_active = 1 LIMIT 1"
+            ), {"cat": category, "fact": fact_text})
+            row = existing.fetchone()
+            if row is not None:
+                return None
+            result = await session.execute(sa_text(
+                "INSERT INTO memories "
+                "(category, fact, confidence, source_tag, embedding_index, extracted_at, is_active) "
+                "VALUES (:cat, :fact, :conf, :src, :emb, datetime('now'), 1)"
+            ), {
+                "cat": category,
+                "fact": fact_text,
+                "conf": float(confidence),
+                "src": source_tag,
+                "emb": embedding_index,
+            })
+            await session.commit()
+            return int(result.lastrowid) if hasattr(result, "lastrowid") else None
+    except Exception as e:
+        logger.warning(f"[MEM-132] Strukturierter Memory-Insert fehlgeschlagen: {e}")
+        return None
+
+
 async def extract_memories(mem_cfg: dict | None = None) -> dict:
     """Hauptfunktion: liest 24h-Nachrichten, extrahiert Fakten, indiziert Neues.
 
@@ -261,7 +307,7 @@ async def extract_memories(mem_cfg: dict | None = None) -> dict:
                     result["skipped"] += 1
                     continue
                 word_count = len(fact_text.split())
-                await asyncio.to_thread(
+                vec_idx = await asyncio.to_thread(
                     _add_to_index, vec, fact_text,
                     {
                         "source": source_tag,
@@ -273,6 +319,19 @@ async def extract_memories(mem_cfg: dict | None = None) -> dict:
                     settings,
                 )
                 result["indexed"] += 1
+                # Patch 132: Zus\u00e4tzlich in strukturierten Store schreiben.
+                # vec_idx ist die neue FAISS-Gesamtgr\u00f6\u00dfe; der Eintrag selbst
+                # liegt bei Index (vec_idx - 1).
+                try:
+                    await _store_memory_structured(
+                        fact_text=fact_text,
+                        category=cat,
+                        source_tag=source_tag,
+                        confidence=float(fact_entry.get("confidence", 0.8)),
+                        embedding_index=(vec_idx - 1) if isinstance(vec_idx, int) else None,
+                    )
+                except Exception as e:
+                    logger.warning(f"[MEM-132] Structured-Store-Write fehlgeschlagen: {e}")
             except Exception as e:
                 logger.warning(f"[MEM-115] Fakt-Indexierung fehlgeschlagen: {e}")
                 result["errors"].append(f"index: {type(e).__name__}")

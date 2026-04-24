@@ -39,6 +39,12 @@ _metadata: list[dict] = []   # [{"text": "...", ...}, ...]  – Index i == Vekto
 _init_lock = threading.Lock()
 _initialized = False
 
+# Patch 133: Dual-Embedder-Switch. Default false → Legacy MiniLM bleibt aktiv.
+# Wird zur Laufzeit aus config.yaml `modules.rag.use_dual_embedder` gelesen.
+# Umschaltung setzt das Feature-Flag in config.yaml voraus + Server-Restart.
+_dual_embedder: "object | None" = None
+_use_dual: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen (synchron, laufen in Thread-Pool)
@@ -80,23 +86,62 @@ def _save_metadata(metadata: list[dict], meta_path: Path) -> None:
 
 
 def _init_sync(settings: Settings) -> None:
-    """Initialisiert Model, Index und Metadaten. Wird genau einmal aufgerufen."""
-    global _index, _model, _metadata, _initialized
+    """Initialisiert Model, Index und Metadaten. Wird genau einmal aufgerufen.
+
+    Patch 133: Wenn `modules.rag.use_dual_embedder == true` UND die Dual-
+    Indices (de.index/en.index + *_meta.json) existieren, wird der Dual-
+    Embedder geladen und der Index auf die DE-Variante gezeigt (EN kann
+    optional später dazugemergt werden). Ansonsten Legacy MiniLM.
+    """
+    global _index, _model, _metadata, _initialized, _dual_embedder, _use_dual
     with _init_lock:
         if _initialized:
             return
 
         rag_cfg = settings.modules.get("rag", {})
-        model_name = rag_cfg.get("embedding_model", "all-MiniLM-L6-v2")
-        from zerberus.modules.rag.device import get_rag_device
-        device = get_rag_device(rag_cfg.get("device"))
-        logger.info(f"🤖 Lade Embedding-Modell: {model_name} (device={device})")
-        _model = SentenceTransformer(model_name, device=device)
-        logger.warning(f"[GPU-111] Embedding-Modell geladen auf {device}")
+        _use_dual = bool(rag_cfg.get("use_dual_embedder", False))
 
-        index_path, meta_path = _resolve_paths(settings)
-        _index = _load_or_create_index(index_path)
-        _metadata = _load_metadata(meta_path)
+        if _use_dual:
+            # Patch 133: Dual-Embedder-Pfad
+            try:
+                from zerberus.modules.rag.dual_embedder import (
+                    DualEmbedder, DualEmbedderConfig,
+                )
+                _dual_embedder = DualEmbedder(DualEmbedderConfig.from_dict(rag_cfg))
+                # Lade Dual-Indices
+                base = Path(rag_cfg.get("vector_db_path", "./data/vectors"))
+                de_index_path = base / "de.index"
+                de_meta_path = base / "de_meta.json"
+                if de_index_path.exists() and de_meta_path.exists():
+                    _index = faiss.read_index(str(de_index_path))
+                    with open(de_meta_path, "r", encoding="utf-8") as f:
+                        _metadata = json.load(f)
+                    logger.warning(
+                        f"[DUAL-133] Dual-Embedder aktiv. DE-Index: {_index.ntotal} Vektoren"
+                    )
+                else:
+                    logger.warning(
+                        "[DUAL-133] use_dual_embedder=true aber de.index fehlt — "
+                        "Fallback auf Legacy MiniLM"
+                    )
+                    _use_dual = False
+            except Exception as e:
+                logger.warning(f"[DUAL-133] Dual-Init fehlgeschlagen: {e} — Fallback Legacy")
+                _use_dual = False
+
+        if not _use_dual:
+            # Legacy-Pfad (Pre-Patch-133)
+            model_name = rag_cfg.get("embedding_model", "all-MiniLM-L6-v2")
+            from zerberus.modules.rag.device import get_rag_device
+            device = get_rag_device(rag_cfg.get("device"))
+            logger.info(f"🤖 Lade Embedding-Modell: {model_name} (device={device})")
+            _model = SentenceTransformer(model_name, device=device)
+            logger.warning(f"[GPU-111] Embedding-Modell geladen auf {device}")
+
+            index_path, meta_path = _resolve_paths(settings)
+            _index = _load_or_create_index(index_path)
+            _metadata = _load_metadata(meta_path)
+
         _initialized = True
         logger.info("✅ RAG-Modul initialisiert")
 
@@ -131,7 +176,11 @@ class IndexDocumentRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _encode(text: str) -> np.ndarray:
-    global _model
+    """Encode text. Patch 133: nutzt DualEmbedder wenn `_use_dual=True`, sonst Legacy."""
+    global _model, _dual_embedder
+    if _use_dual and _dual_embedder is not None:
+        vec_list = _dual_embedder.embed(text)
+        return np.array([vec_list], dtype="float32")
     if _model is None:
         from sentence_transformers import SentenceTransformer
         from zerberus.modules.rag.device import get_rag_device

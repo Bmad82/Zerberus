@@ -3211,9 +3211,14 @@ async def voice_endpoint(
         raw_transcript = whisper_result.get("text", "")
 
         # ------------------------------------------------------------------
-        # 2. Cleaner
+        # 2. Cleaner (Patch 135: X-Already-Cleaned überspringt doppeltes Cleaning)
         # ------------------------------------------------------------------
-        cleaned = clean_transcript(raw_transcript)
+        already_cleaned = request.headers.get("X-Already-Cleaned", "").lower() == "true"
+        if already_cleaned:
+            logger.info("[PIPELINE-135] Cleaner übersprungen (X-Already-Cleaned=true)")
+            cleaned = raw_transcript
+        else:
+            cleaned = clean_transcript(raw_transcript)
         logger.info(f"🎤 Transkript: '{raw_transcript}' -> '{cleaned}'")
 
         if not cleaned or not cleaned.strip():

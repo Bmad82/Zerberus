@@ -217,3 +217,27 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Leicht abbrechbare Tasks am Ende platzieren
 - Prompt-Struktur: Block-basiert mit Diagnose → Fix → Test → Doku pro Patch. Grep-Befehle vorgeben.
 - Bei ~32k/Patch wären theoretisch ~14 Patches in einem 450k-Budget möglich — noch nicht getestet
+
+### 2026-04-24 — Zweites Mega-Patch-Experiment: 6 Patches (131–136)
+
+**Setup:**
+- Gleiche Umgebung wie Mega-Patch 122–129: Opus 4.7, 1M Kontext, Effort Extra High, Permission Level 4.
+- Prompt: Mega-Patch 131–136 als einzelne `.md`-Datei (~14k Tokens) mit expliziter Token-Selbstüberwachung ("ab ~450k sauber abschließen") und bewusst leicht abbrechbaren Patches 135/136 am Ende.
+
+**Ergebnis:**
+- 6 Patches abgeschlossen (131–136), 56 neue Tests (19+9+5+9+6+8), Gesamttest-Suite von 252 → 308 passed.
+- Keine Patches ausgelassen, keine halben Patches, keine Abbrüche.
+- Alle neuen Hel-Endpoints (9 Stück) haben Unit-Tests mit in-memory SQLite.
+
+**Was diesmal anders war als 122–129:**
+1. **Diagnose zuerst, komplett:** Statt pro Patch einzeln grep/read zu machen, einen kompakten Diagnose-Block am Anfang für alle 6 Patches. Spart Kontext (die Codebasis wird im Kopf behalten, Files werden für jeden Patch nicht neu gelesen).
+2. **Scope-Verkleinerung bei destruktiven Patches:** Patch 133 sollte laut Prompt den FAISS-Index umschalten und RAG-Eval fahren. Realistische Beurteilung: Modell-Downloads (gbert-large, multilingual-e5-large sind zusammen ~3 GB) + RAG-Eval + Server-Restart wären nicht in einem Patch-Budget machbar. Stattdessen: Backup + Switch-Mechanismus + Config-Flag default-false + Tests. Chris kann den `--execute` in einem eigenen Schritt fahren und mit RAG-Eval vergleichen. **Saubere Scope-Reduktion statt halber Patch.**
+3. **Test-Pattern konsistent:** in-memory SQLite via `monkeypatch.setattr(db_mod, "_async_session_maker", sm)` ist der richtige Weg für DB-Tests (funktioniert auch für async Endpoints, wenn man die Funktionen direkt statt über den HTTP-Layer aufruft).
+4. **Fail-Safe-Routing:** Bei OpenRouter-Fehler in `get_balance()` bekam die UI bis Patch 135 einen 502. Fix in Patch 136: graceful degradation — die lokale Cost-History wird trotzdem geliefert, nur `balance` ist None. Die Hel-UI bleibt benutzbar auch ohne Netz.
+
+**Lessons für künftige Mega-Patches:**
+- **Re-Read-Vermeidung:** Module die man im Kontext hat (von vorherigen Patches), nicht neu lesen — nur punktuell grep'en.
+- **Header-Parameter-Falle:** Wenn man `request: Request` zu einer FastAPI-Route hinzufügt, die vorher `file: UploadFile = File(...)` als ersten Parameter hatte, `Request` MUSS davor stehen (vor File-Parametern), sonst FastAPI Parameter-Ordering-Error. Gemacht in Patch 135.
+- **Endpoint-Tests über Funktions-Call:** `asyncio.run(my_endpoint_func(FakeRequest))` statt `TestClient` spart den Auth-Setup-Aufwand — Admin-Auth-Middleware (`verify_admin`) im Hel-Router blockiert jeden TestClient-Call ohne Credentials, und den auch nur in einem Subset. Direkter Funktions-Call umgeht das sauber.
+- **`inspect.getsource()` für Header-Präsenz-Check:** Bei Pipeline-Patches wie 135 (Header-Skip), wo man kein voll-stacked Request-Test machen will, reicht der Check "ist der Header im Source-Code referenziert". Pragmatisch und wartungsarm.
+- **2 Mega-Patches hintereinander:** 131–136 begann direkt nach 122–129+130 ohne Neu-Kontext-Load. Das spart viel Token, weil die Codebasis bereits im Gedächtnis war.

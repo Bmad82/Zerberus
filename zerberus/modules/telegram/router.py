@@ -129,10 +129,12 @@ async def _process_text_message(
     settings: Settings,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
 ) -> Dict[str, Any]:
-    """Kernflow: Input → Guard → LLM → Output."""
+    """Kernflow: Input → Guard → LLM → Output.
+
+    Patch 131: Wenn Bilder dabei sind, wird das konfigurierte Vision-Modell
+    verwendet statt des Haupt-LLM (DeepSeek V3.2 hat keinen Vision-Support).
+    """
     user_msg = info.get("text", "") or ""
-    if not user_msg.strip():
-        return {"sent": False, "reason": "empty"}
 
     # Bilder → Vision: file_ids in URLs resolven
     image_urls: list[str] = []
@@ -142,9 +144,23 @@ async def _process_text_message(
             if url:
                 image_urls.append(url)
 
+    # Leere Text-Only-Messages überspringen; Text+Foto oder Foto-Only sind ok
+    if not user_msg.strip() and not image_urls:
+        return {"sent": False, "reason": "empty"}
+
+    # Patch 131: Modell-Auswahl — Vision vs. Text
+    if image_urls:
+        from zerberus.utils.vision import pick_vision_model
+        model = pick_vision_model(settings)
+        if not user_msg.strip():
+            user_msg = "Beschreibe dieses Bild und antworte auf Deutsch."
+        logger.info(f"[VISION-131] Huginn Bild-Analyse via {model} ({len(image_urls)} Bild(er))")
+    else:
+        model = cfg.model
+
     llm_result = await call_llm(
         user_message=user_msg,
-        model=cfg.model,
+        model=model,
         system_prompt=system_prompt,
         image_urls=image_urls or None,
     )

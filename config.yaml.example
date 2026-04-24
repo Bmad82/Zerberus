@@ -269,6 +269,17 @@ modules:
     enabled: true
 
 # ============================================================
+# Patch 131: Vision-Modell für Bild-Analyse (Huginn-Fotos, zukünftig Nala-Upload).
+# DeepSeek V3.2 (Hauptmodell) hat keinen Vision-Support — daher separater Block.
+# Liste der Vision-fähigen Modelle siehe zerberus/core/vision_models.py
+# ============================================================
+vision:
+  enabled: true
+  model: qwen/qwen2.5-vl-7b-instruct  # Budget-Default, alternativ google/gemini-2.5-flash
+  max_image_size_mb: 10
+  supported_formats: [jpg, jpeg, png, gif, webp]
+
+# ============================================================
 # JWT-Authentifizierung – Token-Geheimnis für Login-Sessions
 # token_secret: Langer zufälliger String – NIEMALS teilen oder ins Git einchecken!
 # Generieren: python -c "import secrets; print(secrets.token_hex(32))"

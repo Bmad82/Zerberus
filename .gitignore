@@ -24,6 +24,8 @@ logs/
 
 # FAISS Vektoren (werden lokal neu gebaut)
 data/vectors/
+# Patch 133: Index-Backups (lokal, binär, nie ins Repo)
+data/backups/
 
 # Huggingface / ML Models
 .cache/

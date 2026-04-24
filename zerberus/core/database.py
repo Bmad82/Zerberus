@@ -88,6 +88,26 @@ class Cost(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 
+class Memory(Base):
+    """Patch 132 — Strukturierter Memory-Store (neben FAISS-Vector-Store).
+
+    Erlaubt gezielte Abfragen wie "alle PREFERENCE-Fakten zu Chris" ohne
+    Semantic-Search. Wird vom Overnight-Extractor (Patch 115/132) befüllt.
+    """
+    __tablename__ = "memories"
+
+    id = Column(Integer, primary_key=True)
+    category = Column(String(32), index=True)          # personal/technical/preference/relationship/event
+    subject = Column(String(100), nullable=True, index=True)
+    fact = Column(Text)
+    confidence = Column(Float, default=1.0)
+    source_conversation_id = Column(Integer, nullable=True)
+    source_tag = Column(String(100), nullable=True)    # z.B. "memory_extraction_2026-04-24"
+    embedding_index = Column(Integer, nullable=True)   # Referenz zur FAISS-Position (optional)
+    extracted_at = Column(DateTime, default=datetime.utcnow, index=True)
+    is_active = Column(Integer, default=1)             # SQLite Boolean as Integer; 1=active, 0=soft-deleted
+
+
 _engine = None
 _async_session_maker = None
 

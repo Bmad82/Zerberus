@@ -322,6 +322,7 @@ async def chat_completions(
 
 @router.post("/audio/transcriptions")
 async def audio_transcriptions(
+    request: Request,
     file: UploadFile = File(...),
     settings: Settings = Depends(get_settings)
 ):
@@ -338,7 +339,13 @@ async def audio_transcriptions(
             whisper_result = response.json()
 
         raw_transcript = whisper_result.get("text", "")
-        cleaned_transcript = clean_transcript(raw_transcript)
+        # Patch 135: X-Already-Cleaned-Header überspringt Cleaning
+        already_cleaned = request.headers.get("X-Already-Cleaned", "").lower() == "true"
+        if already_cleaned:
+            logger.info("[PIPELINE-135] Cleaner übersprungen (X-Already-Cleaned=true)")
+            cleaned_transcript = raw_transcript
+        else:
+            cleaned_transcript = clean_transcript(raw_transcript)
 
         logger.info(f"🎤 Transkript: '{raw_transcript}' -> '{cleaned_transcript}'")
 

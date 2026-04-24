@@ -651,6 +651,21 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <button onclick="saveLLMConfig()">Einstellungen speichern</button>
                 <div id="llmStatus"></div>
             </div>
+            <!-- Patch 131: Vision-Modell-Dropdown (nur Vision-fähige Modelle) -->
+            <div class="card">
+                <h2>&#128065;&#65039; Vision-Modell</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">Modell f&#252;r Bild-Analyse (Huginn-Photos, k&#252;nftig Nala Bild-Upload). DeepSeek V3.2 hat keinen Vision-Support &#8212; daher separate Wahl.</p>
+                <label>Vision-Modell ausw&#228;hlen:</label>
+                <select id="visionModelSelect" onchange="markVisionDirty()" style="width:100%;padding:8px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;margin-bottom:10px;"></select>
+                <label><input type="checkbox" id="visionEnabled" onchange="markVisionDirty()"> Vision aktiviert</label>
+                <label style="display:block;margin-top:10px;">Max. Bildgr&#246;&#223;e (MB):</label>
+                <input type="number" id="visionMaxMb" min="1" max="50" value="10" onchange="markVisionDirty()" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;width:80px;">
+                <div style="display:flex;gap:10px;margin-top:12px;">
+                    <button type="button" onclick="visionSave()" style="padding:10px 18px;min-height:44px;background:#DAA520;color:#111;border:none;border-radius:8px;cursor:pointer;font-weight:bold;">&#128190; Speichern</button>
+                    <button type="button" onclick="visionReload()" style="padding:10px 18px;min-height:44px;background:#333;color:#eee;border:1px solid #555;border-radius:8px;cursor:pointer;">&#128260; Neu laden</button>
+                </div>
+                <div id="visionStatus" style="margin-top:10px;color:#8f8;min-height:1.4em;"></div>
+            </div>
           </div>
         </div>
 
@@ -1072,6 +1087,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                 if (id === 'sysctl') loadPacemakerConfig();
                 if (id === 'provider') loadProviderBlacklist();
                 if (id === 'huginn') huginnReload();
+                if (id === 'llm') visionReload();
             }
             // Aktiven Tab in die Mitte scrollen, falls Overflow
             const activeBtn = document.querySelector('.hel-tab.active');
@@ -1081,6 +1097,70 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
         // Rückwärtskompat-Alias, falls Altcode noch toggleSection aufruft.
         function toggleSection(id) { activateTab(id); }
+
+        // --- Patch 131: Vision-Modell-Konfiguration ---
+        let _visionModels = [];
+        let _visionDirty = false;
+        function markVisionDirty() { _visionDirty = true; }
+        function _visionTierBadge(tier) {
+            const map = { budget: '#2f6f2f', mid: '#6f5f2f', premium: '#6f2f4f' };
+            const color = map[tier] || '#444';
+            return `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:4px;font-size:0.72em;margin-right:6px;">${tier||'?'}</span>`;
+        }
+        async function visionReload() {
+            const statusEl = document.getElementById('visionStatus');
+            if (!statusEl) return;
+            statusEl.textContent = 'Lade Vision-Modelle...';
+            try {
+                const [mResp, cResp] = await Promise.all([
+                    fetch('/hel/admin/vision/models'),
+                    fetch('/hel/admin/vision/config'),
+                ]);
+                const mData = await mResp.json();
+                const cData = await cResp.json();
+                _visionModels = mData.models || [];
+                const sel = document.getElementById('visionModelSelect');
+                sel.innerHTML = _visionModels.map(m => {
+                    const price = `$${m.input_price.toFixed(3)} / $${m.output_price.toFixed(3)} pro 1M`;
+                    return `<option value="${m.id}" data-tier="${m.tier}">[${m.tier}] ${m.name} — ${price}</option>`;
+                }).join('');
+                sel.value = cData.model || 'qwen/qwen2.5-vl-7b-instruct';
+                document.getElementById('visionEnabled').checked = !!cData.enabled;
+                document.getElementById('visionMaxMb').value = cData.max_image_size_mb || 10;
+                _visionDirty = false;
+                statusEl.textContent = `${_visionModels.length} Modelle geladen.`;
+            } catch (e) {
+                statusEl.textContent = 'Fehler: ' + e;
+                statusEl.style.color = '#f88';
+            }
+        }
+        async function visionSave() {
+            const statusEl = document.getElementById('visionStatus');
+            statusEl.style.color = '#8f8';
+            const payload = {
+                model: document.getElementById('visionModelSelect').value,
+                enabled: document.getElementById('visionEnabled').checked,
+                max_image_size_mb: parseInt(document.getElementById('visionMaxMb').value, 10) || 10,
+            };
+            try {
+                const r = await fetch('/hel/admin/vision/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                if (r.ok) {
+                    statusEl.textContent = 'Gespeichert.';
+                    _visionDirty = false;
+                } else {
+                    const err = await r.text();
+                    statusEl.textContent = 'Fehler: ' + err;
+                    statusEl.style.color = '#f88';
+                }
+            } catch (e) {
+                statusEl.textContent = 'Fehler: ' + e;
+                statusEl.style.color = '#f88';
+            }
+        }
 
         // --- Patch 127: Huginn (Telegram) Tab ---
         async function huginnReload() {
@@ -1230,21 +1310,21 @@ ADMIN_HTML = """<!DOCTYPE html>
                 currentModel = config.llm?.cloud_model || '';
                 renderModelSelect(_allModels, currentModel);
 
-                // Guthaben, Delta und letzte Anfrage anzeigen
+                // Patch 136: Kostenanzeige FIX — zeigt tatsächliche Beträge in EUR statt
+                // sinnloser "pro 1M Tokens"-Umrechnung.
                 const curBalance = balance.balance != null ? parseFloat(balance.balance) : null;
-                const balanceStr = curBalance != null
-                    ? `Guthaben: $${curBalance.toFixed(2)}`
-                    : 'Guthaben: nicht verfügbar';
-                let deltaStr = '';
-                if (curBalance != null && _prevBalance != null) {
-                    const delta = _prevBalance - curBalance;
-                    if (delta > 0) {
-                        deltaStr = `<br><span style="font-size:0.85em;color:#ff6b6b;">Letzter Prompt: -$${delta.toFixed(6)}</span>`;
-                    }
-                }
-                if (curBalance != null) { _prevBalance = curBalance; try { localStorage.setItem('hel_prevBalance', curBalance.toString()); } catch(_) {} }
-                const lastCostStr = `Letzte Anfrage: $${(parseFloat(balance.last_cost || 0) * 1_000_000).toFixed(2)} / 1M Tokens`;
-                balanceEl.innerHTML = `${balanceStr}${deltaStr}<br><span style="font-size:0.85em;color:#aaa;">${lastCostStr}</span>`;
+                const balanceEur = balance.balance_eur != null ? parseFloat(balance.balance_eur) : null;
+                const balanceStr = balanceEur != null
+                    ? `Kontostand: ${balanceEur.toFixed(2).replace('.', ',')} &euro; <span style="color:#888;font-size:0.85em;">($${curBalance.toFixed(2)})</span>`
+                    : 'Kontostand: nicht verf&uuml;gbar';
+                const lastCostEur = parseFloat(balance.last_cost_eur || 0);
+                const todayEur = parseFloat(balance.today_total_eur || 0);
+                const lastLine = `Letzte Anfrage: ${lastCostEur.toFixed(4).replace('.', ',')} &euro;`;
+                const todayLine = `Heute gesamt: ${todayEur.toFixed(4).replace('.', ',')} &euro;`;
+                balanceEl.innerHTML =
+                    `${balanceStr}<br>` +
+                    `<span style="font-size:0.9em;color:#ccc;">${lastLine}</span><br>` +
+                    `<span style="font-size:0.85em;color:#aaa;">${todayLine}</span>`;
 
                 // Temperatur und Threshold aus config laden
                 const tempSlider = document.getElementById('temperature');
@@ -1701,7 +1781,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                                    '<td title="' + raw.substring(0,200).replace(/"/g,'&quot;') + '">' + truncated + '</td>' +
                                    '<td>' + (msg.word_count ?? '') + '</td>' +
                                    '<td>' + (msg.vader_compound ?? '') + '</td>' +
-                                   '<td>' + (msg.cost !== null && msg.cost !== undefined ? '$' + (msg.cost * 1_000_000).toFixed(2) + ' / 1M' : '') + '</td>';
+                                   '<td>' + (msg.cost !== null && msg.cost !== undefined ? (msg.cost * 0.92).toFixed(5).replace('.', ',') + ' &euro;' : '') + '</td>';
                     tbody.appendChild(tr);
                 });
             }
@@ -2220,7 +2300,14 @@ async def get_models():
 
 @router.get("/admin/balance")
 async def get_balance():
-    """Gibt aktuelles OpenRouter-Guthaben und Kosten der letzten Anfrage zurück."""
+    """Gibt OpenRouter-Guthaben, letzte Anfrage-Kosten und Heute-Summe zurück.
+
+    Patch 136: `last_cost_usd` und `today_total_usd` sind tatsächliche USD-Beträge
+    (NICHT pro 1M Tokens, wie es die alte Frontend-Anzeige interpretiert hatte).
+    Zusätzlich wird der EUR-Betrag über einen statischen Umrechnungskurs
+    berechnet (keine externe API-Abfrage — Wechselkurse sind für diese Zwecke
+    ausreichend approximativ).
+    """
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -2234,14 +2321,79 @@ async def get_balance():
         limit_usd = data.get("limit_usd")
         usage = data.get("usage") or 0.0
         balance = float(limit_usd) - float(usage) if limit_usd is not None else None
-        return {"balance": balance, "last_cost": last_cost}
+
+        # Heute gesamt (Patch 136)
+        today_total = await _get_today_total_cost()
+
+        # EUR-Umrechnung (statischer Kurs, Stand 2026-04: 1 USD ≈ 0.92 EUR)
+        usd_to_eur = 0.92
+        return {
+            "balance": balance,
+            "balance_eur": round(balance * usd_to_eur, 4) if balance is not None else None,
+            "last_cost": last_cost,  # Alias (backward-compat)
+            "last_cost_usd": last_cost,
+            "last_cost_eur": round(last_cost * usd_to_eur, 6),
+            "today_total_usd": today_total,
+            "today_total_eur": round(today_total * usd_to_eur, 4),
+            "fx_usd_to_eur": usd_to_eur,
+        }
     except httpx.HTTPStatusError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"OpenRouter nicht erreichbar: {e.response.status_code}",
-        )
+        # Patch 136: Bei fehlendem API-Key oder Netzfehler Zero-Struktur zurückgeben
+        # statt 502 — Frontend soll Kosten trotzdem anzeigen (aus lokaler DB)
+        last_cost = 0.0
+        today_total = 0.0
+        try:
+            last_cost = await get_last_cost()
+            today_total = await _get_today_total_cost()
+        except Exception:
+            pass
+        return {
+            "balance": None,
+            "balance_eur": None,
+            "last_cost": last_cost,
+            "last_cost_usd": last_cost,
+            "last_cost_eur": round(last_cost * 0.92, 6),
+            "today_total_usd": today_total,
+            "today_total_eur": round(today_total * 0.92, 4),
+            "fx_usd_to_eur": 0.92,
+            "error": f"openrouter_http_{e.response.status_code}",
+        }
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"OpenRouter nicht erreichbar: {e}")
+        last_cost = 0.0
+        today_total = 0.0
+        try:
+            last_cost = await get_last_cost()
+            today_total = await _get_today_total_cost()
+        except Exception:
+            pass
+        return {
+            "balance": None,
+            "balance_eur": None,
+            "last_cost": last_cost,
+            "last_cost_usd": last_cost,
+            "last_cost_eur": round(last_cost * 0.92, 6),
+            "today_total_usd": today_total,
+            "today_total_eur": round(today_total * 0.92, 4),
+            "fx_usd_to_eur": 0.92,
+            "error": f"openrouter_unreachable: {type(e).__name__}",
+        }
+
+
+async def _get_today_total_cost() -> float:
+    """Patch 136: Summiert alle Kosten-Einträge ab 00:00 des aktuellen Tages."""
+    from zerberus.core.database import _async_session_maker
+    from sqlalchemy import text as sa_text
+    if _async_session_maker is None:
+        return 0.0
+    try:
+        async with _async_session_maker() as session:
+            row = (await session.execute(sa_text(
+                "SELECT COALESCE(SUM(cost), 0) FROM costs "
+                "WHERE timestamp >= date('now', 'start of day')"
+            ))).scalar()
+            return float(row or 0.0)
+    except Exception:
+        return 0.0
 
 @router.get("/admin/huginn/config")
 async def get_huginn_config():
@@ -2308,6 +2460,217 @@ async def post_huginn_config(request: Request):
         for k in ("code_execution", "group_join", "confirmation_timeout_seconds"):
             if k in data["hitl"]:
                 hitl[k] = data["hitl"][k]
+
+    temp_fd, temp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            _yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        os.replace(temp_path, config_path)
+    except Exception as e:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise HTTPException(500, f"Speichern fehlgeschlagen: {e}")
+
+    return {"status": "ok"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Patch 134: DB-Deduplizierung (Overnight-Job + manueller Trigger)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/admin/dedup/scan")
+async def post_dedup_scan():
+    """Dry-Run: scannt, meldet nur — kein Schreibzugriff."""
+    from zerberus.utils.db_dedup import deduplicate_interactions
+    result = await deduplicate_interactions(dry_run=True, do_backup=False)
+    return result
+
+
+@router.post("/admin/dedup/execute")
+async def post_dedup_execute():
+    """Execute: scannt + soft-deletet Duplikate. Backup wird automatisch erzeugt."""
+    from zerberus.utils.db_dedup import deduplicate_interactions
+    result = await deduplicate_interactions(dry_run=False, do_backup=True)
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Patch 132: Memory-Store-Endpoints (strukturierter Store, ergänzt FAISS)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/memory/list")
+async def get_memory_list(category: str | None = None, limit: int = 100):
+    """Gibt die Liste der aktiven Memories zurück, optional nach Kategorie gefiltert."""
+    from zerberus.core.database import _async_session_maker
+    from sqlalchemy import text as sa_text
+
+    if _async_session_maker is None:
+        return {"memories": [], "note": "db_not_initialized"}
+
+    where_parts = ["is_active = 1"]
+    params: dict = {"limit": int(max(1, min(500, limit)))}
+    if category:
+        where_parts.append("category = :cat")
+        params["cat"] = category.lower()
+
+    sql = (
+        f"SELECT id, category, fact, confidence, source_tag, extracted_at "
+        f"FROM memories WHERE {' AND '.join(where_parts)} "
+        f"ORDER BY extracted_at DESC LIMIT :limit"
+    )
+    try:
+        async with _async_session_maker() as session:
+            rows = (await session.execute(sa_text(sql), params)).fetchall()
+    except Exception as e:
+        return {"memories": [], "error": str(e)[:200]}
+
+    return {
+        "memories": [
+            {
+                "id": r[0],
+                "category": r[1],
+                "fact": r[2],
+                "confidence": r[3],
+                "source_tag": r[4],
+                "extracted_at": str(r[5]) if r[5] else None,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@router.get("/admin/memory/stats")
+async def get_memory_stats():
+    """Aggregierte Zahlen: Gesamtzahl + pro Kategorie + letzte Extraktion."""
+    from zerberus.core.database import _async_session_maker
+    from sqlalchemy import text as sa_text
+
+    if _async_session_maker is None:
+        return {"total": 0, "by_category": {}}
+    try:
+        async with _async_session_maker() as session:
+            total = (await session.execute(sa_text(
+                "SELECT COUNT(*) FROM memories WHERE is_active = 1"
+            ))).scalar() or 0
+            rows = (await session.execute(sa_text(
+                "SELECT category, COUNT(*) FROM memories WHERE is_active = 1 GROUP BY category"
+            ))).fetchall()
+            last = (await session.execute(sa_text(
+                "SELECT MAX(extracted_at) FROM memories WHERE is_active = 1"
+            ))).scalar()
+    except Exception as e:
+        return {"total": 0, "by_category": {}, "error": str(e)[:200]}
+
+    return {
+        "total": int(total),
+        "by_category": {str(r[0]): int(r[1]) for r in rows},
+        "last_extraction": str(last) if last else None,
+    }
+
+
+@router.post("/admin/memory/add")
+async def post_memory_add(request: Request):
+    """Manueller Memory-Insert (nicht vom Extractor). Nutzt nur den Structured-Store."""
+    from zerberus.core.database import _async_session_maker
+    from sqlalchemy import text as sa_text
+
+    data = await request.json()
+    category = str(data.get("category", "personal")).strip().lower()
+    fact = str(data.get("fact", "")).strip()
+    confidence = float(data.get("confidence", 1.0))
+    if not fact:
+        raise HTTPException(400, "fact darf nicht leer sein")
+    if _async_session_maker is None:
+        raise HTTPException(503, "db_not_initialized")
+
+    try:
+        async with _async_session_maker() as session:
+            result = await session.execute(sa_text(
+                "INSERT INTO memories "
+                "(category, fact, confidence, source_tag, extracted_at, is_active) "
+                "VALUES (:cat, :fact, :conf, 'manual', datetime('now'), 1)"
+            ), {"cat": category, "fact": fact, "conf": confidence})
+            await session.commit()
+            new_id = int(result.lastrowid) if hasattr(result, "lastrowid") else None
+    except Exception as e:
+        raise HTTPException(500, f"insert failed: {e}")
+
+    return {"status": "ok", "id": new_id}
+
+
+@router.delete("/admin/memory/{memory_id}")
+async def delete_memory(memory_id: int):
+    """Soft-Delete: setzt is_active=0. Physischer Eintrag bleibt."""
+    from zerberus.core.database import _async_session_maker
+    from sqlalchemy import text as sa_text
+
+    if _async_session_maker is None:
+        raise HTTPException(503, "db_not_initialized")
+    try:
+        async with _async_session_maker() as session:
+            await session.execute(sa_text(
+                "UPDATE memories SET is_active = 0 WHERE id = :id"
+            ), {"id": int(memory_id)})
+            await session.commit()
+    except Exception as e:
+        raise HTTPException(500, f"delete failed: {e}")
+    return {"status": "ok", "id": memory_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Patch 131: Vision-Modell-Endpoints (nur Vision-fähige Modelle)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/vision/models")
+async def get_vision_models_list():
+    """Gibt die gefilterte Liste der Vision-fähigen Modelle zurück."""
+    from zerberus.core.vision_models import get_vision_models
+    return {"models": get_vision_models()}
+
+
+@router.get("/admin/vision/config")
+async def get_vision_config_endpoint():
+    """Liefert den aktuellen `vision:`-Block aus config.yaml."""
+    import yaml as _yaml
+    config_path = Path("config.yaml")
+    if not config_path.exists():
+        return {"enabled": False, "model": "", "max_image_size_mb": 10}
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = _yaml.safe_load(f) or {}
+    vision = cfg.get("vision", {}) or {}
+    return {
+        "enabled": bool(vision.get("enabled", True)),
+        "model": vision.get("model", "qwen/qwen2.5-vl-7b-instruct"),
+        "max_image_size_mb": int(vision.get("max_image_size_mb", 10)),
+        "supported_formats": vision.get("supported_formats", ["jpg", "jpeg", "png", "gif", "webp"]),
+    }
+
+
+@router.post("/admin/vision/config")
+async def post_vision_config(request: Request):
+    """Speichert `vision:`-Block in config.yaml. Nur Vision-Modelle akzeptiert."""
+    import yaml as _yaml
+    from zerberus.core.vision_models import is_vision_model
+
+    data = await request.json()
+    model = data.get("model", "")
+    if model and not is_vision_model(model):
+        raise HTTPException(400, f"Modell '{model}' ist nicht in der Vision-Registry")
+
+    config_path = Path("config.yaml")
+    if not config_path.exists():
+        raise HTTPException(404, "config.yaml nicht gefunden")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = _yaml.safe_load(f) or {}
+
+    vision = cfg.setdefault("vision", {})
+    for key in ("enabled", "model", "max_image_size_mb", "supported_formats"):
+        if key in data:
+            vision[key] = data[key]
 
     temp_fd, temp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
     try:
