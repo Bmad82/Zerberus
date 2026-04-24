@@ -69,13 +69,31 @@ Kein reiner Freitext-Dialog, wenn eine binäre/ternäre Entscheidung ausreicht.
 
 - `config.yaml` → `auth.static_api_key` — wenn gesetzt, akzeptiert die JWT-Middleware den `X-API-Key` Header als Alternative zu Bearer
 
-## Telegram/Huginn (Patch 155)
+## Telegram/Huginn (Patch 155 + 158)
 
 - `config.yaml` → `modules.telegram.mode`:
   - **`polling`** (Default): Long-Polling via `getUpdates`. Funktioniert hinter Tailscale/NAT ohne öffentliche URL. Beim Shutdown wird der Polling-Task cancelt.
   - **`webhook`**: Nur für Setups mit öffentlicher HTTPS-URL. Braucht `webhook_url`. Beim Shutdown wird der Webhook bei Telegram deregistriert.
 - Background-Task wird in `lifespan` via `startup_huginn()` gestartet, der die Task zurückgibt. `main.py` hält die Referenz und cancelt beim Shutdown.
 - Gemeinsamer Update-Handler: `zerberus.modules.telegram.router.process_update(data, settings)` — sowohl Webhook-Endpoint als auch Polling-Loop rufen ihn auf.
+- `config.yaml` → `modules.telegram.system_prompt` (Patch 158): Huginn-Persona (Default: zynischer Rabe). Editierbar in Hel → Huginn-Tab als Textarea. Default-Konstante: [`DEFAULT_HUGINN_PROMPT`](zerberus/modules/telegram/bot.py). 3-Wege-Resolver `_resolve_huginn_prompt(settings)` in [`router.py`](zerberus/modules/telegram/router.py): Key fehlt → Default, leerer String → leer bleibt leer (Opt-Out), sonst → Config-String.
+- **BotFather "Group Privacy"** muss AUS sein, damit der Bot in Gruppen Nachrichten ohne `@`-Mention sieht (nötig für `respond_to_name` und `autonomous_interjection`). Nach Umschalten: Bot aus Gruppe entfernen + neu hinzufügen (Telegram cached die Privacy-Stufe pro Gruppen-Beitritt). Siehe `lessons.md` → "Telegram Group Privacy".
+
+## Guard-Kontext (Patch 158)
+
+- [`check_response()`](zerberus/hallucination_guard.py) akzeptiert einen optionalen `caller_context: str`. Der String beschreibt wer antwortet und wird in den Guard-System-Prompt als `[Kontext des Antwortenden]`-Block eingefügt, gefolgt vom harten Satz „Referenzen auf diese Elemente sind KEINE Halluzinationen."
+- **Huginn-Calls** ([`telegram/router.py`](zerberus/modules/telegram/router.py)): Raben-Persona-Kontext via `_build_huginn_guard_context(persona)` — inklusive eines 300-Zeichen-Auszugs der aktuell konfigurierten Persona.
+- **Nala-Calls** ([`legacy.py`](zerberus/app/routers/legacy.py)): Zerberus-Selbstreferenz-Kontext ("Referenzen auf Zerberus, Chris, Nala, Hel, Huginn sind keine Halluzinationen").
+- **Verdict WARNUNG ist KEIN Block.** Die Antwort geht immer an den User durch; der Admin (Chris) bekommt bei WARNUNG einen DM mit Chat-ID + Grund. Nur echte Sicherheitsklassen (BLOCK/TOXIC) würden die Antwort unterdrücken — die gibt es aktuell nicht, der Guard liefert nur OK/WARNUNG/SKIP/ERROR.
+- **Bei neuen Frontends:** Immer eigenen `caller_context` definieren. Leer lassen ist legitim (dann verhält sich der Guard wie vor Patch 158), aber bei Persona-Bots oder Self-Referencing-Assistants sonst false-positive-anfällig.
+
+## Settings-Cache (Patch 156)
+
+- `get_settings()` aus [`zerberus/core/config.py`](zerberus/core/config.py) ist ein Modul-globaler Singleton. Wer `config.yaml` schreibt, MUSS den Cache invalidieren — sonst liefert der nächste `get_settings()`-Aufruf den alten Wert und das UI zeigt verzögerte Werte nach Save.
+- **Decorator** (Standardweg): `@invalidates_settings` auf den POST-Handler. Ruft nach dem Funktionsaufruf `reload_settings()` auf, funktioniert für sync + async.
+- **Kontextmanager** (granularer): `with settings_writer():` um den YAML-Write-Block — für Fälle wo der Handler mehrere Pfade hat und nur einer schreibt.
+- **Migriert:** 7 YAML-Writer in [`hel.py`](zerberus/app/routers/hel.py) und [`nala.py`](zerberus/app/routers/nala.py) sind auf den Decorator umgestellt (Patch 156-Sweep).
+- **Für neue YAML-Writer-Endpoints:** Immer `@invalidates_settings` verwenden. Test-Pattern: POST → GET im selben Test mit tmp-cwd-Fixture + `_settings = None`-Reset (siehe [`test_huginn_config_endpoint.py`](zerberus/tests/test_huginn_config_endpoint.py)).
 
 ## Datenbank-Migrationen (Alembic, seit Patch 92)
 
