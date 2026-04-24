@@ -297,10 +297,19 @@ async def chat_completions(
                     f"[{h.get('source','?')}|{h.get('category','general')}] {h.get('text','')}"
                     for h in _rag_hits_local[:5]
                 )
+            # Patch 158: caller_context verhindert Halluzinations-False-Positives
+            # auf Zerberus-Selbstreferenzen (Nala/Hel/Huginn/Chris).
+            _nala_guard_context = (
+                "Der Antwortende ist 'Nala', ein persoenlicher KI-Assistent im "
+                "Zerberus-System. Referenzen auf Zerberus, Chris, Nala, Hel, "
+                "Huginn und das Zerberus-Projekt sind keine Halluzinationen "
+                "sondern korrekte Selbstreferenzen."
+            )
             _guard = await check_response(
                 user_message=last_user_msg,
                 assistant_response=answer,
                 rag_context=_guard_ctx,
+                caller_context=_nala_guard_context,
             )
             if _guard.get("verdict") == "WARNUNG":
                 answer = f"{answer}\n\n---\n⚠️ *Qualitaetshinweis: {_guard.get('reason', 'Guard hat angeschlagen.')}*"

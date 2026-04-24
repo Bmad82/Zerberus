@@ -21,6 +21,7 @@ from zerberus.core.config import get_settings
 from zerberus.core.database import get_all_sessions, get_session_messages, get_latest_metrics, get_metrics_summary, get_message_costs, get_last_cost
 from zerberus.core.config import get_settings, reload_settings, invalidates_settings, Settings
 from zerberus.core.cleaner import clean_transcript
+from zerberus.modules.telegram.bot import DEFAULT_HUGINN_PROMPT  # Patch 158
 from zerberus.core.dialect import detect_dialect_marker, apply_dialect
 from zerberus.core.llm import LLMService
 import hashlib
@@ -1026,6 +1027,15 @@ ADMIN_HTML = """<!DOCTYPE html>
                   <span style="color:#DAA520;font-size:0.92em;">Max Response-Laenge</span>
                   <input type="number" id="huginn-max-length" value="4000" min="500" max="4096" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
                 </label>
+                <label style="display:flex;flex-direction:column;gap:4px;grid-column:span 2;">
+                  <span style="color:#DAA520;font-size:0.92em;">System-Prompt (Persona) &mdash; Patch 158</span>
+                  <textarea id="huginn-system-prompt" rows="12"
+                    style="width:100%;font-family:monospace;font-size:13px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;padding:10px;resize:vertical;"></textarea>
+                  <small style="color:#888;">Definiert Huginns Charakter und Tonfall. Wird als System-Prompt an das LLM geschickt. Leer lassen &rarr; kein System-Prompt.</small>
+                  <button type="button" onclick="huginnResetPrompt()" style="margin-top:4px;padding:6px 12px;font-size:12px;background:#333;color:#eee;border:1px solid #555;border-radius:6px;cursor:pointer;align-self:flex-start;">
+                    &#x21a9;&#xfe0f; Standard-Persona wiederherstellen
+                  </button>
+                </label>
               </div>
 
               <details style="margin-top:18px;">
@@ -1290,6 +1300,20 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
 
         // --- Patch 127: Huginn (Telegram) Tab ---
+        // Patch 158: Default-Persona aus letztem GET-Response cachen, damit
+        // der "Standard wiederherstellen"-Button keinen zweiten Request braucht.
+        let _huginnDefaultPrompt = '';
+
+        function huginnResetPrompt() {
+            const el = document.getElementById('huginn-system-prompt');
+            if (!el) return;
+            if (!_huginnDefaultPrompt) {
+                alert('Standard-Persona noch nicht geladen. Bitte "Neu laden" druecken.');
+                return;
+            }
+            el.value = _huginnDefaultPrompt;
+        }
+
         async function huginnReload() {
             const statusEl = document.getElementById('huginn-status-text');
             const dotEl = document.getElementById('huginn-status-dot');
@@ -1305,6 +1329,13 @@ ADMIN_HTML = """<!DOCTYPE html>
                     cfg.bot_token_masked ? ('aktueller Token: ' + cfg.bot_token_masked) : '(kein Token gesetzt)';
                 document.getElementById('huginn-bot-token').value = '';
                 document.getElementById('huginn-max-length').value = cfg.max_response_length || 4000;
+
+                // Patch 158: System-Prompt (Persona) befuellen + Default cachen.
+                _huginnDefaultPrompt = cfg.default_system_prompt || '';
+                const promptEl = document.getElementById('huginn-system-prompt');
+                if (promptEl) {
+                    promptEl.value = (cfg.system_prompt != null) ? cfg.system_prompt : '';
+                }
 
                 // Modell-Dropdown mit _allModels fuellen wenn verfuegbar.
                 // Patch 147 (B-019): Einheitlicher Formatter, Sortierung nach Input-Preis.
@@ -1357,11 +1388,15 @@ ADMIN_HTML = """<!DOCTYPE html>
             const statusEl = document.getElementById('huginn-save-status');
             statusEl.style.color = '#8f8';
             statusEl.textContent = 'Speichere...';
+            // Patch 158: system_prompt aus der Textarea mitnehmen — leerer String
+            // bedeutet "keine Persona" und wird bewusst durchgereicht.
+            const promptEl = document.getElementById('huginn-system-prompt');
             const payload = {
                 enabled: document.getElementById('huginn-enabled').value === 'true',
                 admin_chat_id: document.getElementById('huginn-admin-chat-id').value.trim(),
                 model: document.getElementById('huginn-model').value,
                 max_response_length: parseInt(document.getElementById('huginn-max-length').value, 10) || 4000,
+                system_prompt: promptEl ? promptEl.value : '',
                 group_behavior: {
                     respond_to_name: document.getElementById('hg-resp-name').checked,
                     respond_to_mention: document.getElementById('hg-resp-mention').checked,
@@ -2957,6 +2992,13 @@ async def get_huginn_config():
         masked = f"{token[:4]}…{token[-4:]}" if len(token) > 8 else "***"
     else:
         masked = ""
+    # Patch 158: system_prompt (Persona). Wenn nicht gesetzt → Default.
+    # Leerer String bleibt leer (User kann Persona bewusst entfernen).
+    raw_prompt = mod_cfg.get("system_prompt")
+    if raw_prompt is None:
+        system_prompt = DEFAULT_HUGINN_PROMPT
+    else:
+        system_prompt = str(raw_prompt)
     return {
         "enabled": bool(mod_cfg.get("enabled", False)),
         "bot_token_masked": masked,
@@ -2964,6 +3006,9 @@ async def get_huginn_config():
         "allowed_group_ids": mod_cfg.get("allowed_group_ids", []),
         "model": mod_cfg.get("model", "deepseek/deepseek-chat"),
         "max_response_length": mod_cfg.get("max_response_length", 4000),
+        "mode": mod_cfg.get("mode", "polling"),
+        "system_prompt": system_prompt,
+        "default_system_prompt": DEFAULT_HUGINN_PROMPT,
         "group_behavior": mod_cfg.get("group_behavior", {}),
         "hitl": mod_cfg.get("hitl", {}),
     }
@@ -2987,9 +3032,10 @@ async def post_huginn_config(request: Request):
     tg = modules.setdefault("telegram", {})
 
     # Nur erlaubte Felder durchreichen
+    # Patch 158: mode + system_prompt (Persona) dazu.
     for key in (
         "enabled", "admin_chat_id", "allowed_group_ids",
-        "model", "max_response_length",
+        "model", "max_response_length", "mode", "system_prompt",
     ):
         if key in data:
             tg[key] = data[key]

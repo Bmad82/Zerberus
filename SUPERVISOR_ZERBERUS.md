@@ -1,8 +1,19 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 157 (2026-04-24) – Terminal-Startup-Cleanup*
+*Letzte Aktualisierung: Patch 158 (2026-04-24) – Huginn-Persona + Guard-Kontext*
 
 ## Aktueller Patch
+
+**Patch 158** — Huginn-Persona + Guard-Kontext (2026-04-24)
+
+- **Huginn-Persona konfigurierbar:** Neue Konstante [`DEFAULT_HUGINN_PROMPT`](zerberus/modules/telegram/bot.py) ersetzt den alten generischen „brave Rabe"-Prompt — jetzt zynisch, bissig, mit Krächz-Einwürfen, Gossen-/Salonsprache und Dritter-Person-Dramatik. Der alte Name `DEFAULT_SYSTEM_PROMPT` zeigt auf die neue Konstante (Backwärts-Kompatibilität). GET/POST `/admin/huginn/config` in [`hel.py`](zerberus/app/routers/hel.py) akzeptieren und liefern `system_prompt` + `default_system_prompt` (für den Reset-Button im Frontend). Hel bekommt eine 12-Zeilen-Textarea im Huginn-Tab + „Standard-Persona wiederherstellen"-Button, der den gecachten Default aus der GET-Response zurückspielt (kein zweiter Request). Neuer Helper `_resolve_huginn_prompt(settings)` in [`telegram/router.py`](zerberus/modules/telegram/router.py) entscheidet per 3-Wege-Fallthrough (Key fehlt → Default; Key explizit `""` → leer; sonst → Config-String).
+- **Guard-Kontext pro Einsatzort:** [`check_response()`](zerberus/hallucination_guard.py) bekommt einen neuen optionalen Parameter `caller_context`. Neuer Builder `_build_system_prompt(caller_context)` hängt einen `[Kontext des Antwortenden]`-Block an den Guard-System-Prompt mit dem Disclaimer „Referenzen auf diese Elemente sind KEINE Halluzinationen". Huginn schickt `_build_huginn_guard_context(persona)` (Rabe-Beschreibung + Persona-Auszug, max 300 Zeichen) bei jedem Guard-Call; Nala (legacy.py) schickt seinen eigenen Zerberus-Selbstreferenz-Kontext. Das war der Fix für den Screenshot-Bug „Die Antwort enthält Halluzinationen, da sie fiktive Elemente wie das Zerberus-System und einen sprechenden Raben enthält".
+- **Guard-Verhalten: WARNUNG unterdrückt nicht mehr:** In [`_process_text_message()`](zerberus/modules/telegram/router.py) war der alte Flow „bei WARNUNG → Admin benachrichtigen, Antwort blockieren". Jetzt: Antwort geht IMMER an den User, Admin bekommt bei WARNUNG einen Hinweis-DM (inkl. Chat-ID + Grund), bei OK passiert nichts. Gleiche Logik für den autonomen Gruppen-Einwurf (`needs_llm_decision`-Pfad). User merkt also nichts mehr vom Guard — Chris bekommt die Hinweise zur späteren Bewertung.
+- **Tests:** 13 neue Tests in [`test_huginn_config_endpoint.py`](zerberus/tests/test_huginn_config_endpoint.py) (Persona-Round-Trip, Default-Fallback, Resolver-3-Wege, Textarea/Reset-Button im HTML) und [`test_hallucination_guard.py`](zerberus/tests/test_hallucination_guard.py) (caller_context im System-Prompt, Builder-Pure-Test, WARNUNG-sendet-trotzdem, OK-kein-Admin-Ping, Context-Builder). **523 passed** offline (510 vorher + 13 neue).
+- **Scope:** IN Scope: Persona-Konstante + Config-Feld, Hel-UI-Textarea, Guard-caller_context, Nala + Huginn-Guard-Call, Admin-Hinweis-statt-Block, 13 Tests, Doku. NICHT: Persona-Presets/Templates im UI; Live-Reload des System-Prompts ohne Neustart (Settings-Singleton invalidiert via `@invalidates_settings` aus Patch 156 — reicht); separates BLOCK-Verdict im Guard (aktuell OK/WARNUNG/SKIP/ERROR reicht, BLOCK-Semantik nur als Kommentar reserviert).
+- **Live-Verifikation (USER):** (1) Hel → Huginn-Tab → System-Prompt-Textarea ist da, zeigt beim ersten Laden den neuen Raben-Default. (2) Text ändern → Speichern → Reload → Wert bleibt. (3) „Standard-Persona wiederherstellen" → Default ist wieder drin. (4) Huginn auf Telegram fragen „Was bist du?" → krächzende, zynische Antwort mit Zerberus-Referenzen. (5) Der Screenshot-Bug „Halluzination: fiktive Elemente wie Zerberus und sprechender Rabe" tritt nicht mehr auf — User bekommt die Antwort direkt, Chris sieht Guard-Hinweise (falls überhaupt) nur im Admin-Chat.
+
+---
 
 **Patch 157** — Terminal-Startup-Cleanup (2026-04-24)
 

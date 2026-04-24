@@ -43,6 +43,22 @@ GUARD_SYSTEM_PROMPT = (
 )
 
 
+def _build_system_prompt(caller_context: str = "") -> str:
+    """Patch 158: fuegt den optionalen Kontext des Antwortenden in den Pruefer-
+    Prompt ein. Ziel ist Halluzinations-False-Positives zu verhindern, wenn
+    der Antwortende eine Persona hat (z. B. Huginn als Rabe) oder Selbst-
+    referenzen auf das Zerberus-System verwendet.
+    """
+    if not caller_context:
+        return GUARD_SYSTEM_PROMPT
+    context_block = (
+        "\n\n[Kontext des Antwortenden]\n"
+        f"{caller_context}\n"
+        "Referenzen auf diese Elemente sind KEINE Halluzinationen."
+    )
+    return GUARD_SYSTEM_PROMPT + context_block
+
+
 def _parse_verdict(content: str) -> Dict[str, Any]:
     """Extrahiert das JSON-Objekt aus der Guard-Antwort (robust gegen code-fences)."""
     clean = content.strip()
@@ -58,10 +74,21 @@ async def check_response(
     user_message: str,
     assistant_response: str,
     rag_context: str = "",
+    caller_context: str = "",
 ) -> Dict[str, Any]:
     """
     Prueft die Antwort des Hauptmodells auf Sycophancy und Halluzination.
     Fail-open: Bei Fehler geht die Antwort unveraendert durch.
+
+    Args:
+        user_message: User-Frage.
+        assistant_response: Zu pruefende LLM-Antwort.
+        rag_context: Optionaler RAG-Kontext (ergaenzt das User-Prompt).
+        caller_context: Patch 158 — optionaler Kontext ueber den Antwortenden
+            (Persona, System-Zugehoerigkeit). Verhindert dass der Guard
+            Persona-Elemente (z. B. Raben-Metaphern bei Huginn) oder
+            Selbstreferenzen auf das Zerberus-System als Halluzination
+            einstuft.
 
     Returns:
         {"verdict": "OK"|"WARNUNG"|"SKIP"|"ERROR", "reason": str, "latency_ms": int}
@@ -102,7 +129,7 @@ async def check_response(
                 json={
                     "model": GUARD_MODEL,
                     "messages": [
-                        {"role": "system", "content": GUARD_SYSTEM_PROMPT},
+                        {"role": "system", "content": _build_system_prompt(caller_context)},
                         {"role": "user", "content": user_prompt},
                     ],
                     "max_tokens": 100,

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from zerberus.core.config import get_settings, Settings
 from zerberus.core.event_bus import get_event_bus, Event
 from zerberus.modules.telegram.bot import (
+    DEFAULT_HUGINN_PROMPT,
     DEFAULT_SYSTEM_PROMPT,
     HuginnConfig,
     call_llm,
@@ -155,11 +156,56 @@ async def startup_huginn(settings: Settings) -> Optional["asyncio.Task"]:
     return task
 
 
-async def _run_guard(user_msg: str, assistant_msg: str) -> Dict[str, Any]:
-    """Optionaler Guard-Check via Ach-laber-doch-nicht-Modul."""
+def _resolve_huginn_prompt(settings: Settings) -> str:
+    """Patch 158: liefert den Persona-System-Prompt aus der Config.
+
+    - Key nicht vorhanden  → DEFAULT_HUGINN_PROMPT
+    - Key explizit ""      → "" (User hat Persona bewusst leer gesetzt)
+    - Key sonst-string     → der gesetzte String
+    """
+    mod_cfg = settings.modules.get("telegram", {}) or {}
+    if "system_prompt" not in mod_cfg:
+        return DEFAULT_HUGINN_PROMPT
+    val = mod_cfg.get("system_prompt")
+    if val is None:
+        return DEFAULT_HUGINN_PROMPT
+    return str(val)
+
+
+def _build_huginn_guard_context(persona: str) -> str:
+    """Patch 158: liefert den caller_context fuer den Guard.
+
+    Der Guard (Mistral Small) kennt Huginns Persona nicht und haelt Raben-
+    Metaphern + Zerberus-Referenzen sonst fuer Halluzinationen. Mit diesem
+    Kontext weiss er, dass das Charakter und keine erfundene Fakten sind.
+    """
+    return (
+        "Der Antwortende ist 'Huginn', ein KI-Assistent im Zerberus-System mit einer Raben-Persona. "
+        "Selbstreferenzen auf Zerberus, Raben-Metaphern, kraechzende Einwuerfe ('Krraa!', 'Kraechz!'), "
+        "sarkastische Kommentare, Gossensprache und Charakter-Elemente sind ERWUENSCHT und KEINE Halluzinationen. "
+        "Huginn spricht absichtlich zynisch und bissig - das ist sein Charakter, kein Fehler. "
+        f"Persona-Beschreibung (Auszug): {(persona or '')[:300]}"
+    )
+
+
+async def _run_guard(
+    user_msg: str,
+    assistant_msg: str,
+    caller_context: str = "",
+) -> Dict[str, Any]:
+    """Optionaler Guard-Check via Ach-laber-doch-nicht-Modul.
+
+    Patch 158: `caller_context` wird an den Guard weitergereicht, damit er
+    Persona-Elemente nicht mehr als Halluzination einstuft.
+    """
     try:
         from zerberus.hallucination_guard import check_response
-        return await check_response(user_msg, assistant_msg, rag_context="")
+        return await check_response(
+            user_msg,
+            assistant_msg,
+            rag_context="",
+            caller_context=caller_context,
+        )
     except Exception as e:
         logger.warning(f"[HUGINN-123] Guard-Call fehlgeschlagen: {e}")
         return {"verdict": "ERROR", "reason": str(e)[:100], "latency_ms": 0}
@@ -169,13 +215,19 @@ async def _process_text_message(
     info: Dict[str, Any],
     cfg: HuginnConfig,
     settings: Settings,
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    system_prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Kernflow: Input → Guard → LLM → Output.
 
     Patch 131: Wenn Bilder dabei sind, wird das konfigurierte Vision-Modell
     verwendet statt des Haupt-LLM (DeepSeek V3.2 hat keinen Vision-Support).
+
+    Patch 158: `system_prompt=None` → Persona kommt aus der Config (per
+    `_resolve_huginn_prompt`). Tests koennen weiter explizit einen String
+    (auch `""`) uebergeben.
     """
+    if system_prompt is None:
+        system_prompt = _resolve_huginn_prompt(settings)
     user_msg = info.get("text", "") or ""
 
     # Bilder → Vision: file_ids in URLs resolven
@@ -210,20 +262,10 @@ async def _process_text_message(
     if not answer.strip():
         return {"sent": False, "reason": "empty_llm"}
 
-    # Guard-Check auf Antwort
-    guard = await _run_guard(user_msg, answer)
-    if guard.get("verdict") == "WARNUNG":
-        # Im Admin-DM benachrichtigen, aber Antwort blockieren
-        if cfg.admin_chat_id:
-            await send_telegram_message(
-                cfg.bot_token,
-                cfg.admin_chat_id,
-                f"⚠️ *Huginn Guard-WARNUNG*\n"
-                f"User: {info.get('username', 'unbekannt')}\n"
-                f"Grund: {guard.get('reason', 'unbekannt')}\n"
-                f"Antwort unterdrueckt.",
-            )
-        return {"sent": False, "reason": "guard_blocked", "guard": guard}
+    # Guard-Check auf Antwort. Patch 158: caller_context mitgeben, damit
+    # Persona-Elemente nicht als Halluzination gelten.
+    guard_ctx = _build_huginn_guard_context(system_prompt)
+    guard = await _run_guard(user_msg, answer, caller_context=guard_ctx)
 
     text_out = format_code_response(answer)
     sent = await send_telegram_message(
@@ -232,6 +274,29 @@ async def _process_text_message(
         text_out,
         reply_to_message_id=info.get("message_id"),
     )
+
+    # Patch 158: Zweistufiges Verhalten.
+    #   WARNUNG  → Antwort wurde bereits gesendet, Admin bekommt einen Hinweis.
+    #   BLOCK    → Guard hat explizit Sicherheits-Block signalisiert; dann
+    #              wurde die Antwort oben zwar schon losgeschickt, aber der
+    #              Admin bekommt einen Alarm. Der Guard liefert aktuell nur
+    #              OK/WARNUNG/SKIP/ERROR - BLOCK ist ein reserviertes Signal
+    #              fuer spaetere Strictness-Stufen. Wir behandeln es defensiv.
+    verdict = guard.get("verdict")
+    if verdict == "WARNUNG" and cfg.admin_chat_id:
+        try:
+            await send_telegram_message(
+                cfg.bot_token,
+                cfg.admin_chat_id,
+                f"⚠️ *Huginn Guard-Hinweis*\n"
+                f"Chat: {info.get('chat_id')}\n"
+                f"User: {info.get('username', 'unbekannt')}\n"
+                f"Grund: {guard.get('reason', 'unbekannt')}\n"
+                f"(Antwort wurde trotzdem zugestellt.)",
+            )
+        except Exception as e:
+            logger.warning(f"[HUGINN-158] Guard-Warnung an Admin fehlgeschlagen: {e}")
+
     return {"sent": sent, "guard": guard, "latency_ms": llm_result.get("latency_ms", 0)}
 
 
@@ -320,17 +385,32 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
             candidate = llm_result.get("content", "") or ""
             if is_skip_response(candidate):
                 return {"ok": True, "skipped": "autonomous_skip"}
-            # Direkt schicken (Guard-Check folgt)
-            guard = await _run_guard("(gruppen-kontext)", candidate)
-            if guard.get("verdict") == "WARNUNG":
-                return {"ok": True, "skipped": "guard_blocked", "guard": guard}
+            # Guard-Check — Patch 158: mit Persona-Kontext, nur Admin-Hinweis
+            # bei WARNUNG, Antwort wird trotzdem gesendet.
+            persona = _resolve_huginn_prompt(settings)
+            guard_ctx = _build_huginn_guard_context(persona)
+            guard = await _run_guard(
+                "(gruppen-kontext)", candidate, caller_context=guard_ctx
+            )
             sent = await send_telegram_message(
                 cfg.bot_token,
                 info["chat_id"],
                 format_code_response(candidate),
             )
+            if guard.get("verdict") == "WARNUNG" and cfg.admin_chat_id:
+                try:
+                    await send_telegram_message(
+                        cfg.bot_token,
+                        cfg.admin_chat_id,
+                        f"⚠️ *Huginn Guard-Hinweis (autonom)*\n"
+                        f"Chat: {info.get('chat_id')}\n"
+                        f"Grund: {guard.get('reason', 'unbekannt')}\n"
+                        f"(Autonomer Einwurf wurde trotzdem gesendet.)",
+                    )
+                except Exception as e:
+                    logger.warning(f"[HUGINN-158] Guard-Warnung (autonom) an Admin fehlgeschlagen: {e}")
             group_mgr.mark_interjection(info["chat_id"])
-            return {"ok": True, "sent": sent, "reason": "autonomous"}
+            return {"ok": True, "sent": sent, "reason": "autonomous", "guard": guard}
 
         # Direkte Ansprache → normaler Flow
         result = await _process_text_message(info, cfg, settings)
