@@ -249,3 +249,182 @@ class TestCodeChunkerEdgeCases:
         )
         chunks = chunk_code(src, "unicode.py")
         assert len(chunks) >= 1, "Unicode-Python produziert keine Chunks"
+
+
+# ═══════════════════════════════════════════════════════════
+#  Patch 154 — Stress-Tests für Patches 137–153
+# ═══════════════════════════════════════════════════════════
+
+class TestFarbenStress:
+    """Fenrir testet den Farb-Fix (Patch 153) unter Stress-Bedingungen."""
+
+    def test_f_color_01_logout_login_no_black(self, nala_page: Page):
+        """F-COLOR-01: Logout + Login → Bubble-BG nicht #000000 (Patch 153)."""
+        from zerberus.tests.conftest import FENRIR_CREDS, _do_login
+        page = nala_page
+
+        # Erst einloggen
+        _do_login(page, FENRIR_CREDS)
+        page.wait_for_selector("#text-input", timeout=10000)
+
+        # Logout
+        page.evaluate("""() => {
+            if (typeof doLogout === 'function') doLogout();
+        }""")
+        page.wait_for_selector("#login-screen", state="visible", timeout=5000)
+
+        # Wieder einloggen
+        _do_login(page, FENRIR_CREDS)
+        page.wait_for_selector("#text-input", timeout=10000)
+
+        colors = page.evaluate("""() => {
+            const s = getComputedStyle(document.documentElement);
+            return {
+                userBg: s.getPropertyValue('--bubble-user-bg').trim(),
+                llmBg:  s.getPropertyValue('--bubble-llm-bg').trim(),
+            };
+        }""")
+        black = {'#000000', '#000', 'rgb(0, 0, 0)', ''}
+        assert colors['userBg'].lower() not in black, (
+            f"Nach Logout+Login: user-bubble-bg schwarz: {colors['userBg']!r}"
+        )
+        assert colors['llmBg'].lower() not in black, (
+            f"Nach Logout+Login: llm-bubble-bg schwarz: {colors['llmBg']!r}"
+        )
+
+    def test_f_color_02_hsl_picker_no_black(self, logged_in_fenrir: Page):
+        """F-COLOR-02: HSL-Slider Extremwert → Farbpicker zeigt kein #000000 (Patch 153)."""
+        page = logged_in_fenrir
+
+        # Settings öffnen
+        burger = page.locator(".hamburger, .burger-btn").first
+        if burger.count() > 0:
+            burger.click()
+            page.wait_for_timeout(300)
+        gear = page.locator(".sidebar-footer-cog, [class*='settings-btn']").first
+        if gear.count() == 0:
+            pytest.skip("Settings-Button nicht gefunden")
+        gear.click()
+        page.wait_for_timeout(400)
+
+        # HSL-Slider für User-BG auf Extremwert setzen (H=338, S=82, L=59 — Pink)
+        h_slider = page.locator("#hsl-user-h, [id*='hsl-user']").first
+        if h_slider.count() == 0:
+            pytest.skip("HSL-Slider nicht gefunden")
+
+        h_slider.evaluate("el => { el.value = 338; el.dispatchEvent(new Event('input')); }")
+        page.wait_for_timeout(300)
+
+        # Farbpicker-Wert prüfen — darf nicht #000000 sein
+        picker_val = page.evaluate(
+            "() => (document.getElementById('bc-user-bg') || {}).value || ''"
+        )
+        assert picker_val != "#000000", (
+            f"Farbpicker zeigt #000000 nach HSL=338 — cssToHex-HSL-Bug noch aktiv"
+        )
+        assert picker_val.startswith("#"), f"Farbpicker-Wert kein Hex: {picker_val!r}"
+
+    def test_f_color_03_hsl_extreme_contrast_readable(self, logged_in_fenrir: Page):
+        """F-COLOR-03: HSL-Extremwerte → Text bleibt lesbar (Auto-Kontrast Patch 140)."""
+        page = logged_in_fenrir
+
+        # CSS-Variable direkt auf weißen Hintergrund setzen (extremster Fall)
+        page.evaluate("""() => {
+            document.documentElement.style.setProperty('--bubble-user-bg', '#ffffff');
+            if (typeof applyAutoContrast === 'function') applyAutoContrast();
+        }""")
+        page.wait_for_timeout(200)
+
+        text_color = page.evaluate(
+            "() => getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--bubble-user-text').trim()"
+        )
+        # Auf weißem Hintergrund muss dunkler Text gewählt werden
+        assert text_color in ("#1a1a1a", "#000000", "#0a1628", "rgb(26, 26, 26)") or (
+            text_color.lower() not in ("#ffffff", "#f0f0f0", "#fff")
+        ), f"Auto-Kontrast auf weißem BG hat hellen Text gewählt: {text_color!r}"
+
+
+class TestPacemakerStress:
+    """Fenrir stresst den Pacemaker (Patch 150)."""
+
+    def test_f_pace_01_master_toggle_stable(self, hel_page: Page):
+        """F-PACE-01: Master-Schalter Rapid-Toggle (5×) → Seite stabil."""
+        page = hel_page
+        toggle = page.locator(
+            "#pacemaker-master, #pacemaker-enabled, input[id*='pacemaker']"
+        ).first
+        if toggle.count() == 0:
+            pytest.skip("Pacemaker-Master-Toggle nicht gefunden")
+
+        for _ in range(5):
+            toggle.click()
+            page.wait_for_timeout(150)
+
+        # Seite noch responsiv
+        from playwright.sync_api import expect
+        expect(page.locator("body")).to_be_visible()
+
+    def test_f_pace_02_page_stays_responsive(self, hel_page: Page):
+        """F-PACE-02: Pacemaker-Sektion öffnen → keine JS-Fehler."""
+        page = hel_page
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        # System-Tab öffnen (wo Pacemaker sitzt)
+        sys_tab = page.locator(
+            ".hel-tab[data-tab='system'], .hel-tab[data-tab='sysctl']"
+        ).first
+        if sys_tab.count() > 0:
+            sys_tab.click()
+            page.wait_for_timeout(500)
+
+        assert errors == [], f"JS-Fehler nach Pacemaker-Tab: {errors}"
+
+
+class TestTTSStress:
+    """Fenrir stresst TTS (Patch 143)."""
+
+    def test_f_tts_01_empty_text_no_crash(self, logged_in_fenrir: Page):
+        """F-TTS-01: TTS-Aufruf mit leerem Text wirft keinen unbehandelten Fehler."""
+        page = logged_in_fenrir
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        # speakText('') direkt aufrufen
+        page.evaluate("""async () => {
+            try {
+                if (typeof speakText === 'function') {
+                    await speakText('');
+                }
+            } catch(e) {
+                // Erwarteter Fehler bei leerem Text — kein globaler Crash
+            }
+        }""")
+        page.wait_for_timeout(1000)
+        # Seite darf nicht crashen (kein unbehandelter pageerror)
+        fatal = [e for e in errors if "Cannot read" in e or "undefined" in e]
+        assert fatal == [], f"TTS mit leerem Text: unbehandelte Fehler: {fatal}"
+
+    def test_f_tts_02_button_not_duplicate(self, logged_in_fenrir: Page):
+        """F-TTS-02: Nach mehrfachem Chat-Senden kein TTS-Button-Duplikat."""
+        page = logged_in_fenrir
+        for _ in range(3):
+            page.fill("#text-input", "Test")
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(500)
+
+        try:
+            page.wait_for_selector(".bot-message", timeout=30000)
+        except Exception:
+            pytest.skip("Bot hat nicht geantwortet")
+
+        # Erstes Bot-Bubble prüfen: genau 1 TTS-Button
+        tts_in_first = page.evaluate("""() => {
+            const first = document.querySelector('.bot-message');
+            if (!first) return 0;
+            return first.querySelectorAll('[class*="tts"], .speak-btn').length;
+        }""")
+        assert tts_in_first <= 1, (
+            f"Erste Bot-Bubble hat {tts_in_first} TTS-Buttons (Duplikat!)"
+        )

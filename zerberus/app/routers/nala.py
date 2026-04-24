@@ -1284,9 +1284,19 @@ NALA_HTML = """<!DOCTYPE html>
                     nala_bubble_llm_bg:    '--bubble-llm-bg',
                     nala_bubble_llm_text:  '--bubble-llm-text'
                 };
+                // Patch 153: Guard gegen #000000-Pollution. Wird nie absichtlich als
+                // Hintergrundfarbe gesetzt — entsteht nur durch cssToHex-HSL-Bug oder
+                // kaputte localStorage-Daten. Bereinigen + Fallback auf CSS-Default.
+                var BG_KEYS = ['nala_bubble_user_bg', 'nala_bubble_llm_bg'];
+                var BLACK_VALUES = ['#000000', '#000', 'rgb(0, 0, 0)', 'rgba(0,0,0,1)'];
                 Object.keys(map).forEach(function(k) {
                     var v = localStorage.getItem(k);
-                    if (v) r.setProperty(map[k], v);
+                    if (!v) return;
+                    if (BG_KEYS.indexOf(k) !== -1 && BLACK_VALUES.indexOf(v.trim().toLowerCase()) !== -1) {
+                        localStorage.removeItem(k);  // Korrupten Wert bereinigen
+                        return;
+                    }
+                    r.setProperty(map[k], v);
                 });
                 var fs = localStorage.getItem('nala_font_size');
                 if (fs) r.setProperty('--font-size-base', fs);
@@ -2825,6 +2835,11 @@ NALA_HTML = """<!DOCTYPE html>
     })();
 
     // ── Patch 77 C: Theme-Editor ──
+    // Patch 153: HSL-Bug-Fix — cssToHex konvertierte 'hsl(H,S%,L%)' falsch zu ungültigem
+    // Hex, was den Farbpicker auf #000000 zurücksetzte und beim nächsten oninput
+    // schwarze Bubbles in localStorage schrieb. Jetzt: HSL wird korrekt über Canvas
+    // aufgelöst (gleiche Technik wie getContrastColor); rgb() / rgba() per direktem
+    // Parsing; Fallback auf #000000 nur wenn wirklich kein Wert vorliegt.
     function cssToHex(css) {
         if (!css) return '#000000';
         css = css.trim();
@@ -2832,7 +2847,36 @@ NALA_HTML = """<!DOCTYPE html>
             if (css.length === 4) return '#' + css[1]+css[1]+css[2]+css[2]+css[3]+css[3];
             return css.slice(0, 7);
         }
+        // HSL, HSLa, oklch, etc. → über Browser-Canvas auflösen
+        if (css.startsWith('hsl') || css.startsWith('oklch') || css.startsWith('color(')) {
+            const tmp = document.createElement('div');
+            tmp.style.color = css;
+            document.body.appendChild(tmp);
+            const computed = getComputedStyle(tmp).color;
+            document.body.removeChild(tmp);
+            const m = computed.match(/\d+/g);
+            if (!m || m.length < 3) return '#000000';
+            return '#' + [m[0], m[1], m[2]].map(n => (+n).toString(16).padStart(2, '0')).join('');
+        }
+        // rgb() / rgba() — direkt parsen
         const m = css.match(/\d+/g);
+        if (!m || m.length < 3) return '#000000';
+        return '#' + [m[0], m[1], m[2]].map(n => (+n).toString(16).padStart(2, '0')).join('');
+    }
+    // Patch 153: Liefert die tatsächlich gerenderte Hex-Farbe einer CSS-Variable —
+    // auch wenn sie als 'hsl(...)' oder 'rgba(...)' gespeichert ist. Verhindert dass
+    // Farbpicker bei HSL-Werten auf #000000 fallen und das dann in localStorage schreiben.
+    function computedVarToHex(varName) {
+        const tmp = document.createElement('div');
+        tmp.style.backgroundColor = 'var(' + varName + ')';
+        document.body.appendChild(tmp);
+        const bg = getComputedStyle(tmp).backgroundColor;
+        document.body.removeChild(tmp);
+        if (!bg || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') {
+            // Fallback: roher Wert via cssToHex
+            return cssToHex(getComputedStyle(document.documentElement).getPropertyValue(varName));
+        }
+        const m = bg.match(/\d+/g);
         if (!m || m.length < 3) return '#000000';
         return '#' + [m[0], m[1], m[2]].map(n => (+n).toString(16).padStart(2, '0')).join('');
     }
@@ -2844,10 +2888,12 @@ NALA_HTML = """<!DOCTYPE html>
         document.getElementById('tc-gold').value    = cssToHex(r.getPropertyValue('--color-gold'));
         document.getElementById('tc-text').value    = cssToHex(r.getPropertyValue('--color-text-light'));
         document.getElementById('tc-accent').value  = cssToHex(r.getPropertyValue('--color-accent'));
-        document.getElementById('bc-user-bg').value   = cssToHex(r.getPropertyValue('--bubble-user-bg'));
-        document.getElementById('bc-user-text').value = cssToHex(r.getPropertyValue('--bubble-user-text'));
-        document.getElementById('bc-llm-bg').value    = cssToHex(r.getPropertyValue('--bubble-llm-bg'));
-        document.getElementById('bc-llm-text').value  = cssToHex(r.getPropertyValue('--bubble-llm-text'));
+        // Patch 153: computedVarToHex statt cssToHex — rendert HSL/rgba korrekt über
+        // Canvas, verhindert dass ein hsl()-Wert den Picker auf #000000 setzt.
+        document.getElementById('bc-user-bg').value   = computedVarToHex('--bubble-user-bg');
+        document.getElementById('bc-user-text').value = computedVarToHex('--bubble-user-text');
+        document.getElementById('bc-llm-bg').value    = computedVarToHex('--bubble-llm-bg');
+        document.getElementById('bc-llm-text').value  = computedVarToHex('--bubble-llm-text');
         // Patch 102 (B-07): Enter-Behavior nur auf Desktop sichtbar; Wert aus localStorage setzen.
         const enterSection = document.getElementById('enter-behavior-section');
         const enterSelect  = document.getElementById('enter-behavior-select');

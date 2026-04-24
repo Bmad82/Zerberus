@@ -3234,3 +3234,71 @@ Zweites Mega-Patch-Experiment nach 122–129. Sechs fokussierte Patches in einer
 - Offene Punkte (Patch 153+): Scheduler-Integration für Patch-150-Processes (Worker liest `modules.pacemaker_processes`); FAISS-Migration via `--execute`; Legacy-CSS auf `.zb-*`-Klassen migrieren; Sancho-Panza-Veto; Nala-Vision-Upload-UI.
 
 *Stand: 2026-04-24, Monster-Patch 137–152 — drittes Mega-Patch-Experiment, 16 Patches, 180 neue Tests.*
+
+---
+
+## Patch 153 — Vidar Smoke-Test-Agent + Farb-Default-Fix
+*2026-04-24*
+
+### Farb-Default-Fix (cssToHex HSL-Bug)
+Root-Cause-Analyse des Schwarz-Bubbles-Bugs:
+- `cssToHex('hsl(H,S%,L%)')` parste H/S/L fälschlich als RGB-Bytes → ungültiges Hex (z.B. `#152523b`, 9 Zeichen)
+- Browser ignoriert ungültigen Picker-Wert → `<input type="color">` zeigt `#000000`
+- Nächster `oninput`-Event → `bubblePreview()` schreibt `#000000` in localStorage
+- Nächster Seitenload: IIFE liest `#000000` → schwarze Bubbles
+**Fix:**
+- `cssToHex()`: HSL/oklch-Strings werden jetzt über Browser-Canvas aufgelöst (wie `getContrastColor`)
+- Neue Hilfsfunktion `computedVarToHex(varName)`: rendert CSS-Variable über Temp-Div → immer korrekte Hex-Farbe, auch bei HSL/rgba
+- `openSettingsModal()`: nutzt `computedVarToHex` statt `cssToHex(r.getPropertyValue(...))` für alle Bubble-Picker
+- IIFE-Guard: `#000000`/`#000`/`rgb(0,0,0)` für Bubble-BG-Keys → bereinigt + nicht angewendet
+
+### Vidar-Profil
+- `config.yaml`: Profil `vidar` (`vidartest123`, `is_test: true`) hinzugefügt
+- `conftest.py`: `VIDAR_CREDS`, `logged_in_vidar`-Fixture ergänzt
+
+### Vidar Smoke-Test-Agent
+Neue Datei `zerberus/tests/test_vidar.py` (Go/No-Go Post-Deployment):
+- `TestCritical` (6 Deploy-Blocker): Nala lädt, Login, Bubbles nicht schwarz, Chat senden+empfangen, Hel lädt, shared-design.css
+- `TestImportant` (11 wichtige Checks): Touch-Targets ≥44px, Design-Tokens, Settings öffnen + 3 Tabs, Katzenpfoten-DOM, Particle-Canvas, Hel System-Tab, Hel Memory, Hel Pacemaker, Session-Titel nicht leer, TTS-Button
+- `TestCosmetic` (4 optionale): LLM-Dropdowns, kein JSON in Dialekte, CSS-Var gesetzt, keine input-statt-select
+
+**Geänderte Dateien:** `zerberus/app/routers/nala.py`, `config.yaml`, `zerberus/tests/conftest.py`
+**Neue Dateien:** `zerberus/tests/test_vidar.py`
+
+---
+
+## Patch 154 — Checklisten-Sweep (Patches 137–153)
+*2026-04-24*
+
+### test_loki_mega_patch.py — Fixes + Sweep
+- **Test-Bug-Fix:** `TestBubbleShine` prüfte `linear-gradient`, CSS-Code hat seit Patch 139 `radial-gradient` → Assertion korrigiert (prüft jetzt auf `radial-gradient`)
+- **Neue Klasse `TestChecklistSweep`** (10 Tests):
+  - L-SW-01: `.message` max-width 92% auf Mobile (Patch 139 B-008)
+  - L-SW-02: Action-Toolbar initial `opacity: 0` (Patch 139 B-009)
+  - L-SW-03: Retry-Button `background: transparent` (Patch 139 B-010)
+  - L-SW-04: Profil-Badge font-size < 1em (Patch 139 B-011)
+  - L-SW-05: Kein Schraubenschlüssel 🔧 in Top-Bar (Patch 142 B-006)
+  - L-SW-06: "Mein Ton" im Settings-Tab "Ausdruck", nicht in Sidebar (Patch 142 B-012)
+  - L-SW-07: Logout-Button nicht neben "Neue Session" (Patch 142 B-013)
+  - L-SW-08: UI-Skalierungs-Slider in Settings (Patch 142 B-016)
+  - L-SW-09: Bubble-Farben nach Login nicht #000000 (Patch 153)
+  - L-SW-10: `cssToHex('hsl(...)')` gibt kein #000000 zurück (Patch 153)
+
+### test_fenrir_mega_patch.py — Stress-Tests
+- **TestFarbenStress** (3): Logout+Login-Farb-Persistenz, HSL-Picker-Wert nach Slider, Kontrast-Extremwert auf weißem BG
+- **TestPacemakerStress** (2): Rapid-Toggle 5×, JS-Error-frei beim System-Tab
+- **TestTTSStress** (2): leerer Text kein Crash, kein TTS-Button-Duplikat
+
+### Dokumentation
+- `CLAUDE_ZERBERUS.md`: Test-Agenten-Tabelle mit Vidar ergänzt
+- `SUPERVISOR_ZERBERUS.md`: Patch 153–154 als aktueller Patch, Roadmap [x] markiert
+- `docs/PROJEKTDOKUMENTATION.md`: Diese Einträge
+
+**Geänderte Dateien:** `zerberus/tests/test_loki_mega_patch.py`, `zerberus/tests/test_fenrir_mega_patch.py`, `CLAUDE_ZERBERUS.md`, `SUPERVISOR_ZERBERUS.md`
+
+**Aktueller Stand nach Patch 153–154:**
+- Tests: **488 passed** (Baseline, Offline-Suite) + neue Playwright/Smoke-Tests (server-abhängig)
+- Neue Dateien: `zerberus/tests/test_vidar.py`
+- Neue Config-Keys: `profiles.vidar` (is_test: true)
+
+*Stand: 2026-04-24, Patch 153–154 — Vidar + Farb-Fix + Checklisten-Sweep.*

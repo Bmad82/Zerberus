@@ -51,7 +51,10 @@ class TestBubbleShine:
     """Patch 124: ::before Pseudo-Element mit Gradient auf allen Bubbles."""
 
     def test_user_bubble_has_shine_before(self, logged_in_loki: Page):
-        """L-UI-01/02: User-Bubble hat ::before mit linear-gradient."""
+        """L-UI-01: User-Bubble hat ::before mit radial-gradient (Patch 139 B-005).
+
+        Patch 154 Fix: war 'linear-gradient', korrekt ist 'radial-gradient' seit Patch 139.
+        """
         page = logged_in_loki
         page.fill("#text-input", "Hallo Nala, testing Shine.")
         page.keyboard.press("Enter")
@@ -65,12 +68,15 @@ class TestBubbleShine:
             "}"
         )
         assert bg_before is not None
-        assert "linear-gradient" in bg_before.lower(), (
+        assert "gradient" in bg_before.lower(), (
             f"User-Bubble ::before hat keinen Gradient: {bg_before!r}"
+        )
+        assert "radial-gradient" in bg_before.lower(), (
+            f"User-Bubble ::before soll radial-gradient sein (Patch 139): {bg_before!r}"
         )
 
     def test_bot_bubble_has_shine_before(self, logged_in_loki: Page):
-        """L-UI-02: Bot-Bubble hat ebenfalls ::before mit Gradient."""
+        """L-UI-02: Bot-Bubble hat ebenfalls ::before mit radial-gradient."""
         page = logged_in_loki
         page.fill("#text-input", "Kurze Antwort bitte.")
         page.keyboard.press("Enter")
@@ -88,8 +94,8 @@ class TestBubbleShine:
             "}"
         )
         assert bg_before is not None
-        assert "linear-gradient" in bg_before.lower(), (
-            f"Bot-Bubble ::before hat keinen Gradient: {bg_before!r}"
+        assert "radial-gradient" in bg_before.lower(), (
+            f"Bot-Bubble ::before soll radial-gradient sein (Patch 139): {bg_before!r}"
         )
 
 
@@ -479,3 +485,227 @@ class TestHuginnHelTab:
             "() => getComputedStyle(document.getElementById('section-huginn')).display"
         )
         assert display != "none", "Huginn-Sektion nicht sichtbar nach Tab-Klick"
+
+
+# ═══════════════════════════════════════════════════════════
+#  Patch 154 — Checklisten-Sweep (Patches 137–153)
+# ═══════════════════════════════════════════════════════════
+
+class TestChecklistSweep:
+    """Patch 154: Loki-Verifikation aller offenen Checklisten-Punkte B-005..B-016
+    und Patch-Features 143-153 die noch nicht in separaten Test-Dateien abgedeckt sind."""
+
+    # ── B-008: Bubbles ≥ 92% max-width auf Mobile ──
+
+    def test_bubble_max_width_92_mobile(self, logged_in_loki: Page):
+        """L-SW-01: .message hat max-width 92% auf Mobile (Patch 139 B-008)."""
+        page = logged_in_loki
+        page.set_viewport_size(MOBILE_VIEWPORT)
+        page.fill("#text-input", "B-008 Test")
+        page.keyboard.press("Enter")
+        page.wait_for_selector(".user-message", timeout=5000)
+
+        max_w = page.evaluate(
+            "() => getComputedStyle(document.querySelector('.user-message')).maxWidth"
+        )
+        # Erwartet: '92%' oder einen px-Wert nahe Viewport-Breite * 0.92
+        assert "92" in max_w or (
+            "px" in max_w and float(max_w.replace("px", "")) >= 300
+        ), f".message max-width ist nicht ~92%: {max_w!r}"
+
+    # ── B-009: Action-Buttons initial opacity: 0 ──
+
+    def test_action_buttons_initial_hidden(self, logged_in_loki: Page):
+        """L-SW-02: Action-Toolbar hat initial opacity 0 (Patch 139 B-009, Tap-Toggle)."""
+        page = logged_in_loki
+        page.fill("#text-input", "Action-Test")
+        page.keyboard.press("Enter")
+        page.wait_for_selector(".user-message", timeout=5000)
+
+        opacity = page.evaluate("""() => {
+            const toolbar = document.querySelector('.msg-actions, .action-toolbar, [class*="msg-action"]');
+            if (!toolbar) return null;
+            return getComputedStyle(toolbar).opacity;
+        }""")
+        if opacity is None:
+            pytest.skip("Action-Toolbar nicht gefunden — Patch 139 möglicherweise anders implementiert")
+        assert opacity in ("0", "0.0"), (
+            f"Action-Toolbar soll initial opacity:0 haben, ist: {opacity!r}"
+        )
+
+    # ── B-010: Repeat-Button background: transparent ──
+
+    def test_repeat_button_transparent_bg(self, logged_in_loki: Page):
+        """L-SW-03: Retry/Repeat-Button hat background: transparent (Patch 139 B-010)."""
+        page = logged_in_loki
+        retry = page.locator(
+            ".retry-btn, .repeat-btn, [class*='retry'], [class*='repeat'], "
+            "[title*='Wiederhol'], [aria-label*='Wiederhol']"
+        ).first
+        if retry.count() == 0:
+            pytest.skip("Kein Retry/Repeat-Button gefunden")
+
+        bg = page.evaluate(
+            "() => {"
+            "  const el = document.querySelector('.retry-btn, [class*=\"retry\"]');"
+            "  return el ? getComputedStyle(el).backgroundColor : null;"
+            "}"
+        )
+        if bg is None:
+            pytest.skip("Retry-Button-Stil nicht auslesbar")
+        # transparent = rgba(0, 0, 0, 0) oder 'transparent'
+        assert bg in ("transparent", "rgba(0, 0, 0, 0)"), (
+            f"Retry-Button background ist nicht transparent: {bg!r}"
+        )
+
+    # ── B-011: Titelzeile font-size < 1em ──
+
+    def test_title_font_size_small(self, logged_in_loki: Page):
+        """L-SW-04: Profil-Badge / Titelzeile hat font-size < 1em (Patch 139 B-011)."""
+        page = logged_in_loki
+        font_size = page.evaluate("""() => {
+            const badge = document.querySelector('#profile-badge, .profile-badge');
+            if (!badge) return null;
+            return getComputedStyle(badge).fontSize;
+        }""")
+        if font_size is None:
+            pytest.skip("Profil-Badge nicht gefunden")
+        # font-size in px — bei body 15px ist 1em = 15px; < 1em bedeutet < 15px
+        px = float(font_size.replace("px", "")) if "px" in font_size else 999
+        assert px < 15, f"Profil-Badge font-size ≥ 1em: {font_size!r} ({px}px)"
+
+    # ── B-006: Kein Schraubenschlüssel in Top-Bar ──
+
+    def test_no_wrench_in_topbar(self, logged_in_loki: Page):
+        """L-SW-05: Top-Bar enthält keinen Schraubenschlüssel 🔧 (Patch 142 B-006)."""
+        page = logged_in_loki
+        content = page.content()
+        # Schraubenschlüssel-Emoji oder wrench-class in Top-Bar
+        topbar = page.evaluate("""() => {
+            const tb = document.querySelector('.chat-header, .top-bar, header');
+            return tb ? tb.innerHTML : '';
+        }""")
+        assert "🔧" not in topbar, "Schraubenschlüssel-Emoji noch in Top-Bar"
+        assert "wrench" not in topbar.lower(), "Wrench-Element noch in Top-Bar"
+
+    # ── B-012: "Mein Ton" in Tab "Ausdruck", nicht in Sidebar ──
+
+    def test_mein_ton_in_settings_ausdruck(self, logged_in_loki: Page):
+        """L-SW-06: 'Mein Ton' ist im Settings-Tab 'Ausdruck', nicht in Sidebar (Patch 142)."""
+        page = logged_in_loki
+        # Sidebar öffnen
+        burger = page.locator(".hamburger, .burger-btn, #burger-btn").first
+        if burger.count() > 0:
+            burger.click()
+            page.wait_for_timeout(300)
+        sidebar_html = page.evaluate("""() => {
+            const s = document.querySelector('.sidebar, .drawer, #sidebar');
+            return s ? s.innerHTML : '';
+        }""")
+        assert "Mein Ton" not in sidebar_html, "'Mein Ton' ist noch in der Sidebar"
+
+        # Schließen
+        if burger.count() > 0:
+            burger.click()
+            page.wait_for_timeout(200)
+
+        # In Settings suchen
+        gear = page.locator(".sidebar-footer-cog, #settings-btn, [class*='settings-btn']").first
+        if gear.count() > 0:
+            gear.click()
+            page.wait_for_timeout(300)
+        voice_tab = page.locator("[data-tab='voice'], .settings-tab-btn[data-tab='voice']").first
+        if voice_tab.count() > 0:
+            voice_tab.click()
+            page.wait_for_timeout(200)
+        settings_content = page.evaluate("""() => {
+            const p = document.querySelector('#settings-tab-voice, [id*="voice"]');
+            return p ? p.innerHTML : document.body.innerHTML;
+        }""")
+        assert "Mein Ton" in settings_content or "Ton" in settings_content, (
+            "'Mein Ton' nicht im Settings-Tab Ausdruck gefunden"
+        )
+
+    # ── B-013: Abmelden nicht neben "Neue Session" ──
+
+    def test_logout_not_next_to_new_session(self, logged_in_loki: Page):
+        """L-SW-07: Logout-Button ist nicht neben dem 'Neue Session'-Button (Patch 142 B-013)."""
+        page = logged_in_loki
+        burger = page.locator(".hamburger, .burger-btn, #burger-btn").first
+        if burger.count() > 0:
+            burger.click()
+            page.wait_for_timeout(300)
+
+        # Logout und Neue-Session Buttons holen
+        logout = page.locator("[onclick*='doLogout'], .logout-btn, [aria-label='Abmelden']").first
+        new_session = page.locator("[onclick*='newSession'], .new-session-btn").first
+
+        if logout.count() == 0 or new_session.count() == 0:
+            pytest.skip("Logout- oder Neue-Session-Button nicht gefunden")
+
+        logout_box = logout.bounding_box()
+        new_session_box = new_session.bounding_box()
+
+        if logout_box is None or new_session_box is None:
+            pytest.skip("Button-Positionen nicht ermittelbar")
+
+        # Vertikaler Abstand > 40px = sie sind NICHT nebeneinander
+        y_dist = abs(logout_box["y"] - new_session_box["y"])
+        x_dist = abs(logout_box["x"] - new_session_box["x"])
+        assert not (y_dist < 10 and x_dist < 100), (
+            f"Logout sitzt zu nah an 'Neue Session' (y-Dist={y_dist:.0f}px, x-Dist={x_dist:.0f}px)"
+        )
+
+    # ── B-016: UI-Skalierung Slider ──
+
+    def test_ui_scale_slider_present(self, logged_in_loki: Page):
+        """L-SW-08: UI-Skalierungs-Slider ist in Settings 'Aussehen' vorhanden (Patch 142 B-016)."""
+        page = logged_in_loki
+        gear = page.locator(".sidebar-footer-cog, #settings-btn, [class*='settings-btn']").first
+        burger = page.locator(".hamburger, .burger-btn, #burger-btn").first
+        if burger.count() > 0:
+            burger.click()
+            page.wait_for_timeout(200)
+        if gear.count() > 0:
+            gear.click()
+            page.wait_for_timeout(300)
+
+        slider = page.locator(
+            "#ui-scale-slider, input[id*='scale'], input[id*='ui-scale'], "
+            "[class*='ui-scale'], [class*='scale-slider']"
+        ).first
+        assert slider.count() > 0, "UI-Skalierungs-Slider nicht in Settings gefunden"
+
+    # ── Patch 153: Farb-Default-Fix ──
+
+    def test_bubble_colors_not_black_after_reload(self, logged_in_loki: Page):
+        """L-SW-09: Bubble-Farben sind nach Login nicht #000000 (Patch 153)."""
+        page = logged_in_loki
+        colors = page.evaluate("""() => {
+            const s = getComputedStyle(document.documentElement);
+            return {
+                userBg: s.getPropertyValue('--bubble-user-bg').trim(),
+                llmBg:  s.getPropertyValue('--bubble-llm-bg').trim(),
+            };
+        }""")
+        black = {'#000000', '#000', 'rgb(0, 0, 0)', 'rgba(0, 0, 0, 0)', ''}
+        assert colors['userBg'].lower() not in black, (
+            f"--bubble-user-bg ist schwarz: {colors['userBg']!r}"
+        )
+        assert colors['llmBg'].lower() not in black, (
+            f"--bubble-llm-bg ist schwarz: {colors['llmBg']!r}"
+        )
+
+    def test_cssto_hex_hsl_not_black(self, logged_in_loki: Page):
+        """L-SW-10: cssToHex() gibt für HSL-Strings kein #000000 zurück (Patch 153)."""
+        page = logged_in_loki
+        result = page.evaluate("""() => {
+            if (typeof cssToHex !== 'function') return 'skip';
+            return cssToHex('hsl(338, 82%, 59%)');
+        }""")
+        if result == "skip":
+            pytest.skip("cssToHex nicht im globalen Scope (ggf. in closure)")
+        assert result != "#000000", (
+            f"cssToHex('hsl(338, 82%, 59%)') gibt #000000 zurück — HSL-Bug noch vorhanden"
+        )
+        assert result.startswith("#"), f"cssToHex gibt kein Hex zurück: {result!r}"

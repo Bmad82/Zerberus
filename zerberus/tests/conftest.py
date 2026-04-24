@@ -39,6 +39,7 @@ BASE_URL = "https://127.0.0.1:5000"
 
 LOKI_CREDS = {"username": "loki", "password": "lokitest123"}
 FENRIR_CREDS = {"username": "fenrir", "password": "fenrirtest123"}
+VIDAR_CREDS = {"username": "vidar", "password": "vidartest123"}  # Patch 153: Smoke-Test
 
 
 @pytest.fixture(scope="session")
@@ -68,6 +69,13 @@ def logged_in_loki(nala_page: Page) -> Page:
 @pytest.fixture
 def logged_in_fenrir(nala_page: Page) -> Page:
     _do_login(nala_page, FENRIR_CREDS)
+    return nala_page
+
+
+@pytest.fixture
+def logged_in_vidar(nala_page: Page) -> Page:
+    """Patch 153: Vidar Smoke-Test-Profil."""
+    _do_login(nala_page, VIDAR_CREDS)
     return nala_page
 
 

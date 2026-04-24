@@ -80,10 +80,17 @@ Kein reiner Freitext-Dialog, wenn eine binäre/ternäre Entscheidung ausreicht.
 
 ## Tests (seit Patch 93)
 
-- Playwright-Tests in `zerberus/tests/` (Loki = E2E, Fenrir = Chaos)
-- Test-Accounts `loki`/`fenrir` sind Pflicht in `config.yaml` (siehe Patch 93)
+- Playwright-Tests in `zerberus/tests/` (Loki = E2E, Fenrir = Chaos, Vidar = Smoke)
+- Test-Accounts `loki`/`fenrir`/`vidar` sind Pflicht in `config.yaml` (siehe Patches 93, 153)
 - Ausführen: `pytest zerberus/tests/ -v --html=zerberus/tests/report/full_report.html --self-contained-html`
 - Server muss laufen für die Tests (`https://127.0.0.1:5000`)
+
+### Test-Agenten
+| Agent | Datei | Fokus | Passwort |
+|-------|-------|-------|---------|
+| **Loki** | `test_loki.py`, `test_loki_mega_patch.py` | E2E Happy-Path, Feature-Verifikation | `lokitest123` |
+| **Fenrir** | `test_fenrir.py`, `test_fenrir_mega_patch.py` | Chaos, Edge-Cases, Stress | `fenrirtest123` |
+| **Vidar** | `test_vidar.py` | Post-Deployment Smoke-Test (Go/No-Go) | `vidartest123` |
 
 ## Weiterführende Doku
 

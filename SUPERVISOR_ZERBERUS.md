@@ -1,8 +1,20 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Monster-Patch 137–152 (2026-04-24) – Käferpresse komplett: Bugs, UI, TTS, Pfoten, Feuerwerk, Design-System*
+*Letzte Aktualisierung: Patch 153–154 (2026-04-24) – Vidar Smoke-Agent + Farb-Default-Fix + Checklisten-Sweep*
 
 ## Aktueller Patch
+
+**Patch 153–154** — Vidar + Farb-Fix + Checklisten-Sweep (2026-04-24)
+
+- **Patch 153 — Farb-Default-Fix (cssToHex HSL-Bug):** Root-Cause-Analyse: `cssToHex('hsl(H,S%,L%)')` parste H/S/L als RGB-Bytes → ungültiges Hex → Farbpicker fiel auf `#000000` → bei `oninput` wurde `#000000` in localStorage geschrieben → nächster Load: schwarze Bubbles. Fix: `cssToHex` erkennt `hsl`-Strings und löst sie via Browser-Canvas auf (gleiche Technik wie `getContrastColor`). Neue Hilfsfunktion `computedVarToHex(varName)` für `openSettingsModal()` – rendert CSS-Variable über einen Temp-Div statt raw-String zu parsen. IIFE-Guard: `#000000`-Werte für Bubble-BG-Keys werden bereinigt + nicht angewendet. Vidar-Test-Profil in `config.yaml` + `conftest.py` angelegt (`vidartest123`, `is_test: true`). **~5 Zeilen nala.py, 6 Zeilen config.yaml, 3 Zeilen conftest.py.**
+- **Patch 153 — Vidar Smoke-Test-Agent:** Neue Datei `zerberus/tests/test_vidar.py` mit 3 Klassen: `TestCritical` (6 Deploy-Blocker: Nala lädt, Login, Bubbles nicht schwarz, Chat-Send/Receive, Hel lädt, shared-design.css), `TestImportant` (11 wichtige Checks: Touch-Targets, Design-Tokens, Settings 3-Tabs, Katzenpfoten, Particle-Canvas, Hel-System-Tab, Memory, Pacemaker, Session-Titel, TTS-Button), `TestCosmetic` (4 optionale: LLM-Dropdowns, kein JSON in Dialekte, CSS-Var gesetzt, keine input-statt-select). Nutzt existierendes Playwright-Pattern aus conftest.py. **~200 Zeilen.**
+- **Patch 154 — Checklisten-Sweep:** `test_loki_mega_patch.py`: Fix `radial-gradient`-Assertion (war `linear-gradient` — Test-Bug seit Patch 139). Neue Klasse `TestChecklistSweep` (10 Tests: B-008 max-width 92%, B-009 Action-opacity:0, B-010 Retry-transparent, B-011 Titelzeile <1em, B-006 kein Schraubenschlüssel, B-012 Mein-Ton, B-013 Logout-Position, B-016 UI-Skala-Slider, Patch-153 Bubble-Colors, cssToHex-HSL-Test). `test_fenrir_mega_patch.py`: Neue Klassen `TestFarbenStress` (3: Logout+Login, HSL-Picker, Kontrast-Extremwert), `TestPacemakerStress` (2: Rapid-Toggle, JS-Errors), `TestTTSStress` (2: leerText, Duplikat). **~200 Zeilen Tests.**
+
+- **Tests:** **488 passed** (Baseline) + Vidar/Sweep/Stress-Tests neu. Playwright-Tests laufen gegen Live-Server.
+- **Scope:** IN Scope: Farb-Fix nala.py, Vidar-Agent + Tests, Loki/Fenrir-Sweep, Doku. NICHT: Server-seitige Theme-Persistenz in DB (würde Alembic-Migration + neuen Endpoint erfordern — localStorage-Ansatz reicht für aktuellen Use-Case nach dem Bug-Fix).
+- **Live-Verifikation (USER):** (1) HSL-Slider bewegen → Farbpicker zeigt korrekte Farbe, nicht #000000. (2) `pytest zerberus/tests/test_vidar.py -v` → Go/Warn/Fail-Verdict. (3) `pytest zerberus/tests/test_loki_mega_patch.py::TestChecklistSweep -v`.
+
+---
 
 **Monster-Patch 137–152** — Drittes Mega-Patch-Experiment, bisher größter Scope (2026-04-24)
 
@@ -102,8 +114,10 @@
 - [x] **150** Pacemaker-Steuerung (Master + Sync + per-Prozess-Control)
 - [x] **151** Design-Konsistenz (shared-design.css + DESIGN.md + zb-tokens)
 - [x] **152** Memory-Dashboard (Tabelle + Suche + Confidence-Badges)
-- [ ] **153+** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
-- [ ] **154+** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
+- [x] **153** Vidar Smoke-Test-Agent + Farb-Default-Fix (cssToHex HSL-Bug)
+- [x] **154** Checklisten-Sweep: Loki radial-gradient Fix, B-008..B-016 Tests, Fenrir Stress
+- [ ] **155+** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
+- [ ] **156+** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
 - [ ] **155+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
 - [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
 - [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)
