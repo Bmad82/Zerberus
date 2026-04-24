@@ -44,6 +44,21 @@ class WhisperCleanerConfig(BaseModel):
     strip_trailing: List[str] = []
     repetition_filter: Optional[RepetitionFilterConfig] = None  # Patch 102 (B-01)
 
+
+class WhisperConfig(BaseModel):
+    """Patch 160: Transport-Konfiguration fuer Whisper-Docker-Calls.
+
+    Getrennt von WhisperCleanerConfig (das ist post-processing). Hier liegt
+    das httpx-Timeout-Budget und der Short-Audio-Guard-Schwellwert. Defaults
+    sind bewusst ins Modell eingebaut, weil config.yaml gitignored ist —
+    sonst wuerden sie nach `git clone` fehlen (analog OpenRouterConfig).
+    """
+    request_timeout_seconds: float = 120.0  # Gesamt-Read-Timeout fuer den Whisper-Call
+    connect_timeout_seconds: float = 10.0   # Connect bleibt kurz — Docker down = schnell melden
+    min_audio_bytes: int = 4096             # < 4 KB ~ < 0.25s Audio → Guard → leere Transkription
+    timeout_retries: int = 1                # Anzahl Retries NACH dem ersten Versuch (0 = kein Retry)
+    retry_backoff_seconds: float = 2.0      # Wartezeit zwischen Erstversuch und Retry
+
 class QuietHoursConfig(BaseModel):
     enabled: bool = False
     start: str = "22:00"
@@ -148,6 +163,7 @@ class Settings(BaseSettings):
     legacy: Optional[LegacyConfig] = None
     dialects: Dict[str, DialectConfig] = {}
     whisper_cleaner: WhisperCleanerConfig
+    whisper: WhisperConfig = WhisperConfig()  # Patch 160: Transport-Config (Timeout, Short-Audio-Guard, Retry)
     modules: Dict[str, Any] = {}
     profiles: Dict[str, Any] = {}  # Patch 61: ProfileConfig-Einträge (raw Dict, da nala.py direkt yaml liest)
     openrouter: OpenRouterConfig = OpenRouterConfig()  # Patch 63: Provider-Blacklist

@@ -3894,14 +3894,26 @@ async def voice_endpoint(
         # 1. Whisper – Audio transkribieren
         # ------------------------------------------------------------------
         audio_data = await file.read()
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                settings.legacy.urls.whisper_url,
-                files={"file": (file.filename, audio_data, file.content_type)},
-                data={"model": "whisper-1"}
+
+        # Patch 160: Short-Audio-Guard + konfigurierbarer Timeout + Einmal-Retry
+        # via zentralem whisper_client (legacy.py teilt dieselbe Logik).
+        from zerberus.utils.whisper_client import transcribe, WhisperSilenceGuard
+        try:
+            whisper_result = await transcribe(
+                whisper_url=settings.legacy.urls.whisper_url,
+                audio_data=audio_data,
+                filename=file.filename,
+                content_type=file.content_type,
+                whisper_cfg=settings.whisper,
             )
-            resp.raise_for_status()
-            whisper_result = resp.json()
+        except WhisperSilenceGuard:
+            # Short-Audio: nala.voice-Format — Transcript + Response beide leer.
+            return {
+                "transcript": "",
+                "response": "",
+                "sentiment": "neutral",
+                "note": "short_audio_skipped",
+            }
 
         raw_transcript = whisper_result.get("text", "")
 

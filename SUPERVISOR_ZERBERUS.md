@@ -1,8 +1,19 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 159 (2026-04-24) – Lessons-Konsolidierung + Doku-Update*
+*Letzte Aktualisierung: Patch 160 (2026-04-25) – Whisper Timeout-Hardening + Short-Audio-Guard*
 
 ## Aktueller Patch
+
+**Patch 160** — Whisper Timeout-Hardening + Short-Audio-Guard (2026-04-25)
+
+- **httpx-Timeout aus Config, nicht mehr hardcoded 60s:** Neue Pydantic-Klasse `WhisperConfig` in [`core/config.py`](zerberus/core/config.py) mit Defaults `request_timeout_seconds=120`, `connect_timeout_seconds=10`, `min_audio_bytes=4096`, `timeout_retries=1`, `retry_backoff_seconds=2`. Als `settings.whisper` im Settings-Root registriert. Defaults ins Modell eingebaut, weil `config.yaml` gitignored ist — sonst fehlen sie nach `git clone`.
+- **Zentraler Whisper-Client:** Neue Datei [`utils/whisper_client.py`](zerberus/utils/whisper_client.py) mit `transcribe()`-Helper. Kapselt: Short-Audio-Guard (raist `WhisperSilenceGuard`), expliziter `httpx.Timeout(read, connect)`, Einmal-Retry bei `ReadTimeout` mit Backoff. Beide Endpunkte — [`legacy.py::audio_transcriptions`](zerberus/app/routers/legacy.py) (Dictate-Tastatur) und [`nala.py::voice_endpoint`](zerberus/app/routers/nala.py) (Nala Web-UI) — rufen denselben Helper. Endpoint-spezifische Silence-Responses bleiben im Endpoint: legacy liefert `{"text": "", "note": "short_audio_skipped"}` (OpenAI-kompatibel), nala liefert `{"transcript": "", "response": "", "sentiment": "neutral", "note": "short_audio_skipped"}`.
+- **Fail-loud bei echtem Fail, fail-silent bei Silence:** Short-Audio → 200 mit leerem Transkript (User merkt nichts). Retry-erschöpfter `ReadTimeout` → HTTPException 500 (damit der Client weiß, dass er kaputt ist). Logs: `[WHISPER-160]` als Tag.
+- **15 neue Tests** in [`test_whisper_timeout.py`](zerberus/tests/test_whisper_timeout.py) — Config-Defaults, Short-Audio-Guard (Client + beide Endpunkte), Timeout-propagation (Custom-Timeout erreicht `httpx.AsyncClient`), Retry (Happy-Path, Exhausted, Disabled), 500-Umwandlung im Endpoint. **538 passed** offline (523 vorher + 15 neue).
+- **Scope:** IN Scope: Config-Key, zentraler Client, Short-Audio-Guard, Retry, 15 Tests, Doku. NICHT: Whisper-Container-Config (Docker ENV bleibt unverändert); Audio-Chunk-Splitting (Client-seitig, out of scope); Streaming-Transkription (anderer Endpoint-Typ); `verify=False` → `verify=True` umstellen (braucht CA-Pinning für Tailscale-Cert, eigener Patch).
+- **Live-Verifikation (USER):** (1) Lange Sprachnachricht (>15s) über Dictate senden → kommt durch ohne 500. (2) Sehr kurze Aufnahme (<0.5s) senden → leere Antwort, kein Hänger, Log zeigt `[WHISPER-160] Audio zu kurz (... Bytes < 4096)`. (3) Docker-Kaltstart oder vorsätzlicher 1-mal-Stall → Log zeigt `[WHISPER-160] Timeout bei Versuch 1, Retry in 2.0s...` und danach normaler Abschluss.
+
+---
 
 **Patch 159** — Lessons-Konsolidierung + Doku-Update (2026-04-24)
 
@@ -177,8 +188,9 @@
 - [x] **156** Config-Save-Fix (`@invalidates_settings`, 7 YAML-Writer) + Webhook-Button-Cleanup
 - [x] **157** Terminal-Startup-Cleanup (httpx/apscheduler unterdrückt, gruppierte Ausgabe)
 - [x] **158** Huginn-Persona (Hel-Textarea) + Guard-Kontext (`caller_context`) + Guard-WARNUNG nicht mehr blockierend
-- [x] **159** Lessons-Konsolidierung + Doku-Update (dieser Patch)
-- [ ] **160+ Huginn-Roadmap** Intent-Router mit Aufwands-Kalibrierung (dynamischer Sarkasmus-Level im System-Prompt), natürliche HitL-Sprache ("Soll ich?" statt Callback-Buttons), Docker-Sandbox für Code-Execution
+- [x] **159** Lessons-Konsolidierung + Doku-Update
+- [x] **160** Whisper Timeout-Hardening + Short-Audio-Guard + Retry (zentraler `whisper_client`)
+- [ ] **161+ Huginn-Roadmap** Intent-Router mit Aufwands-Kalibrierung (dynamischer Sarkasmus-Level im System-Prompt), natürliche HitL-Sprache ("Soll ich?" statt Callback-Buttons), Docker-Sandbox für Code-Execution
 - [ ] **TBD** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
 - [ ] **TBD** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
 - [ ] **TBD** Sancho-Panza-Veto + Projekt-Oberfläche in Nala

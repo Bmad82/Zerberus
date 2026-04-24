@@ -343,13 +343,22 @@ async def audio_transcriptions(
 
     try:
         audio_data = await file.read()
-        files = {"file": (file.filename, audio_data, file.content_type)}
-        data = {"model": "whisper-1"}
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(whisper_url, files=files, data=data)
-            response.raise_for_status()
-            whisper_result = response.json()
+        # Patch 160: Short-Audio-Guard + konfigurierbarer Timeout + Einmal-Retry
+        # leben im zentralen whisper_client, damit legacy.py und nala.py
+        # denselben Pfad teilen.
+        from zerberus.utils.whisper_client import transcribe, WhisperSilenceGuard
+        try:
+            whisper_result = await transcribe(
+                whisper_url=whisper_url,
+                audio_data=audio_data,
+                filename=file.filename,
+                content_type=file.content_type,
+                whisper_cfg=settings.whisper,
+            )
+        except WhisperSilenceGuard:
+            # Short-Audio: OpenAI-kompatibles Leer-Transkript.
+            return {"text": "", "note": "short_audio_skipped"}
 
         raw_transcript = whisper_result.get("text", "")
         # Patch 135: X-Already-Cleaned-Header überspringt Cleaning
