@@ -1,8 +1,20 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 158 (2026-04-24) – Huginn-Persona + Guard-Kontext*
+*Letzte Aktualisierung: Patch 159 (2026-04-24) – Lessons-Konsolidierung + Doku-Update*
 
 ## Aktueller Patch
+
+**Patch 159** — Lessons-Konsolidierung + Doku-Update (2026-04-24)
+
+- **Reiner Doku-Patch, kein Code-Change.** Aufarbeitung der Learnings aus den Patches 155–158 in die drei Steuerungsdateien.
+- **`lessons.md` erweitert:** Vier neue Blöcke — (1) **Telegram Group Privacy**: BotFather-Toggle AUS Pflicht für `respond_to_name`/`autonomous_interjection`, Cache pro Gruppen-Beitritt → Bot muss nach Umschalten neu hinzugefügt werden. (2) **Huginn-Persona als technisches Werkzeug**: zynischer Ton ist kalibrierte Aufwands-Beratung, kein Gimmick — Implikation für zukünftigen Intent-Router mit Aufwands-Schätzer. (3) **Ratatoskr Sync-Reihenfolge**: Zerberus ERST committen, DANN `sync_repos.ps1` — sonst trägt Ratatoskr die alte Commit-Message. (4) **Claude Code Scope-Management**: Mega-Patches mit 3+ Blöcken werden still abgeschnitten (z. B. 157/158-Split) — Restblöcke als expliziten Nachfolge-Patch formulieren, nicht nachrüsten. Die bereits in Patch 156/158 eingetragenen Blöcke (Settings-Singleton, Guard-Kontext) wurden unverändert belassen.
+- **`CLAUDE_ZERBERUS.md` erweitert:** Telegram/Huginn-Sektion um `system_prompt` + `DEFAULT_HUGINN_PROMPT` + `_resolve_huginn_prompt()` + BotFather-Privacy-Hinweis ergänzt. Zwei neue Sektionen: **Guard-Kontext** (Patch 158) mit Huginn/Nala-Caller-Contexts und WARNUNG-ist-kein-Block-Regel; **Settings-Cache** (Patch 156) mit Decorator/Contextmanager-Pattern und Test-Pattern-Verweis.
+- **Phase-4-Roadmap aktualisiert:** Patches 156, 157, 158, 159 als erledigt eingetragen. Offene Roadmap-Punkte um Huginn-Ausblick ergänzt (Intent-Router mit Aufwands-Kalibrierung, natürliche HitL-Sprache, Docker-Sandbox für Code-Execution).
+- **Tests:** Keine neuen Tests (Doku-Patch). Bestand: **523 passed** offline (aus Patch 158), unverändert bestätigt.
+- **Scope:** IN Scope: Drei `.md`-Dateien, Roadmap-Aktualisierung, Lesson-Konsolidierung. NICHT: Code-Änderungen, Patch-Doku in `docs/PROJEKTDOKUMENTATION.md` (der Pflichtschritt ist vom Supervisor zu erledigen, nicht automatisch).
+- **Live-Verifikation (USER):** (1) `grep "Group Privacy" lessons.md` → Block existiert. (2) `grep "Settings-Cache" CLAUDE_ZERBERUS.md` → Sektion existiert. (3) SUPERVISOR-Roadmap zeigt `[x] 156..159`.
+
+---
 
 **Patch 158** — Huginn-Persona + Guard-Kontext (2026-04-24)
 
@@ -122,7 +134,7 @@
 - **Scope:** IN Scope: Huginn-Hel-Frontend mit Lazy-Load, Sidebar-Settings-Anchor + HSL-Sliders, Migration-Script mit Dry-Run + Tests. NICHT in diesem Patch: vollständige Burger-Menü-Konsolidierung (System-Prompt im Sidebar bleibt wo er ist — nur ein Settings-Anchor kam dazu), Umschaltung auf Dual-Embedder in `modules/rag/router.py` (wird separat sein, sobald Chris die echte Migration mit `--execute` fährt und validiert), Cross-Language-Search-Merge.
 - **Live-Verifikation (USER):** (1) Hel → Tab „Huginn" → Status-Dot + leere Config (da `enabled: false`). (2) Nala → Burger-Menü → ganz unten „⚙️ Einstellungen" sticky — Klick öffnet Settings-Modal. (3) In Settings-Modal → HSL-Slider bewegen → Bubble-Farbe ändert sich live, Swatch zeigt die Farbe, Wert unter dem Slider zeigt aktuelle Zahl. (4) `venv\Scripts\python.exe scripts\migrate_embedder.py --dry-run` → Summary zeigt 61 DE / 0 EN.
 
-## Phase 4 Roadmap (aktualisiert Patches 127–129)
+## Phase 4 Roadmap (aktualisiert Patch 159)
 
 - [x] **119** Whisper Docker Auto-Restart Watchdog
 - [x] **119b** PROJEKTDOKUMENTATION.md Pflichtschritt + Nachholen
@@ -162,9 +174,14 @@
 - [x] **153** Vidar Smoke-Test-Agent + Farb-Default-Fix (cssToHex HSL-Bug)
 - [x] **154** Checklisten-Sweep: Loki radial-gradient Fix, B-008..B-016 Tests, Fenrir Stress
 - [x] **155** Huginn Long-Polling (Tailscale-fähig) + Lessons-Konsolidierung
-- [ ] **156+** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
-- [ ] **157+** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
-- [ ] **155+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
+- [x] **156** Config-Save-Fix (`@invalidates_settings`, 7 YAML-Writer) + Webhook-Button-Cleanup
+- [x] **157** Terminal-Startup-Cleanup (httpx/apscheduler unterdrückt, gruppierte Ausgabe)
+- [x] **158** Huginn-Persona (Hel-Textarea) + Guard-Kontext (`caller_context`) + Guard-WARNUNG nicht mehr blockierend
+- [x] **159** Lessons-Konsolidierung + Doku-Update (dieser Patch)
+- [ ] **160+ Huginn-Roadmap** Intent-Router mit Aufwands-Kalibrierung (dynamischer Sarkasmus-Level im System-Prompt), natürliche HitL-Sprache ("Soll ich?" statt Callback-Buttons), Docker-Sandbox für Code-Execution
+- [ ] **TBD** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
+- [ ] **TBD** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
+- [ ] **TBD** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
 - [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
 - [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)
 - [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung
