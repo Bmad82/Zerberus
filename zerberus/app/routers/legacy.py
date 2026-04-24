@@ -177,16 +177,20 @@ async def chat_completions(
             # Patch 80b hatte zu aggressiv geskippt: QUESTION-Intent ohne "?" + < 15 Wörter
             # wurde fälschlich übersprungen → RAG nie erreicht
             # Patch 106: TRANSFORM skipt immer (Übersetze/Lektoriere/Zusammenfassen/...)
+            # Patch 137 (B-001): GREETING skipt immer — Smalltalk soll keine Doku-Refs triggern.
             skip_rag_transform = intent == "TRANSFORM"
+            skip_rag_greeting = intent == "GREETING"
             skip_rag_conversation = (
                 intent == "CONVERSATION" and
                 len(last_user_msg.split()) < 15 and
                 "?" not in last_user_msg
             )
-            skip_rag = skip_rag_transform or skip_rag_conversation
+            skip_rag = skip_rag_transform or skip_rag_greeting or skip_rag_conversation
 
             if skip_rag_transform:
                 logger.warning("[TRANSFORM-106] Intent=TRANSFORM erkannt — RAG und Query Expansion übersprungen")
+            if skip_rag_greeting:
+                logger.warning("[GREETING-137] Intent=GREETING erkannt — RAG übersprungen")
 
             logger.warning(f"[DEBUG-85] Intent: {intent} | Nachricht ({len(last_user_msg.split())} Wörter): {last_user_msg[:80]}")
             logger.warning(f"[DEBUG-85] RAG-Skip: {skip_rag} | intent={intent}, wörter={len(last_user_msg.split())}, '?'={'?' in last_user_msg}")

@@ -3067,3 +3067,170 @@ Zweites Mega-Patch-Experiment nach 122–129. Sechs fokussierte Patches in einer
 - Offene Punkte (Patch 137+): echte `scripts/migrate_embedder.py --execute` mit RAG-Eval-Vergleich; Sancho-Panza-Veto; Nala-Vision-Upload-UI.
 
 *Stand: 2026-04-24, Mega-Patch 131–136 — zweites 6-Patch-Experiment erfolgreich.*
+
+### Monster-Patch 137–152 – Käferpresse (Bugs + UI + TTS + Pfoten + Feuerwerk + Design-System) (2026-04-24)
+
+**Kontext:** Drittes und bisher größtes Mega-Patch-Experiment (16 Patches in einem Zug). Scope: komplette Käferpresse-Liste vom 24.04.2026 abarbeiten. Token-Selbstüberwachung: keine harte Grenze erreicht, alle Patches inklusive Tests durchgezogen.
+
+**Patch 137 – RAG Smalltalk-Skip (B-001):**
+- Neuer Intent `GREETING` in `zerberus/app/routers/orchestrator.py` mit Regex-Pattern-Liste (Hallo/Hi/Hey/Moin/Servus/Guten Morgen/Na?/Wie geht's/Danke/Tschüss/Grüß Gott).
+- Pre-Check in `detect_intent()`: Pattern matcht **und** ≤8 Wörter **und** kein Fragewort im Rest → GREETING. Sonst QUESTION (gewinnt bei "Hallo, wer ist Anne?").
+- GREETING skippt RAG in `_run_pipeline()` (orchestrator.py) und `audio_transcriptions` (legacy.py — aktiver Chat-Pfad).
+- Threshold `rerank_min_score` von 0.05 → 0.15 in config.yaml (Noise-Schwelle angehoben — Scores um 0.10 waren typisch bei Smalltalk).
+- Permission-Matrix und INTENT_SNIPPETS um GREETING erweitert.
+- **16 neue Tests** (`test_greeting_intent.py`).
+
+**Patch 138 – Test-Profile Filter (B-004):**
+- `is_test: true` Flag an loki und fenrir in `config.yaml` → `profiles:`.
+- `get_all_sessions(limit, exclude_profiles)` in `zerberus/core/database.py` erweitert.
+- `/archive/sessions?include_test=False` (Default) filtert Test-Profile automatisch via neues Helper `_get_test_profile_keys()` in `archive.py`.
+- Cleanup-Script `scripts/cleanup_test_sessions.py` mit `--execute`-Flag (Dry-Run default), inklusive DB-Backup vor Delete.
+- **9 neue Tests** (`test_test_profile_filter.py`).
+
+**Patch 139 – Nala Bubble-Layout (B-005, B-008, B-009, B-010, B-011):**
+- **B-005 Shine:** Linear-Gradient → `radial-gradient(ellipse at 20% 20%, …)`. Lichtquelle oben-links, weicher Falloff über 60%.
+- **B-008 Breite:** `.message` + `.msg-wrapper` max-width von 75%/80% → 92% Mobile / 80% Desktop.
+- **B-009 Action-Toolbar:** Initial `opacity: 0; pointer-events: none`. Neue JS-Helper `attachActionToggle(wrapper, bubble)` reagiert auf Tap (Klicks auf Buttons/Links werden ausgeschlossen), setzt `.actions-visible`-Klasse für 5s.
+- **B-010 Repeat-Button:** `.bubble-action-btn.retry-btn { background: transparent !important }`.
+- **B-011 Titel:** `.header` von 1.5em auf 1.05em, `.title` zusätzlich `font-size: 0.95em`, `.hamburger` von 1.8em auf 1.5em.
+- **15 neue Tests** (`test_nala_bubble_layout.py`).
+
+**Patch 140 – Dark-Theme Kontrast (B-003):**
+- Neue JS-Funktion `getContrastColor(cssColor)` in nala.py: Nutzt einen temporären DOM-Knoten + `getComputedStyle()`, um beliebige CSS-Farben (hex, rgba, hsl) zu RGB aufzulösen. Danach WCAG-gewichtete Luminanz `0.299R + 0.587G + 0.114B`. `>0.55 → #1a1a1a`, sonst `#f0f0f0`.
+- Neue Funktion `applyAutoContrast()`: Wendet die Kontrast-Farbe an `--bubble-user-text` und `--bubble-llm-text` an, respektiert aber manuelle Override-Flags (`localStorage.nala_bubble_*_text_manual`).
+- Neue Funktion `bubbleTextPreview(which)`: Wird beim direkten Text-Color-Picker aufgerufen, setzt den Manual-Flag.
+- Getriggert von `bubblePreview()` und `applyHsl()`; zusätzlich beim Init (`showChatScreen`).
+- **9 neue Tests** (`test_dark_theme_contrast.py`).
+
+**Patch 141 – Session-Liste Fallback (B-002):**
+- `buildSessionItem(s, isPinned)` in nala.py überarbeitet:
+  - `hasMsg = !!(s.first_message && s.first_message.trim())`
+  - Titel-Fallback: "Unbenannte Session" + Datum, wenn `!hasMsg`
+  - Titel-Kürzung auf 50 Zeichen (war 40)
+  - Untertitel: Datum + Uhrzeit (HH:MM) via `toLocaleTimeString`
+- **4 neue Tests** (`test_session_list_fallback.py`).
+
+**Patch 142 – Settings-Umbau (B-006, B-012, B-013, B-015, B-016):**
+- **B-006:** `🔧`-Button aus Nala-Top-Bar entfernt.
+- **B-013 Sidebar-Footer:** Neue Klasse `.sidebar-footer` mit `position: sticky; bottom: 0`. `🚪 Abmelden` links (Exit-Icon, rot: `rgba(229,115,115,...)`), `⚙️ Einstellungen` rechts (gold). Beide 48×48px. Passwort-Button raus aus sidebar-actions.
+- **B-012 Mein Ton:** `#my-prompt-area` + `saveMyPrompt()` aus Sidebar entfernt, in neuen Tab "Ausdruck" verschoben.
+- **B-015 Tabs:** Neue Tab-Nav im Settings-Modal (`.settings-tabs`) mit 3 Tabs `look`/`voice`/`system`. Panels `.settings-tab-panel` toggeln via `switchSettingsTab(tab)`.
+  - **Aussehen:** Theme-Farben, Bubble-Farben, HSL-Slider, UI-Skalierung, Favoriten
+  - **Ausdruck:** Mein Ton + TTS-Controls (Stimme, Rate, Probe hören)
+  - **System:** Passwort-Ändern-Button, Account-Info (Profil + Permission)
+- **B-016 UI-Skalierung:** CSS-Variable `--ui-scale` (Default 1). `applyUiScale(val)` setzt `--ui-scale` und `--font-size-base` (16px × scale). Range-Slider 0.8-1.4×, Schritt 0.05. Persistent via `localStorage.nala_ui_scale`. IIFE `restoreUiScale()` stellt beim Laden wieder her.
+- **19 neue Tests** (`test_settings_umbau.py`).
+
+**Patch 143 – TTS Integration (B-014):**
+- Neue Utility `zerberus/utils/tts.py` mit `text_to_speech(text, voice, rate)`, `list_voices(language)`, `is_available()`.
+- Wrapper um `edge_tts.Communicate`. Validation: leerer Text → `ValueError`, invalides Rate-Format → `ValueError`, keine Audio-Daten → `RuntimeError`.
+- Zwei Router-Endpoints in `nala.py`:
+  - `GET /nala/tts/voices?lang=de` → Liste `{ShortName, FriendlyName, Locale, Gender}`
+  - `POST /nala/tts/speak` → `audio/mpeg`, Input `{text, voice, rate}`, Text auf 5000 Zeichen gekappt
+- 503 bei fehlendem edge-tts, 400 bei invalider Rate, 502 bei API-Fehler.
+- **Frontend:**
+  - Neues `<select id="tts-voice-select">` und Range-Slider `#tts-rate-slider` (-50 bis +100) im Tab "Ausdruck"
+  - `initTtsControls()` lazy beim Öffnen des Settings-Modals
+  - `speakText(text)` als gemeinsamer Player
+  - `🔊`-Button an jeder Bot-Bubble mit Loading/Error-States (`⏳`/`⚠️`)
+- edge-tts (`>=7.0.0`) in requirements.txt.
+- **14 neue Tests** (`test_tts_integration.py`).
+
+**Patch 144 – Katzenpfoten (B-007 / F-001) — Jojo-Priorität:**
+- Alter Spinner-Bubble-Indikator in showTypingIndicator/removeTypingIndicator durch 4 `🐾`-Pfoten ersetzt.
+- CSS-Keyframe `@keyframes pawWalk { 0% { left: -40px } … 100% { left: calc(100% + 40px) } }` mit 3s Loop.
+- 4 Pfoten mit staggered `animation-delay: 0s / 0.5s / 1.0s / 1.5s`.
+- `.paw-indicator { position: fixed; bottom: 84px }` über der Input-Area, `.paw-status` darunter.
+- Neue Funktion `setPawStatus(phase)` mappt Backend-Events auf Text:
+  - `rag_search` → "RAG durchsucht…"
+  - `llm_start` → "Nala denkt nach…"
+  - `rerank` → "Reranker läuft…"
+  - `generating` → "Antwort wird geschrieben…"
+- SSE-Handler (`evtSource.onmessage`) ruft `setPawStatus(evt.type)` und bei `done` `_hidePaws()`.
+- **13 neue Tests** (`test_katzenpfoten.py`).
+
+**Patch 145 – Feuerwerk & Sternenregen (F-002) — Jojo-Priorität:**
+- Neues `<canvas id="particleCanvas" style="position:fixed; … z-index:9999; pointer-events:none">`.
+- IIFE `initParticles()` baut Particle-Engine:
+  - Funktionen: `spawn(x, y, type)` (stars/firework), `goldRain()`, `drawStar(cx, cy, size)` (5-zackiger Stern), `animate()` (requestAnimationFrame-Loop mit Gravity+Decay), `flashBackground()` (100ms Gold-Tint)
+  - 8 Farben, Shape-Mix (star/circle), Life-Decay 0.005-0.03 pro Frame
+- **Trigger 1 – Rapid-Tap:** Im Textfeld ≥7 Tasten innerhalb 2000ms → `spawn(rect.center, rect.top, 'star')` + Flash.
+- **Trigger 2 – Swipe-Up:** `touchstart`/`touchend` tracken. Wenn `dy > 200 && dx < 100 && dt < 800` → `spawn(firework)` + `goldRain()` + Flash.
+- Canvas-Resize-Handler passt Breite/Höhe an Viewport an.
+- **11 neue Tests** (`test_particle_effects.py`).
+
+**Patch 146 – Metriken-Cleanup (B-018):**
+- `metrics_latest_with_costs()` in `hel.py`: Content auf 50 Zeichen + `…` gekürzt. Zusätzlich `content_truncated: bool` und `content_original_length: int` im Response-Dict. Eine LLM-Antwort füllt nicht mehr mehrere Bildschirme im Metriken-Tab.
+- **3 neue Tests** (`test_metrics_cleanup.py`).
+
+**Patch 147 – Modell-Dropdown Vereinheitlichung (B-019):**
+- Neue Funktion `formatModelLabel(name, inputPrice, outputPrice)` in hel.py JS: Format "Name — $X.XX/$Y.YY/1M", `kostenlos` bei 0/0.
+- `renderModelSelect()` (Nala-LLM), `visionReload()` (Vision), `huginnReload()` (Huginn) nutzen jetzt alle den Formatter und sortieren aufsteigend nach `pricing.prompt` bzw. `input_price`.
+- Vision-Dropdown: `[Budget]`/`[Premium]` Präfix entfernt — `data-tier` bleibt als HTML-Attribut für Styling.
+- **9 neue Tests** (`test_model_dropdown_unified.py`).
+
+**Patch 148 – Dialekte-Tab (B-022):**
+- JSON-Textarea aus der Hauptansicht entfernt, jetzt als aufklappbares `<details>` (Raw-JSON-Fallback für Notfälle).
+- Neuer strukturierter Editor:
+  - `<input id="dialectSearch">` oben, Live-Filter (Von oder Nach)
+  - `<div id="dialectGroups">` von `renderDialectGroups()` befüllt
+  - Pro Gruppe: Titel + 🗑-Button + Neu-Eintrag-Zeile OBEN (Von→Nach+`+`) + bestehende Einträge (Von/Nach editierbar + `✕`-Lösch-Button)
+  - Neue-Gruppe-Eingabe unten mit Namen + `+ Gruppe`-Button
+- JS: `_dialectData` als Arbeitskopie, `loadDialect()`, `renderDialectGroups()`, `addDialectGroup()`, `saveDialectStructured()`. Legacy `saveDialect()` bleibt für Raw-Editor.
+- **10 neue Tests** (`test_dialect_ui.py`).
+
+**Patch 149 – Hel Kleinigkeiten (B-021, B-023, B-025):**
+- **B-021:** WhisperCleaner-Regel-Editor (cleanerList + addCleanerRule/addCleanerComment/saveCleaner) aus dem HTML entfernt. Ersetzt durch Hinweis "Pflege nur noch via `whisper_cleaner.json`". Fuzzy-Dictionary bleibt.
+- **B-023:** Tab-Label `Sysctl` → `System` (Button-Text in `hel-tab-nav`).
+- **B-025:** Neue Zeile oberhalb der Tab-Nav: `<h1>⚡ Hel – Admin-Konsole</h1>` + `⚙️`-Button rechts. Klick toggelt `#helSettingsPanel`. Panel enthält Range-Slider 0.8-1.4× mit `applyHelUiScale(val)`, persistent via `hel_ui_scale`. IIFE `restoreHelUiScale()` beim Laden. Alter 4-Preset-Bar (`.font-preset-bar`) ist `display: none` (kein Hard-Delete — rückwärtskompatibel).
+- **10 neue Tests** (`test_hel_kleinigkeiten.py`).
+
+**Patch 150 – Pacemaker-Steuerung (B-024):**
+- Neue Hel-Card im System-Tab "Pacemaker-Prozesse".
+- UI:
+  - Master-Toggle `#pacemaker-master` + Sync-Toggle `#pacemaker-sync`
+  - Prozess-Liste via `renderPacemakerProcesses()`: 4 Default-Prozesse (sentiment/memory/db_dedup/whisper_ping) mit Aktiv-Checkbox, Status-LED (🟢/⚪), Range-Slider 1-60 min + Label, CPU/GPU-Select.
+  - Sync-Modus synchronisiert Intervall-Changes live auf alle Prozesse
+  - Activity-Anzeige (`#pacemakerActivity`) für aktuellen Prozess
+- Backend: `GET/POST /hel/admin/pacemaker/processes` mit `PACEMAKER_DEFAULT_PROCESSES`-Konstante. Persistent in `config.yaml` → `modules.pacemaker_processes.{master, sync, processes}`. YAML-Write via `yaml.safe_dump(sort_keys=False)`.
+- Scheduler-Integration (Worker-Loop liest die Config) bleibt für Folge-Patch.
+- **15 neue Tests** (`test_pacemaker_controls.py`).
+
+**Patch 151 – Design-Konsistenz (B-026 / L-001):**
+- Neue Datei `zerberus/static/css/shared-design.css` mit Design-Tokens:
+  - Farben: `--zb-primary/danger/success/warning/text-primary/bg-primary/border`
+  - Dark-Variante: `--zb-dark-*`
+  - Spacing: `--zb-space-xs/sm/md/lg/xl` (4/8/16/24/32px)
+  - Radien: `--zb-radius-sm/md/lg/pill` (4/8/16/999px)
+  - Schatten: `--zb-shadow-sm/md/lg`
+  - Typography: `--zb-font-family/size-sm/md/lg`
+  - Touch: `--zb-touch-min: 44px`
+- Klassen: `.zb-btn` / `.zb-btn-primary` / `.zb-btn-danger` / `.zb-btn-ghost` / `.zb-select` / `.zb-slider` / `.zb-toggle` — alle mit einheitlichen Paddings/Radien/Mindest-Touch.
+- `@media (hover: none) and (pointer: coarse)` erzwingt global `min-height: var(--zb-touch-min)` auf alle klickbaren Elemente.
+- `<link rel="stylesheet" href="/static/css/shared-design.css">` im `<head>` von nala.py UND hel.py.
+- Neue Doku `docs/DESIGN.md` mit Leitregel "projektübergreifende Konsistenz" + Token-Tabelle + Checkliste.
+- **12 neue Tests** (`test_design_system.py`).
+
+**Patch 152 – Memory-Dashboard (B-020):**
+- Neue Card im RAG-Tab (`gedaechtnis`) mit:
+  - Statistik-Leiste `#memoryStats`: "X Fakten · Y Kategorien · Letzte Extraktion: Z"
+  - Such-Input `#memorySearch` (filtert Subjekt+Fakt+Kategorie)
+  - Kategorie-Filter `#memoryCategoryFilter` (PERSON/PREFERENCE/FACT/EVENT/SKILL/EMOTION + "Alle")
+  - `🔄 Neu laden`-Button
+  - Manuell-Hinzufügen via `<details>`-Block: Kategorie-Select + Subjekt + Fakt → `addMemoryManual()`
+  - Tabelle via `renderMemoryTable()`: Kategorie (gold) · Subjekt · Fakt · Confidence-Badge (≥0.9 grün, ≥0.7 gelb, sonst rot) · Extrahiert-Date · `✕`-Button
+- Nutzt bestehende Endpoints aus Patch 132 (`/admin/memory/list`, `/admin/memory/stats`, `/admin/memory/add`, `DELETE /admin/memory/{id}`).
+- Lazy-Load: `activateTab('gedaechtnis')` ruft jetzt `loadMemoryDashboard()` zusätzlich zu `loadRagStatus()`.
+- **11 neue Tests** (`test_memory_dashboard.py`).
+
+**Aktueller Stand nach Monster-Patch 137–152:**
+- Tests: **488 passed** offline in 16.6s (308 vorher + **180 neue**). Größte Test-Erweiterung aller Mega-Patches.
+- Non-Playwright regressions-stabil.
+- Neue Dateien: `shared-design.css`, `docs/DESIGN.md`, `scripts/cleanup_test_sessions.py`, `zerberus/utils/tts.py`, 14 neue Test-Dateien.
+- Neue Dependencies: `edge-tts>=7.0.0`.
+- Neue Hel-Endpoints (2): `/admin/pacemaker/processes` (GET+POST).
+- Neue Nala-Endpoints (2): `/nala/tts/voices`, `/nala/tts/speak`.
+- Neue Config-Keys: `profiles.*.is_test`, `modules.pacemaker_processes`, `modules.rag.rerank_min_score: 0.15`.
+- Offene Punkte (Patch 153+): Scheduler-Integration für Patch-150-Processes (Worker liest `modules.pacemaker_processes`); FAISS-Migration via `--execute`; Legacy-CSS auf `.zb-*`-Klassen migrieren; Sancho-Panza-Veto; Nala-Vision-Upload-UI.
+
+*Stand: 2026-04-24, Monster-Patch 137–152 — drittes Mega-Patch-Experiment, 16 Patches, 180 neue Tests.*

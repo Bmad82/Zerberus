@@ -107,6 +107,8 @@ NALA_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, interactive-widget=resizes-content">
     <title>Nala – Der Palast</title>
     <link rel="icon" href="/static/favicon.ico">
+    <!-- Patch 151 (L-001): Gemeinsame Design-Tokens für Nala UND Hel. -->
+    <link rel="stylesheet" href="/static/css/shared-design.css">
     <style>
         :root {
             --color-primary: #0a1628;
@@ -234,20 +236,21 @@ NALA_HTML = """<!DOCTYPE html>
 
         /* ── Chat-Oberfläche ── */
         #chat-screen { display: none; flex-direction: column; height: 100%; }
+        /* Patch 139 (B-011): Titelzeile zierlicher — ~2/3 der alten Größe. */
         .header {
             color: var(--color-text-light);
-            padding: 15px;
+            padding: 10px 15px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            font-size: 1.5em;
-            font-weight: bold;
+            font-size: 1.05em;
+            font-weight: 600;
             background: var(--color-accent);
             border-bottom: 2px solid var(--color-gold);
             transition: background 0.4s;
         }
         .hamburger {
-            font-size: 1.8em;
+            font-size: 1.5em;
             cursor: pointer;
             width: 40px;
             text-align: center;
@@ -256,6 +259,7 @@ NALA_HTML = """<!DOCTYPE html>
             flex: 1;
             text-align: center;
             color: var(--color-gold);
+            font-size: 0.95em;
         }
         .profile-badge {
             font-size: 0.55em;
@@ -292,32 +296,92 @@ NALA_HTML = """<!DOCTYPE html>
             box-shadow: 2px 0 10px rgba(0,0,0,0.5);
         }
         .sidebar.open { left: 0; }
-        /* Patch 128: Fest getackerter Settings-Bereich am Unterrand des Sidebar. */
-        .sidebar-settings-anchor {
+        /* Patch 128 / Patch 142 (B-013): Footer fest am Unterrand des Sidebar.
+           Abmelden links, Einstellungen rechts — weit voneinander, klar getrennt.
+           Nur Icons, kein Text — Tooltips über title=. */
+        .sidebar-footer {
             position: sticky;
             bottom: 0;
             margin-top: 14px;
             padding-top: 10px;
+            padding-bottom: 4px;
             background: linear-gradient(to top, var(--color-primary-mid) 70%, transparent);
             border-top: 1px solid rgba(240,180,41,0.22);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
         }
-        .sidebar-settings-btn {
-            width: 100%;
+        .sidebar-footer-btn {
+            min-width: 48px;
             min-height: 48px;
-            padding: 12px;
-            background: rgba(240,180,41,0.14);
-            border: 1px solid rgba(240,180,41,0.45);
-            color: var(--color-gold);
+            width: 48px;
+            height: 48px;
             border-radius: 10px;
+            border: 1px solid rgba(240,180,41,0.35);
+            background: rgba(240,180,41,0.10);
+            color: var(--color-gold);
+            font-size: 1.3em;
             cursor: pointer;
-            font-size: 1em;
-            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             transition: background 0.15s, transform 0.12s;
         }
-        .sidebar-settings-btn:active {
+        .sidebar-footer-btn:active {
             background: rgba(240,180,41,0.24);
             transform: translateY(1px);
         }
+        .sidebar-footer-exit {
+            border-color: rgba(229,115,115,0.45);
+            background: rgba(229,115,115,0.08);
+            color: #e57373;
+        }
+        .sidebar-footer-exit:active {
+            background: rgba(229,115,115,0.18);
+        }
+        /* Patch 142 (B-015): Tab-Navigation im Settings-Modal.
+           Drei Tabs: Aussehen (Theme/Bubbles/Skalierung), Ausdruck (Mein Ton/TTS),
+           System (Passwort/Account). */
+        .settings-tabs {
+            display: flex;
+            border-bottom: 1px solid rgba(240,180,41,0.3);
+            margin: 0 -28px 14px;
+            padding: 0 20px;
+            gap: 4px;
+        }
+        .settings-tab-btn {
+            flex: 1;
+            padding: 10px 4px;
+            min-height: 44px;
+            background: transparent;
+            border: none;
+            color: #8aa0c0;
+            font-size: 0.88em;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: color 0.15s, border-color 0.15s;
+            font-family: inherit;
+        }
+        .settings-tab-btn.active {
+            color: var(--color-gold);
+            border-bottom-color: var(--color-gold);
+        }
+        .settings-tab-panel { display: none; }
+        .settings-tab-panel.active { display: block; }
+        /* Patch 142 (B-016): UI-Skalierung. */
+        :root { --ui-scale: 1; }
+        .scale-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 8px 0;
+        }
+        .scale-row label { flex: 0 0 60px; font-size: 0.88em; color: var(--color-text-light); }
+        .scale-row input[type="range"] { flex: 1; min-height: 30px; }
+        .scale-row span { flex: 0 0 48px; text-align: right; font-family: monospace; font-size: 0.88em; color: #8aa0c0; }
+
         /* Patch 128: HSL-Slider fuer Bubble-Farben. */
         .hsl-group { margin: 10px 0 4px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px; }
         .hsl-group h6 { margin: 0 0 8px; font-size: 0.88em; color: var(--color-gold); }
@@ -403,9 +467,10 @@ NALA_HTML = """<!DOCTYPE html>
             gap: 12px;
             background: var(--color-primary);
         }
-        /* Patch 124: Breitere Bubbles auf Mobile, enger auf Desktop. */
+        /* Patch 124 / Patch 139 (B-008): Bubbles fast bis zum Rand auf Mobile,
+           etwas enger auf Desktop. */
         .message {
-            max-width: 90%;
+            max-width: 92%;
             padding: 13px 18px;
             border-radius: 20px;
             word-wrap: break-word;
@@ -415,28 +480,36 @@ NALA_HTML = """<!DOCTYPE html>
             overflow: hidden;
         }
         @media (min-width: 768px) {
-            .message { max-width: 75%; }
+            .message { max-width: 80%; }
         }
-        /* Patch 124: Subtiler Shine-Effekt (Licht von oben-rechts) auf alle Bubbles. */
+        /* Patch 139 (B-005): Shine in der OBEREN LINKEN Ecke als weicher
+           Radial-Gradient — war vorher Linear-Gradient mit hartem Stopp. */
         .message::before {
             content: '';
             position: absolute;
-            top: 0;
-            right: 0;
-            width: 70%;
-            height: 60%;
-            background: linear-gradient(
-                135deg,
-                rgba(255,255,255,0.14) 0%,
-                rgba(255,255,255,0.05) 40%,
-                transparent 65%
+            top: -30%;
+            left: -20%;
+            width: 80%;
+            height: 80%;
+            background: radial-gradient(
+                ellipse at 20% 20%,
+                rgba(255,255,255,0.12) 0%,
+                rgba(255,255,255,0.04) 30%,
+                transparent 60%
             );
             border-radius: inherit;
             pointer-events: none;
             z-index: 0;
         }
         .message > * { position: relative; z-index: 1; }
-        .message:active::before { background: linear-gradient(135deg, rgba(255,255,255,0.20), rgba(255,255,255,0.08) 45%, transparent 70%); }
+        .message:active::before {
+            background: radial-gradient(
+                ellipse at 20% 20%,
+                rgba(255,255,255,0.18) 0%,
+                rgba(255,255,255,0.06) 30%,
+                transparent 60%
+            );
+        }
         @keyframes messageSlideIn {
             from { opacity: 0; transform: translateY(8px); }
             to   { opacity: 1; transform: translateY(0); }
@@ -643,6 +716,55 @@ NALA_HTML = """<!DOCTYPE html>
         }
         .typing-indicator .retry-inline:hover { opacity: 0.85; }
 
+        /* ── Patch 144 (B-007 / F-001): Katzenpfoten-Indikator ──
+           Der alte typing-indicator (Bubble mit "Antwort wird generiert…") klemmte.
+           Ersatz: 4 animierte Pfoten laufen von links nach rechts über der
+           Eingabezeile. Status-Text darunter, klein & leise. */
+        .paw-indicator {
+            position: fixed;
+            bottom: 84px; /* knapp über der Input-Area */
+            left: 0;
+            width: 100%;
+            height: 44px;
+            pointer-events: none;
+            z-index: 95;
+            overflow: hidden;
+        }
+        .paw-indicator .paw-print {
+            position: absolute;
+            top: 10px;
+            font-size: 1.5em;
+            animation: pawWalk 3s linear infinite;
+            filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
+        }
+        .paw-indicator .paw-print:nth-child(1) { animation-delay: 0.0s; }
+        .paw-indicator .paw-print:nth-child(2) { animation-delay: 0.5s; }
+        .paw-indicator .paw-print:nth-child(3) { animation-delay: 1.0s; }
+        .paw-indicator .paw-print:nth-child(4) { animation-delay: 1.5s; }
+        @keyframes pawWalk {
+            0%   { left: -40px; transform: rotate(-12deg); opacity: 0; }
+            10%  { opacity: 1; }
+            50%  { transform: rotate(8deg); }
+            90%  { opacity: 1; }
+            100% { left: calc(100% + 40px); transform: rotate(-12deg); opacity: 0; }
+        }
+        .paw-status {
+            position: fixed;
+            bottom: 68px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            font-size: 0.72em;
+            color: var(--color-text-light);
+            opacity: 0.65;
+            pointer-events: none;
+            z-index: 96;
+            letter-spacing: 0.02em;
+            min-height: 14px;
+        }
+        .paw-indicator.hidden,
+        .paw-status.hidden { display: none; }
+
         /* ── Sidebar-Aktionen (Patch 67) ── */
         .sidebar-actions {
             display: flex;
@@ -830,20 +952,28 @@ NALA_HTML = """<!DOCTYPE html>
         }
 
         /* ── Bubble-Toolbar: Timestamp + Kopieren (Patch 67) ── */
+        /* Patch 139 (B-009): Action-Buttons initial unsichtbar, erscheinen
+           bei Hover (Desktop) oder Tap (Mobile, via JS-Klasse .actions-visible).
+           Keine pointer-events wenn unsichtbar, damit sie keine Klicks abfangen. */
         .msg-toolbar {
             display: flex;
             align-items: center;
             gap: 6px;
             opacity: 0;
-            transition: opacity 0.18s;
+            transition: opacity 0.2s ease;
             font-size: 0.7em;
             color: #6a8ab8;
             padding: 1px 6px;
             min-height: 18px;
+            pointer-events: none;
         }
-        .msg-wrapper:hover .msg-toolbar { opacity: 1; }
+        .msg-wrapper:hover .msg-toolbar,
+        .msg-wrapper.actions-visible .msg-toolbar {
+            opacity: 1;
+            pointer-events: auto;
+        }
         .copy-btn, .bubble-action-btn {
-            background: none;
+            background: transparent;
             border: none;
             cursor: pointer;
             color: #6a8ab8;
@@ -856,19 +986,31 @@ NALA_HTML = """<!DOCTYPE html>
         .copy-btn:hover, .copy-btn:active,
         .bubble-action-btn:hover, .bubble-action-btn:active { color: var(--color-gold); }
         .copy-ok { color: #4caf50 !important; }
-        /* Patch 98: Touch-Geräte dauerhaft sichtbar (kein hover) */
+        /* Patch 139 (B-010): Repeat/Retry-Button explizit transparent — nur Icon sichtbar. */
+        .bubble-action-btn.retry-btn,
+        .bubble-action-btn[data-action="retry"] {
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+        }
+        /* Patch 98 / Patch 139 (B-009): Touch-Geräte — Toolbar nicht dauerhaft
+           sichtbar, sondern nur wenn .actions-visible gesetzt ist (per Tap).
+           44px Touch-Targets bleiben. */
         @media (hover: none) and (pointer: coarse) {
-            .msg-toolbar { opacity: 0.55; }
+            .msg-wrapper.actions-visible .msg-toolbar { opacity: 1; pointer-events: auto; }
             .copy-btn, .bubble-action-btn { min-width: 44px; min-height: 44px; font-size: 1.05em; }
         }
 
-        /* ── Export-Dropdown (Patch 65) ── */
+        /* ── Export-Dropdown (Patch 65) / Patch 139 (B-008): breiter ── */
         .msg-wrapper {
             display: flex;
             flex-direction: column;
             align-self: flex-start;
             gap: 3px;
-            max-width: 80%;
+            max-width: 92%;
+        }
+        @media (min-width: 768px) {
+            .msg-wrapper { max-width: 80%; }
         }
         .msg-wrapper.user-wrapper {
             align-self: flex-end;
@@ -1183,25 +1325,24 @@ NALA_HTML = """<!DOCTYPE html>
                 👑 Nala
                 <span class="profile-badge" id="profile-badge"></span>
             </div>
-            <!-- Patch 86: Settings + Export als Icon-Buttons (Abmelden ist ins Menü gewandert) -->
-            <button class="icon-btn" onclick="openSettingsModal()" aria-label="Einstellungen" title="Einstellungen">🔧</button>
+            <!-- Patch 142 (B-006): Schraubenschlüssel entfernt — Einstellungen nur noch
+                 über Zahnrad ⚙️ im Hamburger-Menü. Export bleibt in der Top-Bar. -->
             <button class="icon-btn" onclick="openExportMenu()" aria-label="Exportieren" title="Exportieren">💾</button>
         </div>
 
         <!-- Status-Bar (Patch 46: SSE Pipeline-Status) -->
         <div id="status-bar"></div>
 
-        <!-- Sidebar -->
+        <!-- Sidebar — Patch 142 (B-013): aufgeräumtes Layout.
+             Oben: Neue Session. Mitte: Session-Liste (scrollbar).
+             Unten fest getackert: Abmelden (links) + Einstellungen (rechts), weit voneinander.
+             "Mein Ton" ist nach Settings Tab "Ausdruck" gewandert (B-012).
+             Passwort-Ändern ist nach Settings Tab "System" gewandert (B-013). -->
         <div class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <div class="close-btn" onclick="toggleSidebar()">✖</div>
-                <!-- Patch 86: Navigation-Aktionen (Einstellungen + Export sind jetzt in der Top-Bar) -->
                 <div class="sidebar-actions">
                     <button class="sidebar-action-btn" onclick="newSession()">➕ Neue Session</button>
-                    <button class="sidebar-action-btn" onclick="openPwModal()">🔑 Passwort</button>
-                </div>
-                <div style="margin-bottom:4px;">
-                    <button class="sidebar-action-btn sidebar-action-btn-muted" style="width:100%;" onclick="doLogout()">🚪 Abmelden</button>
                 </div>
                 <div id="pw-status" style="font-size:0.82em;min-height:1.2em;margin-top:4px;"></div>
             </div>
@@ -1210,20 +1351,30 @@ NALA_HTML = """<!DOCTYPE html>
             <h3>📋 Letzte Chats</h3>
             <input type="search" class="archive-search" id="archive-search" placeholder="Archiv durchsuchen…">
             <ul class="session-list" id="session-list"><li class="session-item">Lade...</li></ul>
-            <!-- Patch 47: Mein Ton -->
-            <h3>✏️ Mein Ton</h3>
-            <textarea id="my-prompt-area" class="my-prompt-area" placeholder="Dein persönlicher System-Prompt..."></textarea>
-            <button class="my-prompt-save-btn" onclick="saveMyPrompt()">Speichern</button>
-            <div id="my-prompt-status" class="my-prompt-status"></div>
-            <!-- Patch 128: Settings-Button fest am Unterrand des Sidebar -->
-            <div class="sidebar-settings-anchor">
-                <button class="sidebar-settings-btn" onclick="openSettingsModal()">⚙️ Einstellungen</button>
+            <!-- Patch 142 (B-013): Footer fest unten — Abmelden links, Einstellungen rechts -->
+            <div class="sidebar-footer">
+                <button class="sidebar-footer-btn sidebar-footer-exit" onclick="doLogout()" aria-label="Abmelden" title="Abmelden">🚪</button>
+                <button class="sidebar-footer-btn sidebar-footer-cog" onclick="openSettingsModal()" aria-label="Einstellungen" title="Einstellungen">⚙️</button>
             </div>
         </div>
         <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
 
         <!-- Chat-Nachrichten -->
         <div class="chat-messages" id="chatMessages"></div>
+
+        <!-- Patch 144 (B-007 / F-001): Katzenpfoten-Indikator — ersetzt den alten Text-Spinner.
+             4 Pfoten laufen über der Input-Area, Status-Text darunter. -->
+        <div class="paw-indicator hidden" id="pawIndicator" aria-hidden="true">
+            <span class="paw-print">🐾</span>
+            <span class="paw-print">🐾</span>
+            <span class="paw-print">🐾</span>
+            <span class="paw-print">🐾</span>
+        </div>
+        <div class="paw-status hidden" id="pawStatus" aria-live="polite"></div>
+
+        <!-- Patch 145 (F-002): Partikel-Canvas für Sterne/Feuerwerk.
+             pointer-events:none → blockt keine Klicks. Füllt den Viewport. -->
+        <canvas id="particleCanvas" aria-hidden="true" style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9999;"></canvas>
 
         <!-- Eingabebereich (sticky) -->
         <div class="input-area">
@@ -1289,10 +1440,20 @@ NALA_HTML = """<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Patch 86: Settings-Modal (Theme + Bubble + Schriftgröße) -->
+<!-- Patch 86 / Patch 142 (B-015): Settings-Modal mit Tab-Navigation. -->
 <div id="settings-modal">
     <div class="theme-modal-inner settings-modal-inner">
-        <h4>🔧 Einstellungen</h4>
+        <h4>⚙️ Einstellungen</h4>
+
+        <!-- Patch 142 (B-015): Tab-Navigation -->
+        <div class="settings-tabs">
+            <button class="settings-tab-btn active" data-tab="look" onclick="switchSettingsTab('look')">Aussehen</button>
+            <button class="settings-tab-btn" data-tab="voice" onclick="switchSettingsTab('voice')">Ausdruck</button>
+            <button class="settings-tab-btn" data-tab="system" onclick="switchSettingsTab('system')">System</button>
+        </div>
+
+        <!-- ===== Tab "Aussehen" ===== -->
+        <div class="settings-tab-panel active" id="settings-tab-look">
 
         <!-- Sektion A: Theme-Farben (Patch 77/79) -->
         <div class="settings-section" style="border-top:none;padding-top:0;margin-top:0;">
@@ -1314,7 +1475,7 @@ NALA_HTML = """<!DOCTYPE html>
             </div>
             <div class="bubble-picker-row">
                 <label>User-Bubble Text</label>
-                <input type="color" id="bc-user-text" oninput="bubblePreview()">
+                <input type="color" id="bc-user-text" oninput="bubbleTextPreview('user')">
                 <button class="bubble-reset-btn" onclick="resetBubble('user-text')" title="Zurücksetzen">↺</button>
             </div>
             <div class="bubble-picker-row">
@@ -1324,7 +1485,7 @@ NALA_HTML = """<!DOCTYPE html>
             </div>
             <div class="bubble-picker-row">
                 <label>LLM-Bubble Text</label>
-                <input type="color" id="bc-llm-text" oninput="bubblePreview()">
+                <input type="color" id="bc-llm-text" oninput="bubbleTextPreview('llm')">
                 <button class="bubble-reset-btn" onclick="resetBubble('llm-text')" title="Zurücksetzen">↺</button>
             </div>
             <button class="export-opt-btn" style="margin-top:4px;" onclick="resetAllBubbles()">↺ Alle Bubble-Farben zurücksetzen</button>
@@ -1370,16 +1531,15 @@ NALA_HTML = """<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- Sektion C: Schriftgröße (Patch 86 / N-F09) -->
+        <!-- Sektion C: UI-Skalierung (Patch 142 / B-016) — ersetzt die festen Presets -->
         <div class="settings-section">
-            <h5>🔤 Schriftgröße</h5>
-            <div class="font-preset-row">
-                <button class="font-preset-btn" data-size="13px" onclick="setFontSize('13px')">Klein</button>
-                <button class="font-preset-btn" data-size="15px" onclick="setFontSize('15px')">Normal</button>
-                <button class="font-preset-btn" data-size="17px" onclick="setFontSize('17px')">Groß</button>
-                <button class="font-preset-btn" data-size="19px" onclick="setFontSize('19px')">Extra</button>
+            <h5>🔤 UI-Skalierung</h5>
+            <div class="scale-row">
+                <label>Größe</label>
+                <input type="range" id="ui-scale-slider" min="0.8" max="1.4" step="0.05" value="1.0" oninput="applyUiScale(this.value)">
+                <span id="ui-scale-val">1.00×</span>
             </div>
-            <button class="export-opt-btn" onclick="resetFontSize()">↺ Zurücksetzen</button>
+            <button class="export-opt-btn" onclick="resetUiScale()">↺ Zurücksetzen (1.00×)</button>
         </div>
 
         <!-- Patch 102 (B-07): Eingabe-Verhalten — nur Desktop sichtbar.
@@ -1410,6 +1570,52 @@ NALA_HTML = """<!DOCTYPE html>
             <div class="theme-fav-row">
                 <button class="theme-fav-btn" onclick="saveFav(3)">💾 Fav 3</button>
                 <button class="theme-fav-btn" onclick="loadFav(3)">📂 Fav 3</button>
+            </div>
+        </div>
+
+        </div><!-- /settings-tab-look -->
+
+        <!-- ===== Tab "Ausdruck" (Patch 142 / B-012) ===== -->
+        <div class="settings-tab-panel" id="settings-tab-voice">
+            <div class="settings-section" style="border-top:none;padding-top:0;margin-top:0;">
+                <h5>✏️ Mein Ton (persönlicher System-Prompt)</h5>
+                <textarea id="my-prompt-area" class="my-prompt-area" placeholder="Dein persönlicher System-Prompt..."></textarea>
+                <button class="my-prompt-save-btn" onclick="saveMyPrompt()">Speichern</button>
+                <div id="my-prompt-status" class="my-prompt-status"></div>
+            </div>
+
+            <!-- Patch 143 (B-014): TTS-Controls — werden von JS befüllt sobald /api/tts/voices antwortet. -->
+            <div class="settings-section">
+                <h5>🔊 Vorlesen (Text-to-Speech)</h5>
+                <div class="theme-row" style="flex-direction:column;align-items:stretch;gap:8px;">
+                    <label for="tts-voice-select" style="text-align:left;">Stimme</label>
+                    <select id="tts-voice-select" onchange="saveTtsSettings()"
+                            style="padding:8px;background:#0a1628;color:#e0e8f8;border:1px solid #2a4068;border-radius:6px;">
+                        <option value="">Wird geladen…</option>
+                    </select>
+                </div>
+                <div class="scale-row">
+                    <label>Tempo</label>
+                    <input type="range" id="tts-rate-slider" min="-50" max="100" step="5" value="0" oninput="applyTtsRate(this.value)">
+                    <span id="tts-rate-val">+0%</span>
+                </div>
+                <button class="export-opt-btn" onclick="previewTts()">🔊 Probe hören</button>
+                <div id="tts-preview-status" style="font-size:0.82em;min-height:1.2em;margin-top:4px;color:#8aa0c0;"></div>
+            </div>
+        </div>
+
+        <!-- ===== Tab "System" (Patch 142 / B-013) ===== -->
+        <div class="settings-tab-panel" id="settings-tab-system">
+            <div class="settings-section" style="border-top:none;padding-top:0;margin-top:0;">
+                <h5>🔑 Passwort ändern</h5>
+                <button class="export-opt-btn" onclick="openPwModal()">Passwort ändern…</button>
+            </div>
+            <div class="settings-section">
+                <h5>👤 Account</h5>
+                <div id="account-info" style="font-size:0.88em;color:#8aa0c0;line-height:1.5;">
+                    <div>Profil: <span id="account-profile-name">–</span></div>
+                    <div>Berechtigung: <span id="account-permission">–</span></div>
+                </div>
             </div>
         </div>
 
@@ -1493,9 +1699,13 @@ NALA_HTML = """<!DOCTYPE html>
                 const evt = JSON.parse(e.data);
                 if (evt.type === 'done') {
                     statusBar.style.opacity = '0';
+                    // Patch 144: Pfoten beim done-Event ausblenden.
+                    _hidePaws();
                 } else {
                     // Patch 76: Typing-Indicator bei llm_start einblenden
                     if (evt.type === 'llm_start') showTypingIndicator();
+                    // Patch 144 (F-001): Granulare Status-Updates an die Pfoten binden.
+                    if (typeof setPawStatus === 'function') setPawStatus(evt.type);
                     statusBar.textContent = evt.message;
                     statusBar.style.opacity = '1';
                 }
@@ -1604,6 +1814,8 @@ NALA_HTML = """<!DOCTYPE html>
             document.documentElement.style.setProperty('--color-accent', currentProfile.theme_color);
             profileBadge.textContent    = '– ' + currentProfile.display_name;
         }
+        // Patch 140 (B-003): Auto-Kontrast initial anwenden (falls Funktion existiert).
+        try { if (typeof applyAutoContrast === 'function') applyAutoContrast(); } catch(_) {}
         loadSessions();
         connectSSE();
         if (messagesDiv.children.length === 0) {
@@ -1665,13 +1877,23 @@ NALA_HTML = """<!DOCTYPE html>
     }
 
     // ── Archiv: Session-Eintrag als <li> bauen (Helper für Patch 103 Zwei-Listen-Render) ──
+    // Patch 141 (B-002): Wenn die Session keine erste User-Nachricht hat, bekommt
+    // sie "Unbenannte Session" + Datum als Titel, damit sie trotzdem anklickbar ist
+    // und nicht als leerer Eintrag in der Liste hängt. Untertitel zeigt Datum + Uhrzeit.
     function buildSessionItem(s, isPinned) {
-        const rawMsg   = s.first_message || 'Neuer Chat';
-        const title    = rawMsg.length > 40 ? rawMsg.slice(0, 40) + '…' : rawMsg;
-        const preview  = rawMsg.length > 42 ? rawMsg.slice(0, 80) + (rawMsg.length > 80 ? '…' : '') : '';
-        const ts       = s.created_at
-            ? new Date(s.created_at).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' })
+        const hasMsg   = !!(s.first_message && s.first_message.trim());
+        const rawMsg   = hasMsg ? s.first_message.trim() : '';
+        const tsDate   = s.created_at ? new Date(s.created_at) : null;
+        const dateStr  = tsDate ? tsDate.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
+        const timeStr  = tsDate ? tsDate.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+        const title    = hasMsg
+            ? (rawMsg.length > 50 ? rawMsg.slice(0, 50) + '…' : rawMsg)
+            : ('Unbenannte Session' + (dateStr ? ' · ' + dateStr : ''));
+        // Preview: bei echter User-Nachricht längere Variante, sonst Datum+Zeit als Untertitel
+        const preview  = hasMsg
+            ? (rawMsg.length > 50 ? rawMsg.slice(0, 100) + (rawMsg.length > 100 ? '…' : '') : '')
             : '';
+        const ts       = dateStr + (timeStr ? ' ' + timeStr : '');
 
         const li = document.createElement('li');
         li.className = 'session-item' + (isPinned ? ' pinned' : '');
@@ -2083,6 +2305,26 @@ NALA_HTML = """<!DOCTYPE html>
         }
     }
 
+    // Patch 139 (B-009): Tap auf Bubble zeigt Action-Toolbar für 5 Sekunden.
+    // Verwendet einen kurzen Timer pro Wrapper. Desktop-Hover ist davon
+    // unabhängig (CSS :hover gewinnt weiterhin).
+    function attachActionToggle(wrapperEl, bubbleEl) {
+        let hideTimer = null;
+        bubbleEl.addEventListener('click', function(ev) {
+            // Klicks auf Links/Buttons nicht als Toggle werten
+            const target = ev.target;
+            if (target && target.closest && target.closest('a, button, select, input, textarea')) {
+                return;
+            }
+            wrapperEl.classList.add('actions-visible');
+            if (hideTimer) clearTimeout(hideTimer);
+            hideTimer = setTimeout(function() {
+                wrapperEl.classList.remove('actions-visible');
+                hideTimer = null;
+            }, 5000);
+        });
+    }
+
     function addMessage(text, sender, tsOverride) {
         const now = new Date();
         const timeStr = tsOverride || now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
@@ -2127,9 +2369,32 @@ NALA_HTML = """<!DOCTYPE html>
         copyBtn.onclick = () => copyBubble(text, copyBtn);
         toolbar.appendChild(timeSpan);
         toolbar.appendChild(copyBtn);
+        // Patch 143 (B-014): TTS-Button an Bot-Bubbles — Tap spricht den Text.
+        if (sender === 'bot') {
+            const ttsBtn = document.createElement('button');
+            ttsBtn.className = 'bubble-action-btn';
+            ttsBtn.title = 'Vorlesen';
+            ttsBtn.textContent = '🔊';
+            ttsBtn.onclick = async () => {
+                ttsBtn.disabled = true;
+                const old = ttsBtn.textContent;
+                ttsBtn.textContent = '⏳';
+                try {
+                    await speakText(text);
+                } catch (_) {
+                    ttsBtn.textContent = '⚠️';
+                    setTimeout(() => { ttsBtn.textContent = old; ttsBtn.disabled = false; }, 1800);
+                    return;
+                }
+                ttsBtn.textContent = old;
+                ttsBtn.disabled = false;
+            };
+            toolbar.appendChild(ttsBtn);
+        }
         if (sender === 'user') {
             const retryBtn = document.createElement('button');
-            retryBtn.className = 'bubble-action-btn';
+            retryBtn.className = 'bubble-action-btn retry-btn';
+            retryBtn.dataset.action = 'retry';
             retryBtn.title = 'Wiederholen';
             retryBtn.textContent = '🔄';
             retryBtn.onclick = () => retryMessage(text, retryBtn);
@@ -2142,6 +2407,11 @@ NALA_HTML = """<!DOCTYPE html>
             toolbar.appendChild(editBtn);
         }
         wrapper.appendChild(toolbar);
+
+        // Patch 139 (B-009): Tap auf Bubble → Action-Toolbar 5s sichtbar,
+        // danach wieder ausblenden. Klick auf Button selbst zählt nicht als
+        // Toggle (Buttons behalten ihre eigene onclick-Funktion).
+        attachActionToggle(wrapper, msgDiv);
 
         if (sender === 'bot') {
             const exportRow = document.createElement('div');
@@ -2168,23 +2438,47 @@ NALA_HTML = """<!DOCTYPE html>
     }
 
     // Patch 76 + Patch 102 (B-03): Typing-Indicator mit Spinner + Status-Text
+    // Patch 144 (B-007 / F-001): Katzenpfoten statt Text-Indikator.
+    // Die Pfoten sind dauerhaft im DOM, wir blenden sie nur ein/aus.
+    // Der alte Bubble-basierte Indikator bleibt als optionaler Frozen-/Error-Container,
+    // wird aber nur bei Timeout oder Fehler gezeigt.
+    function _showPaws(status) {
+        const paws = document.getElementById('pawIndicator');
+        const st   = document.getElementById('pawStatus');
+        if (paws) paws.classList.remove('hidden');
+        if (st) {
+            st.classList.remove('hidden');
+            st.textContent = status || 'Nala denkt nach…';
+        }
+    }
+    function _hidePaws() {
+        const paws = document.getElementById('pawIndicator');
+        const st   = document.getElementById('pawStatus');
+        if (paws) paws.classList.add('hidden');
+        if (st) { st.classList.add('hidden'); st.textContent = ''; }
+    }
     function showTypingIndicator() {
-        if (document.getElementById('typing-indicator')) return;
-        const wrapper = document.createElement('div');
-        wrapper.id = 'typing-indicator';
-        wrapper.className = 'msg-wrapper';
-        const bubble = document.createElement('div');
-        bubble.className = 'typing-indicator';
-        bubble.innerHTML =
-            '<span class="spinner-rad"></span>' +
-            '<span class="typing-status">Antwort wird generiert…</span>';
-        wrapper.appendChild(bubble);
-        messagesDiv.appendChild(wrapper);
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        _showPaws('Nala denkt nach…');
     }
     function removeTypingIndicator() {
+        _hidePaws();
+        // Alten Bubble-Indikator aufräumen, falls durch Timeout-/Error-Pfad erzeugt.
         const el = document.getElementById('typing-indicator');
         if (el) el.remove();
+    }
+    // Patch 144: Backend-Status an Pfoten-Text binden. Aufrufer: SSE-Handler.
+    function setPawStatus(phase) {
+        const map = {
+            'rag_search': 'RAG durchsucht…',
+            'llm_start':  'Nala denkt nach…',
+            'rerank':     'Reranker läuft…',
+            'generating': 'Antwort wird geschrieben…',
+        };
+        const txt = map[phase] || 'Nala denkt nach…';
+        const st = document.getElementById('pawStatus');
+        const paws = document.getElementById('pawIndicator');
+        if (paws && paws.classList.contains('hidden')) return;
+        if (st) st.textContent = txt;
     }
 
     // Patch 109: REST-Fallback — prüft ob Backend inzwischen eine Antwort gespeichert hat.
@@ -2554,7 +2848,6 @@ NALA_HTML = """<!DOCTYPE html>
         document.getElementById('bc-user-text').value = cssToHex(r.getPropertyValue('--bubble-user-text'));
         document.getElementById('bc-llm-bg').value    = cssToHex(r.getPropertyValue('--bubble-llm-bg'));
         document.getElementById('bc-llm-text').value  = cssToHex(r.getPropertyValue('--bubble-llm-text'));
-        markActiveFontPreset();
         // Patch 102 (B-07): Enter-Behavior nur auf Desktop sichtbar; Wert aus localStorage setzen.
         const enterSection = document.getElementById('enter-behavior-section');
         const enterSelect  = document.getElementById('enter-behavior-select');
@@ -2567,7 +2860,36 @@ NALA_HTML = """<!DOCTYPE html>
                 enterSelect.value = (v === null) ? 'true' : v;
             }
         }
+        // Patch 142 (B-016): UI-Skalierung-Slider synchronisieren.
+        const scaleSlider = document.getElementById('ui-scale-slider');
+        const scaleVal = document.getElementById('ui-scale-val');
+        if (scaleSlider) {
+            const current = localStorage.getItem('nala_ui_scale') || '1.0';
+            scaleSlider.value = current;
+            if (scaleVal) scaleVal.textContent = parseFloat(current).toFixed(2) + '×';
+        }
+        // Patch 142 (B-012): "Mein Ton" beim Öffnen laden.
+        if (typeof loadMyPrompt === 'function') { try { loadMyPrompt(); } catch(_) {} }
+        // Patch 142 (B-013): Account-Info füllen.
+        if (currentProfile) {
+            const nameEl = document.getElementById('account-profile-name');
+            const permEl = document.getElementById('account-permission');
+            if (nameEl) nameEl.textContent = currentProfile.display_name || currentProfile.name || '–';
+            if (permEl) permEl.textContent = currentProfile.permission_level || '–';
+        }
+        // Patch 143: TTS-Init beim Öffnen (lazy).
+        if (typeof initTtsControls === 'function') { try { initTtsControls(); } catch(_) {} }
         document.getElementById('settings-modal').classList.add('open');
+    }
+
+    // Patch 142 (B-015): Tab-Wechsel im Settings-Modal.
+    function switchSettingsTab(tab) {
+        document.querySelectorAll('.settings-tab-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.tab === tab);
+        });
+        document.querySelectorAll('.settings-tab-panel').forEach(p => {
+            p.classList.toggle('active', p.id === 'settings-tab-' + tab);
+        });
     }
     function closeSettingsModal() {
         document.getElementById('settings-modal').classList.remove('open');
@@ -2628,6 +2950,67 @@ NALA_HTML = """<!DOCTYPE html>
             r.setProperty(cfg.css, val);
             localStorage.setItem(cfg.ls, val);
         });
+        // Patch 140 (B-003): Text-Kontrast automatisch an Hintergrund anpassen,
+        // damit dunkler Text nicht auf dunklem Bubble-Hintergrund landet.
+        applyAutoContrast();
+    }
+
+    // Patch 140 (B-003): Wenn der User die Text-Farbe manuell wählt, merken
+    // wir uns das — der Auto-Kontrast wird dann für dieses Ziel ausgeschaltet.
+    function bubbleTextPreview(which) {
+        const pickerId = which === 'user' ? 'bc-user-text' : 'bc-llm-text';
+        const cssVar   = which === 'user' ? '--bubble-user-text' : '--bubble-llm-text';
+        const lsKey    = which === 'user' ? 'nala_bubble_user_text' : 'nala_bubble_llm_text';
+        const manualKey = lsKey + '_manual';
+        const val = document.getElementById(pickerId).value;
+        document.documentElement.style.setProperty(cssVar, val);
+        try {
+            localStorage.setItem(lsKey, val);
+            localStorage.setItem(manualKey, '1');
+        } catch (_) {}
+    }
+
+    // ── Patch 140 (B-003): Auto-Kontrast für Bubble-Text ──
+    // Berechnet WCAG-Luminanz, wählt hellen oder dunklen Text passend zum Hintergrund.
+    // Greift NUR wenn der User die Text-Farbe nicht manuell überschrieben hat
+    // (localStorage nala_bubble_user_text / nala_bubble_llm_text leer).
+    function getContrastColor(cssColor) {
+        // Akzeptiert #RRGGBB, rgba(), hsl() — wir rendern in einen tmp-Canvas, um
+        // beliebige CSS-Farben zu RGB aufzulösen (Browser macht die Arbeit).
+        const tmp = document.createElement('div');
+        tmp.style.color = cssColor;
+        document.body.appendChild(tmp);
+        const computed = getComputedStyle(tmp).color;
+        document.body.removeChild(tmp);
+        const m = computed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (!m) return '#f0f0f0';
+        const r = parseInt(m[1], 10);
+        const g = parseInt(m[2], 10);
+        const b = parseInt(m[3], 10);
+        // WCAG-gewichtete Luminanz (0..1)
+        const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        return lum > 0.55 ? '#1a1a1a' : '#f0f0f0';
+    }
+
+    function applyAutoContrast() {
+        const cs = getComputedStyle(document.documentElement);
+        const r = document.documentElement.style;
+        // User-Bubble
+        if (!localStorage.getItem('nala_bubble_user_text_manual')) {
+            const bg = cs.getPropertyValue('--bubble-user-bg').trim();
+            if (bg) {
+                const txt = getContrastColor(bg);
+                r.setProperty('--bubble-user-text', txt);
+            }
+        }
+        // LLM-Bubble
+        if (!localStorage.getItem('nala_bubble_llm_text_manual')) {
+            const bg = cs.getPropertyValue('--bubble-llm-bg').trim();
+            if (bg) {
+                const txt = getContrastColor(bg);
+                r.setProperty('--bubble-llm-text', txt);
+            }
+        }
     }
     function resetBubble(which) {
         const cfg = BUBBLE_KEYS[which];
@@ -2665,6 +3048,8 @@ NALA_HTML = """<!DOCTYPE html>
         const pickerId = which === 'user' ? 'bc-user-bg' : 'bc-llm-bg';
         const picker = document.getElementById(pickerId);
         if (picker) picker.value = hex;
+        // Patch 140 (B-003): Kontrast nach HSL-Änderung neu berechnen.
+        applyAutoContrast();
     }
 
     function hslToHex(h, s, l) {
@@ -2694,6 +3079,114 @@ NALA_HTML = """<!DOCTYPE html>
         document.querySelectorAll('.font-preset-btn').forEach(b => {
             b.classList.toggle('active', b.dataset.size === current);
         });
+    }
+
+    // ── Patch 142 (B-016): UI-Skalierung ──
+    // Setzt die CSS-Variable --ui-scale. Dank calc() in der CSS skalieren
+    // alle Texte/Buttons/Paddings anteilig.
+    function applyUiScale(val) {
+        const f = parseFloat(val);
+        if (!isFinite(f) || f < 0.5 || f > 2.0) return;
+        document.documentElement.style.setProperty('--ui-scale', String(f));
+        document.documentElement.style.setProperty('--font-size-base', (16 * f) + 'px');
+        try { localStorage.setItem('nala_ui_scale', String(f)); } catch(_) {}
+        const valEl = document.getElementById('ui-scale-val');
+        if (valEl) valEl.textContent = f.toFixed(2) + '×';
+    }
+    function resetUiScale() {
+        document.documentElement.style.removeProperty('--ui-scale');
+        document.documentElement.style.removeProperty('--font-size-base');
+        try { localStorage.removeItem('nala_ui_scale'); } catch(_) {}
+        const slider = document.getElementById('ui-scale-slider');
+        const valEl = document.getElementById('ui-scale-val');
+        if (slider) slider.value = '1.0';
+        if (valEl) valEl.textContent = '1.00×';
+    }
+    // Beim Laden: gespeicherte Skalierung wiederherstellen.
+    (function restoreUiScale() {
+        try {
+            const stored = localStorage.getItem('nala_ui_scale');
+            if (stored) {
+                const f = parseFloat(stored);
+                if (isFinite(f) && f >= 0.5 && f <= 2.0) {
+                    document.documentElement.style.setProperty('--ui-scale', String(f));
+                    document.documentElement.style.setProperty('--font-size-base', (16 * f) + 'px');
+                }
+            }
+        } catch(_) {}
+    })();
+
+    // ── Patch 143 (B-014): TTS-Stubs (Endpoints werden in Patch 143 befüllt) ──
+    let _ttsVoicesLoaded = false;
+    async function initTtsControls() {
+        const sel = document.getElementById('tts-voice-select');
+        if (!sel || _ttsVoicesLoaded) return;
+        try {
+            const resp = await fetch('/nala/tts/voices?lang=de', { headers: profileHeaders() });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const voices = await resp.json();
+            sel.innerHTML = '';
+            (voices || []).forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v.ShortName || v.short_name || v.name;
+                opt.textContent = (v.FriendlyName || v.friendly_name || opt.value);
+                sel.appendChild(opt);
+            });
+            const stored = localStorage.getItem('nala_tts_voice');
+            if (stored) sel.value = stored;
+            _ttsVoicesLoaded = true;
+        } catch (_) {
+            sel.innerHTML = '<option value="">TTS nicht verfügbar</option>';
+        }
+        // Rate-Slider synchronisieren
+        const rate = localStorage.getItem('nala_tts_rate') || '0';
+        const slider = document.getElementById('tts-rate-slider');
+        const val = document.getElementById('tts-rate-val');
+        if (slider) slider.value = rate;
+        if (val) val.textContent = (parseInt(rate, 10) >= 0 ? '+' : '') + rate + '%';
+    }
+    function applyTtsRate(val) {
+        const v = parseInt(val, 10);
+        const label = (v >= 0 ? '+' : '') + v + '%';
+        const valEl = document.getElementById('tts-rate-val');
+        if (valEl) valEl.textContent = label;
+        try { localStorage.setItem('nala_tts_rate', String(v)); } catch(_) {}
+    }
+    function saveTtsSettings() {
+        const sel = document.getElementById('tts-voice-select');
+        if (sel && sel.value) {
+            try { localStorage.setItem('nala_tts_voice', sel.value); } catch(_) {}
+        }
+    }
+    async function previewTts() {
+        const sampleText = 'Hallo, ich bin Nala. Dies ist eine Stimmenprobe.';
+        const status = document.getElementById('tts-preview-status');
+        if (status) status.textContent = 'Lade…';
+        try {
+            await speakText(sampleText);
+            if (status) status.textContent = '';
+        } catch (e) {
+            if (status) status.textContent = 'Fehler: ' + e.message;
+        }
+    }
+    // Gemeinsamer TTS-Player (wird auch vom 🔊-Icon in Bot-Bubbles genutzt).
+    let _ttsAudio = null;
+    async function speakText(text) {
+        const voice = (document.getElementById('tts-voice-select') || {}).value
+            || localStorage.getItem('nala_tts_voice') || 'de-DE-ConradNeural';
+        const rate = parseInt(localStorage.getItem('nala_tts_rate') || '0', 10);
+        const rateStr = (rate >= 0 ? '+' : '') + rate + '%';
+        if (_ttsAudio) { try { _ttsAudio.pause(); } catch(_) {} }
+        const resp = await fetch('/nala/tts/speak', {
+            method: 'POST',
+            headers: profileHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ text, voice, rate: rateStr })
+        });
+        if (!resp.ok) throw new Error('TTS HTTP ' + resp.status);
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        _ttsAudio = new Audio(url);
+        await _ttsAudio.play();
     }
 
     // ── Patch 86: Favoriten v2 (Theme + Bubble + Schrift) ──
@@ -2908,6 +3401,161 @@ NALA_HTML = """<!DOCTYPE html>
                 if (e.target === pwModal) pwModal.style.display = 'none';
             });
         }
+    })();
+
+    // ── Patch 145 (F-002): Partikel-Engine — Sterne, Feuerwerk, Goldregen ──
+    (function initParticles() {
+        const canvas = document.getElementById('particleCanvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        let running = false;
+        const COLORS = ['#FFD700','#FF6B6B','#4ECDC4','#45B7D1','#96CEB4','#FFEAA7','#DFE6E9','#FF9FF3'];
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        function drawStar(cx, cy, size) {
+            ctx.beginPath();
+            for (let i = 0; i < 5; i++) {
+                const a = (Math.PI * 2 / 5) * i - Math.PI / 2;
+                const x = cx + Math.cos(a) * size;
+                const y = cy + Math.sin(a) * size;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                const ai = a + Math.PI / 5;
+                const ix = cx + Math.cos(ai) * (size * 0.4);
+                const iy = cy + Math.sin(ai) * (size * 0.4);
+                ctx.lineTo(ix, iy);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        function spawn(x, y, type) {
+            const count = type === 'firework' ? 80 : 30;
+            for (let i = 0; i < count; i++) {
+                const angle = (Math.PI * 2 / count) * i + (Math.random() * 0.5);
+                const speed = type === 'firework' ? 3 + Math.random() * 5 : 1 + Math.random() * 3;
+                particles.push({
+                    x, y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed - (type === 'firework' ? 2 : 0),
+                    life: 1.0,
+                    decay: 0.01 + Math.random() * 0.02,
+                    size: type === 'firework' ? 2 + Math.random() * 4 : 1 + Math.random() * 2,
+                    color: COLORS[Math.floor(Math.random() * COLORS.length)],
+                    shape: Math.random() > 0.5 ? 'star' : 'circle',
+                    gravity: 0.05,
+                });
+            }
+            if (!running) animate();
+        }
+
+        function goldRain() {
+            for (let i = 0; i < 50; i++) {
+                particles.push({
+                    x: Math.random() * canvas.width,
+                    y: -10,
+                    vx: (Math.random() - 0.5) * 2,
+                    vy: 2 + Math.random() * 3,
+                    life: 1.0,
+                    decay: 0.005,
+                    size: 2 + Math.random() * 3,
+                    color: '#FFD700',
+                    shape: 'circle',
+                    gravity: 0.02,
+                });
+            }
+            if (!running) animate();
+        }
+
+        function animate() {
+            running = true;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            particles = particles.filter(p => {
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += p.gravity;
+                p.life -= p.decay;
+                if (p.life <= 0) return false;
+                ctx.globalAlpha = Math.max(0, p.life);
+                ctx.fillStyle = p.color;
+                if (p.shape === 'star') {
+                    drawStar(p.x, p.y, p.size);
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                return true;
+            });
+            ctx.globalAlpha = 1;
+            if (particles.length > 0) {
+                requestAnimationFrame(animate);
+            } else {
+                running = false;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+        }
+
+        function flashBackground() {
+            const body = document.body;
+            const oldBg = body.style.backgroundColor;
+            body.style.transition = 'background-color 0.1s ease';
+            body.style.backgroundColor = 'rgba(255,215,0,0.12)';
+            setTimeout(() => {
+                body.style.backgroundColor = oldBg;
+                setTimeout(() => { body.style.transition = ''; }, 150);
+            }, 150);
+        }
+
+        // ── Trigger 1: Rapid-Tap im Textfeld → Sterne-Explosion ──
+        const input = document.getElementById('text-input');
+        if (input) {
+            let tapTimes = [];
+            input.addEventListener('keydown', function() {
+                const now = Date.now();
+                tapTimes.push(now);
+                tapTimes = tapTimes.filter(t => now - t < 2000);
+                if (tapTimes.length >= 7) {
+                    const rect = input.getBoundingClientRect();
+                    spawn(rect.left + rect.width / 2, rect.top, 'star');
+                    tapTimes = [];
+                    flashBackground();
+                }
+            });
+        }
+
+        // ── Trigger 2: Swipe-Up → Feuerwerk + Goldregen ──
+        let touchStartY = 0;
+        let touchStartX = 0;
+        let touchStartTs = 0;
+        document.addEventListener('touchstart', function(e) {
+            if (!e.touches || e.touches.length === 0) return;
+            touchStartY = e.touches[0].clientY;
+            touchStartX = e.touches[0].clientX;
+            touchStartTs = Date.now();
+        }, { passive: true });
+        document.addEventListener('touchend', function(e) {
+            if (!e.changedTouches || e.changedTouches.length === 0) return;
+            const t = e.changedTouches[0];
+            const dy = touchStartY - t.clientY;
+            const dx = Math.abs(touchStartX - t.clientX);
+            const dt = Date.now() - touchStartTs;
+            // Klares Swipe-Up: ≥200px hoch, <100px seitlich, <800ms
+            if (dy > 200 && dx < 100 && dt < 800) {
+                spawn(t.clientX, window.innerHeight, 'firework');
+                goldRain();
+                flashBackground();
+            }
+        }, { passive: true });
+
+        // Exports für optionale Aufrufer (z.B. Easter Eggs)
+        window.__nalaParticles = { spawn, goldRain };
     })();
 </script>
 </body>
@@ -3428,3 +4076,61 @@ async def export_message(req: ExportRequest):
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Patch 143 (B-014): Text-to-Speech via edge-tts.
+# Zwei Endpoints:
+#   GET  /nala/tts/voices?lang=de   → Liste verfügbarer Stimmen
+#   POST /nala/tts/speak            → MP3-Audio (audio/mpeg)
+# ---------------------------------------------------------------------------
+
+class TtsSpeakRequest(BaseModel):
+    text: str
+    voice: str = "de-DE-ConradNeural"
+    rate: str = "+0%"
+
+
+@router.get("/tts/voices")
+async def tts_voices(lang: str = "de"):
+    """Listet verfügbare edge-tts-Stimmen für eine Sprache (Default: deutsch)."""
+    from zerberus.utils import tts
+    if not tts.is_available():
+        raise HTTPException(503, "edge-tts nicht installiert")
+    try:
+        voices = await tts.list_voices(lang)
+    except Exception as e:
+        logger.warning(f"[TTS-143] list_voices fehlgeschlagen: {e}")
+        raise HTTPException(502, f"edge-tts nicht erreichbar: {e}")
+    # Kompaktes Format — nur das, was die UI braucht.
+    return [
+        {
+            "ShortName": v.get("ShortName", ""),
+            "FriendlyName": v.get("FriendlyName", v.get("ShortName", "")),
+            "Locale": v.get("Locale", ""),
+            "Gender": v.get("Gender", ""),
+        }
+        for v in voices
+    ]
+
+
+@router.post("/tts/speak")
+async def tts_speak(req: TtsSpeakRequest):
+    """Konvertiert Text zu MP3-Audio und streamt es an den Client."""
+    from fastapi.responses import Response
+    from zerberus.utils import tts
+    if not tts.is_available():
+        raise HTTPException(503, "edge-tts nicht installiert")
+    if not req.text or not req.text.strip():
+        raise HTTPException(400, "text darf nicht leer sein")
+    # Schutzgrenze: sehr lange Texte blockieren den Request minutenlang —
+    # im Chat-Kontext kappen wir bei 5000 Zeichen.
+    text = req.text[:5000]
+    try:
+        audio = await tts.text_to_speech(text, voice=req.voice, rate=req.rate)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.warning(f"[TTS-143] text_to_speech fehlgeschlagen: {e}")
+        raise HTTPException(502, f"TTS-Fehler: {e}")
+    return Response(content=audio, media_type="audio/mpeg")

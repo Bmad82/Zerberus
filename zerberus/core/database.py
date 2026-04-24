@@ -208,16 +208,31 @@ async def store_interaction(
         await save_metrics(interaction.id, metrics)
     logger.debug(f"💾 Gespeichert: {role}, {word_count} Wörter, Sentiment {sentiment:.2f}, profile={effective_profile_key or '–'}")
 
-async def get_all_sessions(limit: int = 50) -> list:
+async def get_all_sessions(limit: int = 50, exclude_profiles: list[str] | None = None) -> list:
+    """
+    Listet alle Sessions sortiert nach letzter Aktivität.
+
+    Patch 138 (B-004): `exclude_profiles` filtert Sessions von bestimmten
+    profile_keys raus (z.B. Test-Profile loki/fenrir, damit Chris's Sidebar
+    nicht mit Playwright-Läufen zugemüllt wird).
+    """
+    exclude_profiles = exclude_profiles or []
     async with _async_session_maker() as session:
-        # Unterabfrage: pro Session die minimale und maximale Zeit
+        # Unterabfrage: pro Session die minimale und maximale Zeit.
+        # Patch 138: Sessions filtern, bei denen alle Interaktionen
+        # zu einem ausgeschlossenen Profil gehören.
+        where_clauses = [Interaction.session_id.isnot(None)]
+        if exclude_profiles:
+            where_clauses.append(
+                ~Interaction.profile_key.in_(exclude_profiles)
+            )
         subq = (
             select(
                 Interaction.session_id,
                 func.min(Interaction.timestamp).label("first_message_time"),
                 func.max(Interaction.timestamp).label("last_message_time")
             )
-            .where(Interaction.session_id.isnot(None))
+            .where(*where_clauses)
             .group_by(Interaction.session_id)
             .subquery()
         )

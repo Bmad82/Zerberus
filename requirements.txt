@@ -53,3 +53,6 @@ python-docx>=1.1.0
 # Metric Engine (Patch 59) – spaCy für erweiterte linguistische Metriken
 # Modell einmalig installieren: python -m spacy download de_core_news_sm
 spacy>=3.7.0
+
+# Text-to-Speech (Patch 143 / B-014): Microsoft Edge TTS — Nutzung via edge_tts.Communicate
+edge-tts>=7.0.0

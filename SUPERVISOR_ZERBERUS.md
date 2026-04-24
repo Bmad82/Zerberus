@@ -1,8 +1,33 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Mega-Patch 131–136 (2026-04-24) – Vision, Memory-Store, FAISS-Switch, DB-Dedup, Pipeline-Dedup, Kostenanzeige*
+*Letzte Aktualisierung: Monster-Patch 137–152 (2026-04-24) – Käferpresse komplett: Bugs, UI, TTS, Pfoten, Feuerwerk, Design-System*
 
 ## Aktueller Patch
+
+**Monster-Patch 137–152** — Drittes Mega-Patch-Experiment, bisher größter Scope (2026-04-24)
+
+- **Patch 137 — RAG Smalltalk-Skip (B-001):** Neuer Intent `GREETING` in [orchestrator.py](zerberus/app/routers/orchestrator.py) (Pattern-Liste: Hallo/Hi/Hey/Moin/Servus/Guten Morgen/Na?/Wie geht's/Danke/Tschüss) mit Safe-Guard: Grüße mit inhaltlicher Frage bleiben QUESTION ("Hallo, wer ist Anne?"). GREETING triggert RAG-Skip in `_run_pipeline()` und in `legacy.py` (aktiver Chat-Pfad). `rerank_min_score` von 0.05 → 0.15 angehoben (Noise-Schwelle). **16 neue Tests.**
+- **Patch 138 — Test-Profile Filter (B-004):** `is_test: true` Flag an loki/fenrir in [config.yaml](config.yaml) Profilen. `get_all_sessions(exclude_profiles=...)` in [database.py](zerberus/core/database.py) filtert per profile_key. `/archive/sessions` default `include_test=False`, Chris's Sidebar zeigt keine Playwright-Sessions mehr. Cleanup-Script [`scripts/cleanup_test_sessions.py`](scripts/cleanup_test_sessions.py) mit Dry-Run + DB-Backup. **9 neue Tests.**
+- **Patch 139 — Nala Bubble-Layout (B-005, B-008-011):** Shine von linear- auf radial-gradient oben-links (ellipse at 20% 20%). Bubbles auf 92% Mobile / 80% Desktop verbreitert. Action-Toolbar initial unsichtbar (opacity:0, pointer-events:none), neue JS-Funktion `attachActionToggle(wrapper, bubble)` macht sie bei Tap für 5s sichtbar. Retry-Button transparent via `.retry-btn { background: transparent !important }`. Titelzeile von 1.5em auf 1.05em/0.95em. **15 neue Tests.**
+- **Patch 140 — Dark-Theme Kontrast (B-003):** Neue JS-Funktionen `getContrastColor()` (WCAG-Luminanz 0.299R+0.587G+0.114B) und `applyAutoContrast()` — wählen bei dunklem Bubble-BG hellen Text (#f0f0f0) und umgekehrt (#1a1a1a). Greift bei `bubblePreview()`, `applyHsl()` und beim Init (`showChatScreen`). Manuelle Text-Farbe wird respektiert (localStorage `nala_bubble_*_text_manual`). **9 neue Tests.**
+- **Patch 141 — Session-Liste Fallback (B-002):** `buildSessionItem()` fällt bei leerer `first_message` auf "Unbenannte Session" + Datum zurück. Titel-Kürzung auf 50 Zeichen (war 40). Untertitel zeigt jetzt Datum + Uhrzeit (HH:MM). **4 neue Tests.**
+- **Patch 142 — Settings-Umbau (B-006, B-012, B-013, B-015, B-016):** 🔧-Icon aus Nala Top-Bar entfernt. Sidebar-Footer mit Abmelden-Icon (links, rot) + Zahnrad (rechts, gold), fest getackert, 48px Touch-Targets. "Mein Ton" und Passwort raus aus Sidebar. Settings-Modal bekommt 3 Tabs: **Aussehen** (Theme/Bubbles/HSL/UI-Scale/Favoriten), **Ausdruck** (Mein Ton + TTS-Controls), **System** (Passwort, Account-Info). Neue UI-Skalierung via Range-Slider 0.8-1.4 × (ersetzt 4 feste Presets) mit CSS-Variable `--ui-scale` und persistenter `localStorage.nala_ui_scale`. **19 neue Tests.**
+- **Patch 143 — TTS Integration (B-014):** Neue Utility [`zerberus/utils/tts.py`](zerberus/utils/tts.py) um `edge_tts.Communicate`. Zwei Router-Endpoints: `GET /nala/tts/voices?lang=de`, `POST /nala/tts/speak` → `audio/mpeg`. Frontend: Stimmen-Dropdown + Rate-Slider (-50% bis +100%) in Settings-Tab "Ausdruck", 🔊-Button an jeder Bot-Bubble (mit `⏳`/`⚠️`-States). edge-tts in requirements.txt. **14 neue Tests.**
+- **Patch 144 — Katzenpfoten (B-007 / F-001, Jojo-Priorität):** Alter "Antwort wird generiert…"-Spinner ersetzt durch 4 animierte 🐾-Pfoten, die über der Input-Area laufen (CSS-Keyframe `pawWalk 3s linear infinite`). Status-Text darunter mappt Backend-Events: `rag_search` → "RAG durchsucht…", `llm_start` → "Nala denkt nach…", `generating` → "Antwort wird geschrieben…". Pfoten verschwinden bei `done`-Event. **13 neue Tests.**
+- **Patch 145 — Feuerwerk & Sternenregen (F-002, Jojo-Priorität):** Neue Canvas-basierte Particle-Engine mit 2 Triggern: **Rapid-Tap** (≥7 Tasten in 2s im Textfeld → Sterne-Explosion) und **Swipe-Up** (≥200px nach oben → Firework + Goldregen). 8 Farben, Star+Circle Shapes, Gravity, Alpha-Decay. Background-Flash bei jedem Trigger. Canvas `z-index: 9999`, `pointer-events: none`. **11 neue Tests.**
+- **Patch 146 — Metriken-Cleanup (B-018):** `/hel/metrics/latest_with_costs` truncated content auf 50 Zeichen + `…`, fügt `content_truncated` und `content_original_length` hinzu. Eine Bot-Antwort füllt nicht mehr mehrere Bildschirme. **3 neue Tests.**
+- **Patch 147 — Modell-Dropdown Vereinheitlichung (B-019):** Neuer Formatter `formatModelLabel(name, inP, outP)` → "Name — $X.XX/$Y.YY/1M". Alle drei Dropdowns (Nala-LLM, Vision, Huginn) nutzen ihn, sortieren nach Input-Preis. Kein [Budget]/[Premium]-Label mehr im sichtbaren Text. **9 neue Tests.**
+- **Patch 148 — Dialekte-Tab (B-022):** Roher JSON-Blob ersetzt durch strukturiertes UI: Gruppen-Sektionen (berlin/schwäbisch/…), pro Gruppe `Von` → `Nach` Eingabefelder mit ✕-Lösch-Button, neuer Eintrag oben, Suchfilter, Gruppe-Hinzufügen, Gruppe-Löschen mit Confirm. Raw-JSON bleibt als aufklappbare `<details>`-Fallback. **10 neue Tests.**
+- **Patch 149 — Hel Kleinigkeiten (B-021, B-023, B-025):** WhisperCleaner-Regel-Editor aus UI entfernt (Pflege nur noch via `whisper_cleaner.json`). Sysctl-Tab umbenannt → "System". Hel-Header bekommt ⚙️-Button mit Mini-Settings-Panel: UI-Scale-Slider 0.8-1.4× identisch zu Nala, persistent via `hel_ui_scale`. **10 neue Tests.**
+- **Patch 150 — Pacemaker-Steuerung (B-024):** Neue Hel-Card im System-Tab: Master-Toggle + Sync-Toggle, Prozess-Liste (sentiment, memory, db_dedup, whisper_ping) mit Aktiv-Checkbox, Status-LED, Intervall-Slider 1-60min, CPU/GPU-Dropdown. Zwei Endpoints: `GET/POST /hel/admin/pacemaker/processes`, speichert in `modules.pacemaker_processes` in config.yaml. Sync-Modus synchronisiert alle Intervalle live. Scheduler-Integration bleibt für Folge-Patch. **15 neue Tests.**
+- **Patch 151 — Design-Konsistenz-Audit (B-026 / L-001):** Neue gemeinsame Datei [`zerberus/static/css/shared-design.css`](zerberus/static/css/shared-design.css) mit Design-Tokens (`--zb-primary`, `--zb-space-*`, `--zb-radius-*`, `--zb-shadow-*`, `--zb-touch-min`). Klassen `.zb-btn`, `.zb-btn-primary`, `.zb-btn-danger`, `.zb-select`, `.zb-slider`, `.zb-toggle` zur Vereinheitlichung. Auto-Touch-Min via `@media (hover: none) and (pointer: coarse)` auf alle `button/select/input[range|checkbox|radio]`. Wird von Nala und Hel im `<head>` geladen. Neue [`docs/DESIGN.md`](docs/DESIGN.md) dokumentiert die Leitregel "projektübergreifende Konsistenz". **12 neue Tests.**
+- **Patch 152 — Memory-Dashboard (B-020):** Neue Hel-Card im RAG-Tab: Statistik-Leiste (Gesamt-Anzahl, Kategorien, Letzte Extraktion), Such-/Filter-Zeile (Volltext + Kategorie-Dropdown PERSON/PREFERENCE/FACT/EVENT/SKILL/EMOTION), Tabelle mit Kategorie-Spalte, Confidence-Badge (≥0.9 grün / ≥0.7 gelb / sonst rot), Lösch-Button pro Zeile, "+ Manuell hinzufügen"-Block (Details-Element). Nutzt die bestehenden Endpoints aus Patch 132. Lazy-Load beim RAG-Tab-Aktivieren. **11 neue Tests.**
+
+- **Tests:** **488 passed** offline in 16.6s (308 Baseline + **180 neue**, alle grün). Größte Test-Erweiterung aller Mega-Patches. Playwright-Tests (loki/fenrir) unverändert.
+- **Scope:** IN Scope: alle 16 Patches vollständig inkl. Tests und Doku. NICHT in diesem Patch: echte Scheduler-Integration für Patch 150 (Config + UI stehen, Worker-Loop muss Config lesen); Alembic-Migration für Memory-Dashboard (nutzt existierende `memories`-Tabelle aus Patch 132); Migration aller Legacy-Inline-Styles auf `.zb-btn`-Klassen (schrittweise); Hel-Vision-UI-Tweaks außerhalb des Dropdowns.
+- **Live-Verifikation (USER):** (1) "Guten Morgen" in Nala → keine Doku-Referenzen mehr, Log zeigt `[GREETING-137]`. (2) Chris's Sidebar → keine Playwright-Sessions mehr (loki/fenrir gefiltert). (3) Bubble tappen → Kopieren/Wiederholen-Icons kommen rein, verschwinden nach 5s. (4) Settings öffnen → 3 Tabs, UI-Slider wirkt live. (5) 🔊 an Bot-Bubble → Audio spielt. (6) 7× schnell tippen → Sterne-Explosion. (7) Nach oben wischen → Feuerwerk + Goldregen. (8) "Antwort wird generiert…" weg, stattdessen laufen Katzenpfoten. (9) Hel-Metriken zeigen keine Bildschirm-füllenden Texte. (10) Vision/Huginn/Nala-LLM-Dropdowns alle im Format "Name — $X/$Y/1M", aufsteigend sortiert. (11) Dialekte-Tab: Von→Nach-Felder, kein JSON-Blob. (12) Hel ⚙️ rechts oben öffnet Schrift-Slider-Panel. (13) Pacemaker-Prozess-Liste im System-Tab funktioniert. (14) `docs/DESIGN.md` existiert. (15) Memory-Dashboard im RAG-Tab zeigt Fakten mit Badges + Löschen/Hinzufügen.
+
+---
 
 **Mega-Patch 131–136** — Zweites Mega-Patch-Experiment (2026-04-24)
 
@@ -61,8 +86,25 @@
 - [x] **134** DB-Deduplizierung (Overnight-Job + Hel-Endpoints)
 - [x] **135** Pipeline-Dedup `X-Already-Cleaned`-Header
 - [x] **136** Kostenanzeige-Fix (EUR-Anzeige, heute gesamt)
-- [ ] **137+** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
-- [ ] **138+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
+- [x] **137** RAG Smalltalk-Skip (GREETING-Intent, Threshold 0.15)
+- [x] **138** Test-Profile Filter (loki/fenrir aus Chris's Sidebar raus)
+- [x] **139** Nala Bubble-Layout (Shine radial, Breite, Action-Tap-Toggle, Retry transparent)
+- [x] **140** Dark-Theme Auto-Kontrast (WCAG-Luminanz)
+- [x] **141** Session-Liste Fallback + Timestamp-Untertitel
+- [x] **142** Settings-Umbau (3 Tabs, Sidebar-Footer, UI-Skalierung 0.8-1.4×)
+- [x] **143** TTS via edge-tts (Endpoints, 🔊-Button, Stimmen+Rate)
+- [x] **144** Katzenpfoten-Indikator (ersetzt "Antwort wird generiert…")
+- [x] **145** Feuerwerk & Sternenregen (Rapid-Tap + Swipe-Up)
+- [x] **146** Metriken-Cleanup (50-Zeichen-Truncation)
+- [x] **147** Modell-Dropdown Vereinheitlichung (Nala/Vision/Huginn)
+- [x] **148** Dialekte-Tab strukturiertes UI (Von → Nach)
+- [x] **149** Hel Kleinigkeiten (Whisper-UI raus, Sysctl → System, Hel Mini-Settings)
+- [x] **150** Pacemaker-Steuerung (Master + Sync + per-Prozess-Control)
+- [x] **151** Design-Konsistenz (shared-design.css + DESIGN.md + zb-tokens)
+- [x] **152** Memory-Dashboard (Tabelle + Suche + Confidence-Badges)
+- [ ] **153+** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
+- [ ] **154+** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
+- [ ] **155+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
 - [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
 - [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)
 - [ ] **LETZTER SCHRITT** Rosa/Heimdall Corporate Entschlackung

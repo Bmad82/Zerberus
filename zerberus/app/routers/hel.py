@@ -168,6 +168,8 @@ ADMIN_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <title>&#9889; Hel – Zerberus Admin</title>
     <link rel="icon" href="/static/favicon.ico">
+    <!-- Patch 151 (L-001): Gemeinsame Design-Tokens für Nala UND Hel. -->
+    <link rel="stylesheet" href="/static/css/shared-design.css">
     <!-- Patch 91: Chart.js 4.4.7 + Zoom-Plugin + hammerjs (für Touch-Pinch-Zoom) -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
@@ -515,9 +517,26 @@ ADMIN_HTML = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h1>&#9889; Hel – Admin-Konsole</h1>
-        <!-- Patch 90 (N-F09b): Schriftgr&#246;&#223;en-Wahl -->
-        <div class="font-preset-bar" role="group" aria-label="Schriftgr&#246;&#223;e">
+        <!-- Patch 149 (B-025): Hel-Header mit eigenem Zahnrad-Settings-Button. -->
+        <div class="hel-header" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <h1 style="margin:0;">&#9889; Hel – Admin-Konsole</h1>
+            <button type="button" id="helSettingsBtn" onclick="toggleHelSettings()"
+                    style="background:transparent;border:1px solid #444;color:#ccc;font-size:1.4em;padding:6px 12px;border-radius:8px;cursor:pointer;min-height:44px;min-width:44px;"
+                    title="Einstellungen">⚙️</button>
+        </div>
+        <!-- Hel Mini-Settings (B-025): Schrift-Slider, gleiche Logik wie Nala -->
+        <div id="helSettingsPanel" style="display:none;padding:14px;margin:10px 0;background:rgba(255,255,255,0.04);border:1px solid #333;border-radius:8px;">
+            <h3 style="margin:0 0 10px;color:#FFD700;">⚙️ Hel-Einstellungen</h3>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <label style="flex:0 0 120px;color:#ccc;">UI-Skalierung</label>
+                <input type="range" id="helUiScaleSlider" min="0.8" max="1.4" step="0.05" value="1.0"
+                       style="flex:1;min-height:30px;" oninput="applyHelUiScale(this.value)">
+                <span id="helUiScaleVal" style="flex:0 0 60px;text-align:right;font-family:monospace;color:#888;">1.00×</span>
+            </div>
+            <button onclick="resetHelUiScale()" style="margin-top:8px;padding:6px 14px;background:#333;color:#ccc;border:1px solid #555;border-radius:6px;cursor:pointer;">↺ Zurücksetzen</button>
+        </div>
+        <!-- Patch 90 (N-F09b): Schriftgr&#246;&#223;en-Wahl (altes UI als Fallback) -->
+        <div class="font-preset-bar" role="group" aria-label="Schriftgr&#246;&#223;e" style="display:none;">
             <span class="label">Schrift:</span>
             <button type="button" class="font-preset-btn" data-size="13px" onclick="setFontSize('13px')">13</button>
             <button type="button" class="font-preset-btn" data-size="15px" onclick="setFontSize('15px')">15</button>
@@ -534,7 +553,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             <button type="button" class="hel-tab" data-tab="usermgmt" onclick="activateTab('usermgmt')">&#128101; User</button>
             <button type="button" class="hel-tab" data-tab="tests" onclick="activateTab('tests')">&#129514; Tests</button>
             <button type="button" class="hel-tab" data-tab="dialect" onclick="activateTab('dialect')">&#128483;&#65039; Dialekte</button>
-            <button type="button" class="hel-tab" data-tab="sysctl" onclick="activateTab('sysctl')">&#128147; Sysctl</button>
+            <button type="button" class="hel-tab" data-tab="sysctl" onclick="activateTab('sysctl')">&#128147; System</button>
             <button type="button" class="hel-tab" data-tab="provider" onclick="activateTab('provider')">&#10060; Provider</button>
             <button type="button" class="hel-tab" data-tab="huginn" onclick="activateTab('huginn')">&#128020; Huginn</button>
             <button type="button" class="hel-tab" data-tab="nav" onclick="activateTab('nav')">&#128279; Links</button>
@@ -675,16 +694,20 @@ ADMIN_HTML = """<!DOCTYPE html>
             <span class="section-arrow">&#9654;</span> Whisper-Cleaner
           </div>
           <div class="hel-section-body collapsed" id="body-cleaner" style="max-height:0;padding:0 20px;">
+            <!-- Patch 149 (B-021): WhisperCleaner-Regeln wurden aus dem UI entfernt.
+                 Pflege läuft ausschließlich über whisper_cleaner.json auf dem Server
+                 (Regex-Patterns sind zu gefährlich ohne Review).
+                 Fuzzy-Dictionary bleibt, weil das nur Stringlisten sind. -->
             <div class="card">
                 <h2>Whisper-Cleaner Regeln</h2>
-                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">F&#252;llw&#246;rter, Korrekturen, Halluzinations-Patterns (<code>whisper_cleaner.json</code>). Reihenfolge wird bewahrt; Patterns nutzen Python-Regex-Syntax (z.B. <code>(?i)</code>, <code>\\1</code>).</p>
-                <div id="cleanerList" class="cleaner-list"></div>
-                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:14px;">
-                    <button onclick="addCleanerRule()" style="background:#1a3a5c;color:#ffd700;border:1px solid #ffd700;">&#10133; Regel hinzuf&#252;gen</button>
-                    <button onclick="addCleanerComment()" style="background:#333;color:#ccc;border:1px solid #555;">&#10133; Kommentar/Sektion</button>
-                    <button onclick="saveCleaner()" style="margin-left:auto;">&#128190; Speichern</button>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">
+                    Die Regex-Regeln werden nicht mehr in der UI gepflegt — siehe
+                    <code>whisper_cleaner.json</code> im Projekt-Root. Änderungen dort
+                    werden beim nächsten Server-Neustart geladen.
+                </p>
+                <div id="cleanerStatus" style="margin-top:10px; min-height:1.4em;color:#888;">
+                    UI deaktiviert (Patch 149 / B-021). Pflege nur noch via Config-Datei.
                 </div>
-                <div id="cleanerStatus" style="margin-top:10px; min-height:1.4em;"></div>
             </div>
             <div class="card">
                 <h2>Fuzzy-Dictionary bearbeiten</h2>
@@ -703,10 +726,29 @@ ADMIN_HTML = """<!DOCTYPE html>
           </div>
           <div class="hel-section-body collapsed" id="body-dialect" style="max-height:0;padding:0 20px;">
             <div class="card">
-                <h2>Dialekt-JSON bearbeiten</h2>
-                <textarea id="dialectEditor" rows="20" style="font-family: monospace;"></textarea>
-                <button onclick="saveDialect()">Speichern</button>
-                <div id="dialectStatus"></div>
+                <h2>Dialekt-Mappings</h2>
+                <!-- Patch 148 (B-022): Strukturiertes UI statt roher JSON-Blob.
+                     Pro Dialekt-Gruppe (berlin/schwäbisch/…) eine Sektion mit
+                     "Von → Nach"-Eingaben. Suche filtert live. Neue Einträge oben. -->
+                <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
+                    <input type="search" id="dialectSearch" placeholder="🔍 Suchen (Von oder Nach)…"
+                           oninput="renderDialectGroups()"
+                           style="flex:1;padding:8px 12px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                    <button onclick="saveDialectStructured()">💾 Alles speichern</button>
+                </div>
+                <div id="dialectGroups"></div>
+                <div style="margin-top:12px;">
+                    <input type="text" id="newGroupName" placeholder="Neue Gruppe (z.B. 'bayern')"
+                           style="padding:6px 10px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                    <button onclick="addDialectGroup()">+ Gruppe hinzufügen</button>
+                </div>
+                <div id="dialectStatus" style="margin-top:10px;"></div>
+                <!-- Fallback: Raw-JSON (aufklappbar), falls jemand's doch braucht -->
+                <details style="margin-top:16px;">
+                    <summary style="cursor:pointer;color:#888;font-size:0.85em;">Raw JSON (nur für Notfall-Bearbeitung)</summary>
+                    <textarea id="dialectEditor" rows="10" style="font-family: monospace;width:100%;margin-top:8px;"></textarea>
+                    <button onclick="saveDialect()" style="margin-top:4px;">Raw-JSON speichern</button>
+                </details>
             </div>
           </div>
         </div>
@@ -787,6 +829,56 @@ ADMIN_HTML = """<!DOCTYPE html>
                 </button>
                 <div id="memoryExtractStatus" style="margin-top:12px; font-size:1em; word-break:break-word;"></div>
             </div>
+
+            <!-- Patch 152 (B-020): Memory-Dashboard ─ extrahierte Fakten sichtbar + editierbar. -->
+            <div class="card">
+                <h2>&#128218; Memory-Dashboard</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:10px;">
+                    Alle von der Overnight-Extraktion gespeicherten Fakten. Suche/Filter,
+                    Confidence-Badges, manuell hinzufügen, einzeln löschen.
+                </p>
+                <!-- Statistik -->
+                <div id="memoryStats" style="font-size:0.88em;color:#8aa0c0;margin-bottom:10px;"></div>
+                <!-- Such- und Filter-Leiste -->
+                <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+                    <input type="search" id="memorySearch" placeholder="🔍 Suchen in Subjekt/Fakt…"
+                           oninput="renderMemoryTable()"
+                           style="flex:1;min-width:200px;padding:6px 10px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                    <select id="memoryCategoryFilter" onchange="renderMemoryTable()"
+                            style="padding:6px 10px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                        <option value="">Alle Kategorien</option>
+                        <option value="PERSON">PERSON</option>
+                        <option value="PREFERENCE">PREFERENCE</option>
+                        <option value="FACT">FACT</option>
+                        <option value="EVENT">EVENT</option>
+                        <option value="SKILL">SKILL</option>
+                        <option value="EMOTION">EMOTION</option>
+                    </select>
+                    <button onclick="loadMemoryDashboard()">🔄 Neu laden</button>
+                </div>
+                <!-- Manuell hinzufügen -->
+                <details style="margin-bottom:10px;">
+                    <summary style="cursor:pointer;color:#FFD700;">+ Fakt manuell hinzufügen</summary>
+                    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+                        <select id="newMemoryCategory" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:4px;">
+                            <option value="FACT">FACT</option>
+                            <option value="PERSON">PERSON</option>
+                            <option value="PREFERENCE">PREFERENCE</option>
+                            <option value="EVENT">EVENT</option>
+                            <option value="SKILL">SKILL</option>
+                            <option value="EMOTION">EMOTION</option>
+                        </select>
+                        <input type="text" id="newMemorySubject" placeholder="Subjekt"
+                               style="flex:1;min-width:120px;padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:4px;">
+                        <input type="text" id="newMemoryFact" placeholder="Fakt"
+                               style="flex:2;min-width:200px;padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:4px;">
+                        <button onclick="addMemoryManual()">+ Hinzufügen</button>
+                    </div>
+                    <div id="newMemoryStatus" style="margin-top:6px;font-size:0.85em;"></div>
+                </details>
+                <!-- Tabelle -->
+                <div id="memoryTableHost"></div>
+            </div>
           </div>
         </div>
 
@@ -810,6 +902,29 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">St&#252;ndlicher Auto-Restart des Whisper-Containers l&#228;uft im Hintergrund. Manueller Trigger bei Bedarf:</p>
                 <button type="button" onclick="restartWhisperContainer()" style="min-height:44px;">&#128260; Whisper neu starten</button>
                 <div id="whisperRestartStatus" style="margin-top:10px; font-size:0.95em;"></div>
+            </div>
+
+            <!-- Patch 150 (B-024): Pacemaker-Prozess-Steuerung -->
+            <div class="card">
+                <h2>&#128147; Pacemaker-Prozesse</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">
+                    Granulare Kontrolle über Hintergrund-Prozesse: Intervall, Device (CPU/GPU), Master-Schalter.
+                </p>
+                <!-- Master -->
+                <div class="pacemaker-master" style="display:flex;gap:16px;align-items:center;margin-bottom:12px;padding:10px;background:rgba(255,255,255,0.03);border-radius:6px;">
+                    <label style="flex:1;color:#ccc;">
+                        <input type="checkbox" id="pacemaker-master" onchange="savePacemakerProcesses()"> 🫀 Pacemaker Master
+                    </label>
+                    <label style="flex:1;color:#ccc;">
+                        <input type="checkbox" id="pacemaker-sync" onchange="savePacemakerProcesses()"> Intervalle synchronisieren
+                    </label>
+                </div>
+                <!-- Process-Liste (von JS befüllt) -->
+                <div id="pacemakerProcesses"></div>
+                <!-- Activity-Anzeige -->
+                <div id="pacemakerActivity" style="margin-top:12px;font-size:0.85em;color:#8aa0c0;"></div>
+                <button onclick="savePacemakerProcesses()" style="margin-top:12px;">💾 Prozess-Einstellungen speichern</button>
+                <div id="pacemakerProcessesStatus" style="margin-top:8px;"></div>
             </div>
           </div>
         </div>
@@ -1042,21 +1157,33 @@ ADMIN_HTML = """<!DOCTYPE html>
             display.innerText = val.toFixed(1);
         }
 
+        // Patch 147 (B-019): Einheitlicher Formatter für ALLE Modell-Dropdowns.
+        // Format: "Name — $input/$output/1M" — keine Budget/Premium-Labels mehr.
+        // Sortierung standardmäßig nach Input-Preis aufsteigend (günstigste oben).
+        function formatModelLabel(name, inputPrice, outputPrice) {
+            const disp = name || '?';
+            const inNum = Number(inputPrice) || 0;
+            const outNum = Number(outputPrice) || 0;
+            if (inNum === 0 && outNum === 0) return `${disp} — kostenlos`;
+            return `${disp} — $${inNum.toFixed(2)}/$${outNum.toFixed(2)}/1M`;
+        }
+
         function renderModelSelect(models, selectedModel) {
             const sorted = [...models].sort((a, b) => {
                 if (_currentSort === 'price') {
                     return parseFloat(a.pricing?.prompt || 0) - parseFloat(b.pricing?.prompt || 0);
                 }
-                return (a.name || a.id).localeCompare(b.name || b.id);
+                // Patch 147: Default-Sortierung ebenfalls nach Preis aufsteigend.
+                return parseFloat(a.pricing?.prompt || 0) - parseFloat(b.pricing?.prompt || 0);
             });
             const select = document.getElementById('modelSelect');
             select.innerHTML = '';
             sorted.forEach(m => {
                 const option = document.createElement('option');
                 option.value = m.id;
-                const promptPrice = parseFloat(m.pricing?.prompt || 0);
-                const priceStr = promptPrice === 0 ? 'kostenlos' : `$${(promptPrice * 1_000_000).toFixed(2)}/1M`;
-                option.textContent = `${m.name} (${priceStr})`;
+                const inPrice = parseFloat(m.pricing?.prompt || 0) * 1_000_000;
+                const outPrice = parseFloat(m.pricing?.completion || 0) * 1_000_000;
+                option.textContent = formatModelLabel(m.name || m.id, inPrice, outPrice);
                 select.appendChild(option);
             });
             if (selectedModel && select.querySelector(`option[value="${selectedModel}"]`)) {
@@ -1083,8 +1210,8 @@ ADMIN_HTML = """<!DOCTYPE html>
                 _HEL_LAZY_LOADED.add(id);
                 if (id === 'metrics') loadMetrics();
                 if (id === 'system') { loadSystemPrompt(); loadProfiles(); }
-                if (id === 'gedaechtnis') loadRagStatus();
-                if (id === 'sysctl') loadPacemakerConfig();
+                if (id === 'gedaechtnis') { loadRagStatus(); loadMemoryDashboard(); }
+                if (id === 'sysctl') { loadPacemakerConfig(); loadPacemakerProcesses(); }
                 if (id === 'provider') loadProviderBlacklist();
                 if (id === 'huginn') huginnReload();
                 if (id === 'llm') visionReload();
@@ -1119,10 +1246,13 @@ ADMIN_HTML = """<!DOCTYPE html>
                 const mData = await mResp.json();
                 const cData = await cResp.json();
                 _visionModels = mData.models || [];
+                // Patch 147 (B-019): Sortierung nach Input-Preis, einheitlicher Formatter,
+                // kein [Budget]/[Premium]-Label mehr.
+                _visionModels.sort((a, b) => (Number(a.input_price) || 0) - (Number(b.input_price) || 0));
                 const sel = document.getElementById('visionModelSelect');
                 sel.innerHTML = _visionModels.map(m => {
-                    const price = `$${m.input_price.toFixed(3)} / $${m.output_price.toFixed(3)} pro 1M`;
-                    return `<option value="${m.id}" data-tier="${m.tier}">[${m.tier}] ${m.name} — ${price}</option>`;
+                    const label = formatModelLabel(m.name, m.input_price, m.output_price);
+                    return `<option value="${m.id}" data-tier="${m.tier}">${label}</option>`;
                 }).join('');
                 sel.value = cData.model || 'qwen/qwen2.5-vl-7b-instruct';
                 document.getElementById('visionEnabled').checked = !!cData.enabled;
@@ -1179,15 +1309,21 @@ ADMIN_HTML = """<!DOCTYPE html>
                 document.getElementById('huginn-bot-token').value = '';
                 document.getElementById('huginn-max-length').value = cfg.max_response_length || 4000;
 
-                // Modell-Dropdown mit _allModels fuellen wenn verfuegbar
+                // Modell-Dropdown mit _allModels fuellen wenn verfuegbar.
+                // Patch 147 (B-019): Einheitlicher Formatter, Sortierung nach Input-Preis.
                 const modelSel = document.getElementById('huginn-model');
                 const current = cfg.model || 'deepseek/deepseek-chat';
                 if (Array.isArray(_allModels) && _allModels.length > 0) {
+                    const sorted = [..._allModels].sort((a, b) =>
+                        parseFloat(a.pricing?.prompt || 0) - parseFloat(b.pricing?.prompt || 0)
+                    );
                     modelSel.innerHTML = '';
-                    for (const m of _allModels) {
+                    for (const m of sorted) {
                         const opt = document.createElement('option');
                         opt.value = m.id;
-                        opt.textContent = m.id + (m.pricing ? ` ($${(parseFloat(m.pricing.prompt||0)*1000000).toFixed(2)}/$${(parseFloat(m.pricing.completion||0)*1000000).toFixed(2)} 1M)` : '');
+                        const inP = parseFloat(m.pricing?.prompt || 0) * 1_000_000;
+                        const outP = parseFloat(m.pricing?.completion || 0) * 1_000_000;
+                        opt.textContent = formatModelLabel(m.name || m.id, inP, outP);
                         if (m.id === current) opt.selected = true;
                         modelSel.appendChild(opt);
                     }
@@ -1565,21 +1701,154 @@ ADMIN_HTML = """<!DOCTYPE html>
             else document.getElementById('fuzzyDictStatus').innerText = '&#10007; Fehler';
         }
 
+        // ── Patch 148 (B-022): Strukturierter Dialekt-Editor ──
+        // _dialectData ist Arbeitskopie im Speicher, bis der User "Speichern" klickt.
+        let _dialectData = {};
+
         async function loadDialect() {
             const res = await fetch('/hel/admin/dialect');
             const data = await res.json();
-            document.getElementById('dialectEditor').value = JSON.stringify(data, null, 2);
+            _dialectData = data || {};
+            // Raw-JSON füllen (Fallback-Editor)
+            const rawEd = document.getElementById('dialectEditor');
+            if (rawEd) rawEd.value = JSON.stringify(_dialectData, null, 2);
+            renderDialectGroups();
         }
+
+        function renderDialectGroups() {
+            const host = document.getElementById('dialectGroups');
+            if (!host) return;
+            const q = (document.getElementById('dialectSearch')?.value || '').toLowerCase();
+            host.innerHTML = '';
+            Object.keys(_dialectData).sort().forEach(group => {
+                const entries = _dialectData[group] || {};
+                // Filter anwenden
+                const filteredKeys = Object.keys(entries).filter(k => {
+                    if (!q) return true;
+                    return k.toLowerCase().includes(q) || String(entries[k]).toLowerCase().includes(q);
+                });
+                if (q && filteredKeys.length === 0) return;
+                const g = document.createElement('div');
+                g.className = 'dialect-group';
+                g.style.marginBottom = '20px';
+                g.style.padding = '10px';
+                g.style.border = '1px solid #333';
+                g.style.borderRadius = '6px';
+                g.style.background = 'rgba(255,255,255,0.02)';
+                const h = document.createElement('h3');
+                h.textContent = group;
+                h.style.margin = '0 0 10px';
+                h.style.color = '#FFD700';
+                const delGroup = document.createElement('button');
+                delGroup.textContent = '🗑 Gruppe löschen';
+                delGroup.style.cssText = 'float:right;padding:2px 8px;font-size:0.8em;background:#500;border:1px solid #a00;color:#fff;border-radius:4px;cursor:pointer;';
+                delGroup.onclick = () => {
+                    if (confirm(`Gruppe "${group}" und alle Einträge löschen?`)) {
+                        delete _dialectData[group];
+                        renderDialectGroups();
+                    }
+                };
+                h.appendChild(delGroup);
+                g.appendChild(h);
+                // Neuer-Eintrag-Button OBEN (Patch 148 fordert "oben, nicht scrollen müssen")
+                const addRow = document.createElement('div');
+                addRow.style.cssText = 'display:flex;gap:6px;margin-bottom:10px;align-items:center;';
+                const fromIn = document.createElement('input');
+                fromIn.type = 'text'; fromIn.placeholder = 'Von…';
+                fromIn.style.cssText = 'flex:1;padding:4px 8px;background:#121212;color:#eee;border:1px solid #444;border-radius:4px;';
+                const arr = document.createElement('span'); arr.textContent = '→'; arr.style.color = '#FFD700';
+                const toIn = document.createElement('input');
+                toIn.type = 'text'; toIn.placeholder = 'Nach…';
+                toIn.style.cssText = 'flex:1;padding:4px 8px;background:#121212;color:#eee;border:1px solid #444;border-radius:4px;';
+                const addBtn = document.createElement('button');
+                addBtn.textContent = '+';
+                addBtn.style.cssText = 'padding:4px 12px;background:#264;border:1px solid #484;color:#fff;border-radius:4px;cursor:pointer;';
+                addBtn.onclick = () => {
+                    const k = fromIn.value.trim(), v = toIn.value.trim();
+                    if (!k || !v) { alert('Beide Felder ausfüllen'); return; }
+                    _dialectData[group][k] = v;
+                    renderDialectGroups();
+                };
+                addRow.appendChild(fromIn); addRow.appendChild(arr); addRow.appendChild(toIn); addRow.appendChild(addBtn);
+                g.appendChild(addRow);
+                // Bestehende Einträge
+                filteredKeys.forEach(k => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;align-items:center;';
+                    const fi = document.createElement('input');
+                    fi.type = 'text'; fi.value = k;
+                    fi.style.cssText = 'flex:1;padding:4px 8px;background:#1a1a1a;color:#eee;border:1px solid #333;border-radius:4px;';
+                    fi.onchange = () => {
+                        const newKey = fi.value.trim();
+                        if (!newKey || newKey === k) return;
+                        _dialectData[group][newKey] = _dialectData[group][k];
+                        delete _dialectData[group][k];
+                        renderDialectGroups();
+                    };
+                    const a2 = document.createElement('span'); a2.textContent = '→'; a2.style.color = '#888';
+                    const vi = document.createElement('input');
+                    vi.type = 'text'; vi.value = entries[k];
+                    vi.style.cssText = 'flex:1;padding:4px 8px;background:#1a1a1a;color:#eee;border:1px solid #333;border-radius:4px;';
+                    vi.onchange = () => { _dialectData[group][k] = vi.value; };
+                    const del = document.createElement('button');
+                    del.className = 'delete-entry';
+                    del.textContent = '✕';
+                    del.style.cssText = 'padding:4px 10px;background:transparent;border:1px solid #844;color:#e88;border-radius:4px;cursor:pointer;';
+                    del.onclick = () => {
+                        delete _dialectData[group][k];
+                        renderDialectGroups();
+                    };
+                    row.appendChild(fi); row.appendChild(a2); row.appendChild(vi); row.appendChild(del);
+                    g.appendChild(row);
+                });
+                host.appendChild(g);
+            });
+        }
+
+        function addDialectGroup() {
+            const n = document.getElementById('newGroupName');
+            const name = (n.value || '').trim().toLowerCase();
+            if (!name) { alert('Gruppenname fehlt'); return; }
+            if (_dialectData[name]) { alert('Gruppe existiert bereits'); return; }
+            _dialectData[name] = {};
+            n.value = '';
+            renderDialectGroups();
+        }
+
+        async function saveDialectStructured() {
+            const res = await fetch('/hel/admin/dialect', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(_dialectData),
+            });
+            const st = document.getElementById('dialectStatus');
+            if (res.ok) {
+                st.innerText = '✅ Gespeichert';
+                st.style.color = '#8f8';
+                // Raw-JSON-Fallback synchronisieren
+                const rawEd = document.getElementById('dialectEditor');
+                if (rawEd) rawEd.value = JSON.stringify(_dialectData, null, 2);
+            } else {
+                st.innerText = '❌ Fehler';
+                st.style.color = '#f88';
+            }
+        }
+
+        // Legacy: Raw-JSON-Editor (Fallback)
         async function saveDialect() {
             const raw = document.getElementById('dialectEditor').value;
-            try { JSON.parse(raw); } catch (e) { alert('Ungültiges JSON'); return; }
+            try { _dialectData = JSON.parse(raw); } catch (e) { alert('Ungültiges JSON'); return; }
             const res = await fetch('/hel/admin/dialect', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: raw
             });
-            if (res.ok) document.getElementById('dialectStatus').innerText = '✅ Gespeichert';
-            else document.getElementById('dialectStatus').innerText = '❌ Fehler';
+            if (res.ok) {
+                document.getElementById('dialectStatus').innerText = '✅ Gespeichert';
+                renderDialectGroups();
+            } else {
+                document.getElementById('dialectStatus').innerText = '❌ Fehler';
+            }
         }
 
         async function loadSystemPrompt() {
@@ -1979,6 +2248,126 @@ ADMIN_HTML = """<!DOCTYPE html>
             }
         }
 
+        // ── Patch 152 (B-020): Memory-Dashboard ──
+        let _memoryList = [];
+
+        async function loadMemoryDashboard() {
+            try {
+                const [lstR, statR] = await Promise.all([
+                    fetch('/hel/admin/memory/list?limit=500'),
+                    fetch('/hel/admin/memory/stats'),
+                ]);
+                if (lstR.ok) {
+                    const body = await lstR.json();
+                    _memoryList = Array.isArray(body) ? body : (body.memories || []);
+                }
+                if (statR.ok) {
+                    const s = await statR.json();
+                    const host = document.getElementById('memoryStats');
+                    if (host) {
+                        const last = s.last_extraction || s.last_extraction_at || '–';
+                        const cats = s.categories || s.category_counts || {};
+                        host.textContent = `${s.total || _memoryList.length} Fakten · ${Object.keys(cats).length || 0} Kategorien · Letzte Extraktion: ${last}`;
+                    }
+                }
+            } catch (e) {
+                const host = document.getElementById('memoryStats');
+                if (host) host.textContent = 'Fehler: ' + e.message;
+            }
+            renderMemoryTable();
+        }
+
+        function _confidenceBadge(conf) {
+            const c = Number(conf) || 0;
+            let color = '#f88';
+            if (c >= 0.9) color = '#8f8';
+            else if (c >= 0.7) color = '#ff8';
+            return `<span style="background:${color};color:#111;padding:2px 6px;border-radius:4px;font-size:0.78em;font-weight:700;">${c.toFixed(2)}</span>`;
+        }
+
+        function renderMemoryTable() {
+            const host = document.getElementById('memoryTableHost');
+            if (!host) return;
+            const q = (document.getElementById('memorySearch')?.value || '').toLowerCase();
+            const catFilter = (document.getElementById('memoryCategoryFilter')?.value || '').toUpperCase();
+            const filtered = _memoryList.filter(m => {
+                if (catFilter && (m.category || '').toUpperCase() !== catFilter) return false;
+                if (!q) return true;
+                const hay = [m.subject, m.fact, m.category].filter(Boolean).join(' ').toLowerCase();
+                return hay.includes(q);
+            });
+            if (filtered.length === 0) {
+                host.innerHTML = '<div style="color:#888;padding:20px;text-align:center;">Keine Einträge</div>';
+                return;
+            }
+            const rows = filtered.map(m => `
+                <tr data-id="${m.id}">
+                    <td style="padding:6px;color:#FFD700;font-weight:600;">${m.category || '–'}</td>
+                    <td style="padding:6px;">${(m.subject || '').replace(/</g,'&lt;')}</td>
+                    <td style="padding:6px;">${(m.fact || '').replace(/</g,'&lt;')}</td>
+                    <td style="padding:6px;text-align:center;">${_confidenceBadge(m.confidence)}</td>
+                    <td style="padding:6px;color:#888;font-size:0.8em;">${(m.extracted_at || m.created_at || '').slice(0,16)}</td>
+                    <td style="padding:6px;"><button onclick="deleteMemory(${m.id})" style="padding:2px 8px;background:transparent;border:1px solid #844;color:#e88;border-radius:4px;cursor:pointer;">✕</button></td>
+                </tr>
+            `).join('');
+            host.innerHTML = `
+                <table style="width:100%;border-collapse:collapse;font-size:0.88em;">
+                    <thead>
+                        <tr style="border-bottom:1px solid #333;color:#8aa0c0;text-align:left;">
+                            <th style="padding:6px;">Kategorie</th>
+                            <th style="padding:6px;">Subjekt</th>
+                            <th style="padding:6px;">Fakt</th>
+                            <th style="padding:6px;text-align:center;">Conf.</th>
+                            <th style="padding:6px;">Extrahiert</th>
+                            <th style="padding:6px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            `;
+        }
+
+        async function deleteMemory(id) {
+            if (!confirm('Diesen Fakt wirklich löschen?')) return;
+            try {
+                const r = await fetch('/hel/admin/memory/' + id, { method: 'DELETE' });
+                if (r.ok) {
+                    _memoryList = _memoryList.filter(m => m.id !== id);
+                    renderMemoryTable();
+                } else {
+                    alert('Fehler: HTTP ' + r.status);
+                }
+            } catch (e) { alert('Fehler: ' + e.message); }
+        }
+
+        async function addMemoryManual() {
+            const cat = document.getElementById('newMemoryCategory').value;
+            const subj = document.getElementById('newMemorySubject').value.trim();
+            const fact = document.getElementById('newMemoryFact').value.trim();
+            const st = document.getElementById('newMemoryStatus');
+            if (!subj || !fact) { st.textContent = 'Subjekt und Fakt sind Pflichtfelder.'; st.style.color = '#f88'; return; }
+            try {
+                const r = await fetch('/hel/admin/memory/add', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ category: cat, subject: subj, fact: fact, confidence: 1.0 }),
+                });
+                if (r.ok) {
+                    st.textContent = '✅ Gespeichert';
+                    st.style.color = '#8f8';
+                    document.getElementById('newMemorySubject').value = '';
+                    document.getElementById('newMemoryFact').value = '';
+                    await loadMemoryDashboard();
+                } else {
+                    st.textContent = '❌ HTTP ' + r.status;
+                    st.style.color = '#f88';
+                }
+            } catch (e) {
+                st.textContent = '❌ ' + e.message;
+                st.style.color = '#f88';
+            }
+        }
+
         // Patch 115: Manueller Trigger f\u00fcr Background Memory Extraction
         async function triggerMemoryExtraction() {
             const btn = document.getElementById('memoryExtractBtn');
@@ -2075,6 +2464,146 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
 
         // ========== Systemsteuerung / Pacemaker ==========
+        // ── Patch 150 (B-024): Pacemaker-Prozess-Steuerung ──
+        const PACEMAKER_DEFAULT_PROCESSES = [
+            { key: 'sentiment',  name: 'Sentiment-Analyse',  enabled: true,  interval_min: 4,  device: 'cuda' },
+            { key: 'memory',     name: 'Memory-Extraktion',  enabled: true,  interval_min: 4,  device: 'cuda' },
+            { key: 'db_dedup',   name: 'DB-Deduplizierung',  enabled: true,  interval_min: 30, device: 'cpu'  },
+            { key: 'whisper_ping', name: 'Whisper-Ping',     enabled: true,  interval_min: 4,  device: 'cpu'  },
+        ];
+        let _pacemakerProcesses = null;
+
+        async function loadPacemakerProcesses() {
+            try {
+                const r = await fetch('/hel/admin/pacemaker/processes');
+                if (r.ok) {
+                    const data = await r.json();
+                    _pacemakerProcesses = {
+                        master: data.master !== false,
+                        sync:   !!data.sync,
+                        processes: Array.isArray(data.processes) && data.processes.length
+                            ? data.processes
+                            : PACEMAKER_DEFAULT_PROCESSES,
+                        current_activity: data.current_activity || null,
+                    };
+                } else {
+                    _pacemakerProcesses = { master: true, sync: false, processes: PACEMAKER_DEFAULT_PROCESSES };
+                }
+            } catch (_) {
+                _pacemakerProcesses = { master: true, sync: false, processes: PACEMAKER_DEFAULT_PROCESSES };
+            }
+            renderPacemakerProcesses();
+        }
+
+        function renderPacemakerProcesses() {
+            const host = document.getElementById('pacemakerProcesses');
+            if (!host || !_pacemakerProcesses) return;
+            const master = _pacemakerProcesses.master;
+            const sync = _pacemakerProcesses.sync;
+            document.getElementById('pacemaker-master').checked = master;
+            document.getElementById('pacemaker-sync').checked = sync;
+            host.innerHTML = '';
+            _pacemakerProcesses.processes.forEach((p, idx) => {
+                const row = document.createElement('div');
+                row.className = 'pacemaker-process';
+                row.style.cssText = 'display:flex;gap:10px;align-items:center;padding:8px 10px;margin-bottom:6px;background:rgba(255,255,255,0.02);border:1px solid #2a2a2a;border-radius:6px;flex-wrap:wrap;';
+                const name = document.createElement('span');
+                name.className = 'process-name';
+                name.textContent = p.name;
+                name.style.cssText = 'flex:1 1 180px;font-weight:600;color:#eee;';
+                const enabled = document.createElement('label');
+                enabled.style.cssText = 'color:#ccc;font-size:0.88em;';
+                enabled.innerHTML = `<input type="checkbox" ${p.enabled ? 'checked' : ''} ${master ? '' : 'disabled'}> Aktiv`;
+                enabled.querySelector('input').addEventListener('change', (e) => {
+                    _pacemakerProcesses.processes[idx].enabled = e.target.checked;
+                });
+                const status = document.createElement('span');
+                status.className = 'process-status';
+                status.textContent = (master && p.enabled) ? '🟢' : '⚪';
+                status.style.flex = '0 0 24px';
+                // Interval-Slider
+                const sliderWrap = document.createElement('div');
+                sliderWrap.style.cssText = 'flex:2 1 220px;display:flex;align-items:center;gap:6px;';
+                const slider = document.createElement('input');
+                slider.type = 'range'; slider.min = '1'; slider.max = '60'; slider.value = String(p.interval_min);
+                slider.className = 'interval-slider';
+                slider.style.flex = '1';
+                const lbl = document.createElement('span');
+                lbl.className = 'interval-label';
+                lbl.style.cssText = 'flex:0 0 60px;text-align:right;font-family:monospace;color:#888;';
+                lbl.textContent = p.interval_min + ' min';
+                slider.addEventListener('input', () => {
+                    const v = parseInt(slider.value, 10);
+                    lbl.textContent = v + ' min';
+                    if (_pacemakerProcesses.sync) {
+                        _pacemakerProcesses.processes.forEach((pp, j) => {
+                            pp.interval_min = v;
+                            const other = host.querySelectorAll('.interval-slider')[j];
+                            if (other && other !== slider) other.value = String(v);
+                            const otherLbl = host.querySelectorAll('.interval-label')[j];
+                            if (otherLbl) otherLbl.textContent = v + ' min';
+                        });
+                    } else {
+                        _pacemakerProcesses.processes[idx].interval_min = v;
+                    }
+                });
+                sliderWrap.appendChild(slider); sliderWrap.appendChild(lbl);
+                // Device-Select
+                const devSel = document.createElement('select');
+                devSel.className = 'device-select';
+                devSel.style.cssText = 'padding:4px 8px;background:#121212;color:#eee;border:1px solid #444;border-radius:4px;';
+                ['cpu', 'cuda'].forEach(dev => {
+                    const opt = document.createElement('option');
+                    opt.value = dev; opt.textContent = dev === 'cpu' ? 'CPU' : 'GPU';
+                    if (dev === p.device) opt.selected = true;
+                    devSel.appendChild(opt);
+                });
+                devSel.addEventListener('change', () => {
+                    _pacemakerProcesses.processes[idx].device = devSel.value;
+                });
+                row.appendChild(name);
+                row.appendChild(enabled);
+                row.appendChild(status);
+                row.appendChild(sliderWrap);
+                row.appendChild(devSel);
+                host.appendChild(row);
+            });
+            // Activity-Display
+            const act = document.getElementById('pacemakerActivity');
+            if (act) {
+                if (_pacemakerProcesses.current_activity) {
+                    act.textContent = 'Aktuell: ' + _pacemakerProcesses.current_activity;
+                } else {
+                    act.textContent = '';
+                }
+            }
+        }
+
+        async function savePacemakerProcesses() {
+            if (!_pacemakerProcesses) return;
+            _pacemakerProcesses.master = document.getElementById('pacemaker-master').checked;
+            _pacemakerProcesses.sync = document.getElementById('pacemaker-sync').checked;
+            const st = document.getElementById('pacemakerProcessesStatus');
+            try {
+                const r = await fetch('/hel/admin/pacemaker/processes', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(_pacemakerProcesses),
+                });
+                if (r.ok) {
+                    st.textContent = '✅ Gespeichert';
+                    st.style.color = '#8f8';
+                    renderPacemakerProcesses();
+                } else {
+                    st.textContent = '❌ ' + (await r.text());
+                    st.style.color = '#f88';
+                }
+            } catch (e) {
+                st.textContent = '❌ ' + e.message;
+                st.style.color = '#f88';
+            }
+        }
+
         async function loadPacemakerConfig() {
             try {
                 const res = await fetch('/hel/admin/pacemaker/config');
@@ -2187,6 +2716,46 @@ ADMIN_HTML = """<!DOCTYPE html>
             });
         }
         markActiveFontPreset();
+
+        // ── Patch 149 (B-025): Hel Mini-Settings mit Schrift-Slider ──
+        function toggleHelSettings() {
+            const p = document.getElementById('helSettingsPanel');
+            if (!p) return;
+            p.style.display = (p.style.display === 'none' || !p.style.display) ? 'block' : 'none';
+        }
+        function applyHelUiScale(val) {
+            const f = parseFloat(val);
+            if (!isFinite(f) || f < 0.5 || f > 2.0) return;
+            document.documentElement.style.setProperty('--ui-scale', String(f));
+            document.documentElement.style.setProperty('--hel-font-size-base', (16 * f) + 'px');
+            try { localStorage.setItem('hel_ui_scale', String(f)); } catch(_) {}
+            const v = document.getElementById('helUiScaleVal');
+            if (v) v.textContent = f.toFixed(2) + '×';
+            markActiveFontPreset();
+        }
+        function resetHelUiScale() {
+            document.documentElement.style.removeProperty('--ui-scale');
+            document.documentElement.style.removeProperty('--hel-font-size-base');
+            try { localStorage.removeItem('hel_ui_scale'); } catch(_) {}
+            const s = document.getElementById('helUiScaleSlider');
+            const v = document.getElementById('helUiScaleVal');
+            if (s) s.value = '1.0';
+            if (v) v.textContent = '1.00×';
+        }
+        (function restoreHelUiScale() {
+            try {
+                const stored = localStorage.getItem('hel_ui_scale');
+                if (!stored) return;
+                const f = parseFloat(stored);
+                if (!isFinite(f) || f < 0.5 || f > 2.0) return;
+                document.documentElement.style.setProperty('--ui-scale', String(f));
+                document.documentElement.style.setProperty('--hel-font-size-base', (16 * f) + 'px');
+                const s = document.getElementById('helUiScaleSlider');
+                const v = document.getElementById('helUiScaleVal');
+                if (s) s.value = String(f);
+                if (v) v.textContent = f.toFixed(2) + '×';
+            } catch(_) {}
+        })();
 
         loadModelsAndBalance();
         loadCleaner();
@@ -2877,11 +3446,24 @@ async def post_system_prompt(request: Request):
 
 @router.get("/metrics/latest_with_costs")
 async def metrics_latest_with_costs(limit: int = 20, session_id: str = None):
+    """
+    Metriken pro Nachricht, angereichert um Kosten.
+
+    Patch 146 (B-018): Voller Nachrichten-Text wird gekürzt auf 50 Zeichen +
+    Truncation-Marker. Metriken-Tab soll Zahlen/Charts zeigen, nicht Rohtext —
+    eine einzelne lange LLM-Antwort hatte zuvor mehrere Bildschirme gefüllt.
+    """
     messages = await get_latest_metrics(limit, session_id)
     ids = [m['id'] for m in messages if m.get('role') == 'assistant']
     costs = await get_message_costs(ids)
     for m in messages:
         m['cost'] = costs.get(m['id'], None)
+        # Patch 146 (B-018): Content auf max. 50 Zeichen truncaten.
+        raw = m.get('content') or ''
+        if len(raw) > 50:
+            m['content'] = raw[:50] + '…'
+        m['content_truncated'] = len(raw) > 50
+        m['content_original_length'] = len(raw)
     return messages
 
 @router.get("/metrics/summary")
@@ -3454,6 +4036,59 @@ async def memory_extract():
 # ============================================================
 # Pacemaker-Konfiguration (Säule 2 – Patch 56)
 # ============================================================
+
+# ---------------------------------------------------------------------------
+# Patch 150 (B-024): Pacemaker-Prozess-Steuerung.
+# Granulare Kontrolle pro Prozess (Sentiment/Memory/Dedup/…): Intervall, Device,
+# Master-Schalter. Persistiert in config.yaml → modules.pacemaker_processes.
+# Der eigentliche Scheduler muss die Config lesen — dieser Patch legt die
+# Infrastruktur an, die Scheduler-Integration kann in einem Folge-Patch ergänzen.
+# ---------------------------------------------------------------------------
+
+PACEMAKER_DEFAULT_PROCESSES = [
+    {"key": "sentiment",    "name": "Sentiment-Analyse",  "enabled": True,  "interval_min": 4,  "device": "cuda"},
+    {"key": "memory",       "name": "Memory-Extraktion",  "enabled": True,  "interval_min": 4,  "device": "cuda"},
+    {"key": "db_dedup",     "name": "DB-Deduplizierung",  "enabled": True,  "interval_min": 30, "device": "cpu"},
+    {"key": "whisper_ping", "name": "Whisper-Ping",       "enabled": True,  "interval_min": 4,  "device": "cpu"},
+]
+
+
+@router.get("/admin/pacemaker/processes")
+async def get_pacemaker_processes():
+    """Liefert Pacemaker-Prozess-Konfiguration. Fallback: Default-Liste."""
+    try:
+        with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+    pm_cfg = (cfg.get("modules", {}) or {}).get("pacemaker_processes", {}) or {}
+    processes = pm_cfg.get("processes") if isinstance(pm_cfg.get("processes"), list) else None
+    return {
+        "master": pm_cfg.get("master", True),
+        "sync":   pm_cfg.get("sync", False),
+        "processes": processes or PACEMAKER_DEFAULT_PROCESSES,
+        "current_activity": pm_cfg.get("current_activity"),  # wird vom Scheduler gesetzt
+    }
+
+
+@router.post("/admin/pacemaker/processes")
+async def post_pacemaker_processes(request: Request):
+    """Speichert Pacemaker-Prozess-Konfiguration in config.yaml."""
+    data = await request.json()
+    try:
+        with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+    cfg.setdefault("modules", {})["pacemaker_processes"] = {
+        "master": bool(data.get("master", True)),
+        "sync":   bool(data.get("sync", False)),
+        "processes": data.get("processes", PACEMAKER_DEFAULT_PROCESSES),
+    }
+    with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+    return {"status": "saved"}
+
 
 @router.get("/admin/pacemaker/config")
 async def get_pacemaker_config():

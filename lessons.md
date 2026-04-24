@@ -241,3 +241,39 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - **Endpoint-Tests über Funktions-Call:** `asyncio.run(my_endpoint_func(FakeRequest))` statt `TestClient` spart den Auth-Setup-Aufwand — Admin-Auth-Middleware (`verify_admin`) im Hel-Router blockiert jeden TestClient-Call ohne Credentials, und den auch nur in einem Subset. Direkter Funktions-Call umgeht das sauber.
 - **`inspect.getsource()` für Header-Präsenz-Check:** Bei Pipeline-Patches wie 135 (Header-Skip), wo man kein voll-stacked Request-Test machen will, reicht der Check "ist der Header im Source-Code referenziert". Pragmatisch und wartungsarm.
 - **2 Mega-Patches hintereinander:** 131–136 begann direkt nach 122–129+130 ohne Neu-Kontext-Load. Das spart viel Token, weil die Codebasis bereits im Gedächtnis war.
+
+### 2026-04-24 — Drittes Mega-Patch-Experiment: Monster-Patch 137–152 (16 Patches)
+
+**Setup:**
+- Gleiche Umgebung (Opus 4.7, 1M Kontext, Extra High, Permission Level 4).
+- Prompt: ~20k Tokens für 16 Patches, explizite Token-Selbstüberwachung mit Abbruchprotokoll bei ~450k.
+- Scope: **komplette Käferpresse vom 24.04.2026** — Bugs, UI-Polish, TTS, Katzenpfoten, Feuerwerk, Design-System-Audit, Memory-Dashboard.
+- Nominal ~2× der Scope von 131–136.
+
+**Ergebnis:**
+- Alle 16 Patches durchgezogen. Keine Abbrüche, keine halben Patches, keine ausgelassenen Tests.
+- **180 neue Tests** — größte Erweiterung aller Mega-Patch-Experimente (Baseline 308 → 488 passed).
+- Konkrete Zahlen pro Patch: 137=16, 138=9, 139=15, 140=9, 141=4, 142=19, 143=14, 144=13, 145=11, 146=3, 147=9, 148=10, 149=10, 150=15, 151=12, 152=11.
+- Keine Token-Limit-Erreichung — konnte bis zum Ende durchgezogen werden.
+
+**Was besonders gut funktioniert hat:**
+1. **Source-Match als Test-Strategie für UI-Patches:** Für reine Frontend-Änderungen (HTML/CSS/JS inline in Python-Routern) ist das Matchen im Source-String die pragmatischste Test-Form. Kein Browser, kein TestClient, keine DOM-Parser-Abhängigkeit. Schnelle, stabile Tests.
+2. **Edge-Tests via Block-Split:** `src.split("function X")[1].split("function ")[0]` isoliert eine Funktion — stabil gegen Reformatting, aber brüchig bei Umbenennung. Trade-off bewusst akzeptiert, weil Tests als Regression-Gate gedacht sind.
+3. **Jeden Patch sofort grün:** Kein Patch-Stacking. Jeder der 16 Patches wurde einzeln implementiert, mit Tests verifiziert, Tests grün → nächster Patch. Verhindert kaskadierende Fehler.
+4. **Shared-Design.css als späte Patch-Nummer:** Design-Tokens sind defensiv — alte Code-Stellen funktionieren weiter, neue nutzen die Tokens. Keine Big-Bang-Migration.
+5. **Test-Profile Filter als exclude_profiles-Param:** Erweitert `get_all_sessions` ohne Break — wenn nicht übergeben, verhält sich die Funktion wie vorher. Default der neuen HTTP-Route (`include_test=False`) ist sicher.
+6. **Auto-Kontrast mit manual-flag:** Kombiniert Auto-Behavior mit User-Override. Pattern ist übertragbar (z.B. für automatische Bubble-Rundungen, die User manuell überschreiben kann).
+
+**Stolpersteine:**
+- **Parser-Fehler bei Test-Blocks:** Einige Tests haben Blocks via `src.split("class X")[1]` isoliert, aber bei HTML-Content (mit vielen Zeilenumbrüchen) waren 2000-3000 Zeichen zu wenig. Fix: Block auf 5000-6000 Zeichen erweitert. **Lesson: Bei HTML-Inline-JS großzügigere Fensterlänge als bei reinem JS.**
+- **TTS-Test-Race:** `asyncio.get_event_loop().run_until_complete()` funktioniert beim Einzel-Run, bricht aber in der vollen Test-Suite, wenn vorherige Tests eine Loop geschlossen haben. Fix: `async def _run(): ...; asyncio.run(_run())`. **Lesson: Immer `asyncio.run` für sync-Wrapper um async-Test-Code.**
+- **`data-tab="look/voice/system"` vs. HTML-Entities:** Tests, die Tab-Namen im HTML suchen, dürfen nicht auf CSS-Class-Blocks stoßen. Bessere Strategie: Nach HTML-Marker `<div class="settings-tabs">` suchen, nicht nach reiner Klassen-ID-Substring.
+- **Memory-Dashboard-Lazy-Load:** Tests haben zunächst im Tab-Button-HTML nach `loadMemoryDashboard` gesucht, statt im `activateTab`-Handler. **Lesson: Lazy-Load-Hooks immer am Handler-Code suchen, nicht am Button.**
+
+**Lessons für künftige Mega-Patches:**
+- **16 Patches in einem Zug sind machbar**, wenn pro Patch nur 1-3 Dateien angefasst werden und die Tests rein Source-matchen können (kein Browser/DB-Roundtrip).
+- **Token-Budget bei 16 UI-Patches:** mit Effort Extra High ca. 400-500k Input+Output. Headroom zu 1M blieb reichlich.
+- **Design-System-Introduction als dediziertes Feature:** `shared-design.css` hätte zwischen Patches 122 und 131 schon eingeführt werden können. Je später im Projekt, desto aufwändiger wird die Migration der Legacy-Styles. **Lesson: Token-Definitionen früh einführen, auch wenn noch nicht alle Klassen genutzt werden.**
+- **Jojo-Priorität als Marker:** Features mit expliziter Nutzer-Priorität (Pfoten, Feuerwerk) bekamen ausführlichere Animationen und mehr Tests als "Pflicht-Fixes". Bewusst so behandeln — schnelles Feedback-Loop für den User.
+- **Backup-First bei DB-Touch:** Patch 138 Cleanup-Script macht DB-Backup vor Delete als eingebautes Verhalten, nicht als Opt-In. Default sicher, `--execute` macht es scharf.
+- **UI-Skalierung ist die richtige Abstraktion** (ersetzt Preset-Buttons): Einfach für User, einfacher Code, persistent über CSS-Variable + `calc()`.

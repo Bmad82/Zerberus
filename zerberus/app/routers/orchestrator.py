@@ -112,6 +112,20 @@ _TRANSFORM_PATTERNS = [
 ]
 _TRANSFORM_RE = re.compile("|".join(_TRANSFORM_PATTERNS), re.IGNORECASE)
 
+# Patch 137 (B-001): GREETING — reine Grußformeln ohne inhaltliche Frage.
+# Wird VOR QUESTION geprüft, damit "Na?" nicht wegen "?" zu QUESTION wird.
+# Allerdings: wenn in der Nachricht eine echte Frage/Aufgabe steckt
+# ("Hallo, wer ist Anne?"), gewinnt QUESTION (Check in detect_intent).
+_GREETING_PATTERNS = [
+    r"^(hallo|hi|hey|moin|servus|gr(ü|ue)(ß|ss)\s*(dich|gott|euch|sie)?)\b",
+    r"^(guten\s+(morgen|tag|abend|mittag))\b",
+    r"^(na|nabend|tach)\b",
+    r"^(wie\s+geht('s|\s+es|\s+dir))\b",
+    r"^(tsch(ü|ue)ss|ciao|bye|auf\s+wiedersehen|bis\s+(bald|sp(ä|ae)ter|morgen))\b",
+    r"^(danke|vielen\s+dank|merci)\b",
+]
+_GREETING_RE = re.compile("|".join(_GREETING_PATTERNS), re.IGNORECASE)
+
 # Intent-Snippets: werden direkt vor der User-Message in den Kontext eingefügt
 INTENT_SNIPPETS = {
     "QUESTION":      "[Modus: Informationsanfrage – präzise antworten, strukturiert, kein Bullshit]",
@@ -119,6 +133,7 @@ INTENT_SNIPPETS = {
     "COMMAND_TOOL":  "[Modus: Tool-Anfrage – Permission-Check läuft]",
     "CONVERSATION":  "[Modus: Gespräch – locker, empathisch, keine Listen wenn nicht nötig]",
     "TRANSFORM":     "[Modus: Textverarbeitung – den vom User gelieferten Text direkt bearbeiten, keine Recherche, keine Rückfragen]",
+    "GREETING":      "[Modus: Smalltalk – kurz und freundlich zurückgrüßen, keine Recherche, keine Dokumenten-Referenzen]",
 }
 
 # ---------------------------------------------------------------------------
@@ -128,9 +143,9 @@ INTENT_SNIPPETS = {
 # Welche Intent-Typen sind pro Permission-Level erlaubt?
 # Nicht erlaubte Intents → Human-in-the-Loop statt LLM-Call
 _PERMISSION_MATRIX: dict[str, set[str]] = {
-    "admin":  {"QUESTION", "COMMAND_SAFE", "COMMAND_TOOL", "CONVERSATION", "TRANSFORM"},
-    "user":   {"QUESTION", "COMMAND_SAFE", "CONVERSATION", "TRANSFORM"},
-    "guest":  {"QUESTION", "CONVERSATION", "TRANSFORM"},
+    "admin":  {"QUESTION", "COMMAND_SAFE", "COMMAND_TOOL", "CONVERSATION", "TRANSFORM", "GREETING"},
+    "user":   {"QUESTION", "COMMAND_SAFE", "CONVERSATION", "TRANSFORM", "GREETING"},
+    "guest":  {"QUESTION", "CONVERSATION", "TRANSFORM", "GREETING"},
 }
 
 _HITL_MESSAGE = (
@@ -147,12 +162,15 @@ _HITL_PROTECTED_CHANNELS: set[str] = {"telegram", "whatsapp"}
 
 def detect_intent(message: str) -> str:
     """
-    Regelbasierte Intent-Erkennung (Patch 47, erweitert Patch 106).
-    Prüfreihenfolge: TRANSFORM → COMMAND_TOOL → COMMAND_SAFE → QUESTION → CONVERSATION
-    Rückgabe: "TRANSFORM" | "COMMAND_TOOL" | "COMMAND_SAFE" | "QUESTION" | "CONVERSATION"
+    Regelbasierte Intent-Erkennung (Patch 47, erweitert Patch 106, Patch 137).
+    Prüfreihenfolge: TRANSFORM → GREETING → COMMAND_TOOL → COMMAND_SAFE → QUESTION → CONVERSATION
+    Rückgabe: "TRANSFORM" | "GREETING" | "COMMAND_TOOL" | "COMMAND_SAFE" | "QUESTION" | "CONVERSATION"
 
     TRANSFORM läuft zuerst, damit "Übersetze folgenden Text: ..." nicht durch
     ein COMMAND_TOOL-Keyword im Text gekapert wird.
+
+    GREETING: Nur wenn Nachricht kurz (≤ 8 Wörter) UND keine echte Frage/Aufgabe
+    enthält. "Hallo, wer ist Anne?" bleibt QUESTION.
     """
     text = message.strip()
     if not text:
@@ -165,6 +183,19 @@ def detect_intent(message: str) -> str:
     text_lower = text.lower()
     first_word = text.split()[0].lower().rstrip(",.!:;")
     words = {w.lower().rstrip(",.!:;") for w in text.split()}
+
+    # 0b. GREETING (Patch 137 / B-001) — reine Grüße ohne Inhaltsfrage.
+    # Heuristik: Pattern matcht UND Nachricht kurz UND kein Fragewort im Rest.
+    # Sonst würde "Hallo, wer ist Anne?" fälschlich GREETING statt QUESTION.
+    if _GREETING_RE.match(text) and len(text.split()) <= 8:
+        has_question_word = bool(words & _QUESTION_STARTERS)
+        # "Na?" und "Wie geht's?" sind GREETING trotz "?"
+        is_pure_smalltalk = text_lower in {
+            "na?", "na!", "nabend!", "nabend?", "wie geht's?", "wie gehts?",
+            "wie geht es dir?", "wie geht's dir?",
+        }
+        if is_pure_smalltalk or not has_question_word:
+            return "GREETING"
 
     # 1. COMMAND_TOOL
     for phrase in _COMMAND_TOOL_PHRASES:
@@ -461,16 +492,21 @@ async def _run_pipeline(
     # Patch 85: RAG-Skip nur bei CONVERSATION + kurz + kein ?
     # Patch 106: TRANSFORM skipt immer — User liefert Text komplett mit,
     # RAG-Kontext wäre Lärm. Spart Query Expansion + Cross-Encoder-Rerank.
+    # Patch 137 (B-001): GREETING skipt immer — Grüße sollen keine Dokumenten-
+    # Referenzen triggern.
     skip_rag_transform = intent == "TRANSFORM"
+    skip_rag_greeting = intent == "GREETING"
     skip_rag_conversation = (
         intent == "CONVERSATION" and
         len(message.split()) < 15 and
         "?" not in message
     )
-    skip_rag = skip_rag_transform or skip_rag_conversation
+    skip_rag = skip_rag_transform or skip_rag_greeting or skip_rag_conversation
 
     if skip_rag_transform:
         logger.warning("[TRANSFORM-106] Intent=TRANSFORM erkannt — RAG und Query Expansion übersprungen")
+    if skip_rag_greeting:
+        logger.warning("[GREETING-137] Intent=GREETING erkannt — RAG übersprungen, reine Smalltalk-Antwort")
 
     logger.warning(f"[DEBUG-85] RAG-Skip: {skip_rag} | intent={intent}, wörter={len(message.split())}, '?'={'?' in message}")
 
