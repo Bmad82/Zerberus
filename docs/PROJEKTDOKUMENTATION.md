@@ -3302,3 +3302,80 @@ Neue Datei `zerberus/tests/test_vidar.py` (Go/No-Go Post-Deployment):
 - Neue Config-Keys: `profiles.vidar` (is_test: true)
 
 *Stand: 2026-04-24, Patch 153–154 — Vidar + Farb-Fix + Checklisten-Sweep.*
+
+---
+
+## Patch 155 — Huginn Long-Polling + Lessons-Konsolidierung
+*2026-04-24*
+
+### Problem
+Telegram-Webhooks funktionieren nicht hinter Tailscale MagicDNS. Die Domain `*.tail*.ts.net` ist nur innerhalb des Tailnets auflösbar — Telegram's Server scheitern am DNS-Lookup bevor das Zertifikat überhaupt geprüft wird. Resultat: Der Bot empfängt keine Nachrichten obwohl Server läuft.
+
+### Lösung
+Transport-Refactor auf Long-Polling. Der Bot fragt Telegram aktiv "neue Updates?" via `getUpdates` (Long-Poll mit 30s Telegram-Timeout) statt auf Webhooks zu warten. Funktioniert hinter jeder NAT/VPN/Firewall.
+
+### Umsetzung
+**[`zerberus/modules/telegram/bot.py`](../zerberus/modules/telegram/bot.py) — drei neue Funktionen via `httpx`:**
+- `get_me(bot_token)` → cached `_bot_user_id` für `was_bot_added_to_group()`
+- `get_updates(bot_token, offset, timeout=30)` → `httpx.TimeoutException` wird als normaler Long-Poll-Idle behandelt (still, kein Log-Spam)
+- `long_polling_loop(bot_token, handler, ...)` → entfernt alten Webhook (sonst HTTP 409), Endlos-Loop mit Offset-Management (`offset = update_id + 1`), Handler-Exceptions werden geloggt aber der Loop läuft weiter, `CancelledError` propagiert sauber
+- `_POLL_ALLOWED_UPDATES = ["message", "channel_post", "callback_query", "my_chat_member"]`
+
+**[`zerberus/modules/telegram/router.py`](../zerberus/modules/telegram/router.py):**
+- `process_update(data, settings)` aus `telegram_webhook` extrahiert — gemeinsamer Handler für Webhook UND Polling
+- `telegram_webhook` wird dünn: JSON parsen + `process_update(...)` aufrufen
+- `startup_huginn(settings) -> Optional[asyncio.Task]`:
+  - `enabled=false` → `None`
+  - `mode="polling"` (Default) → `asyncio.create_task(long_polling_loop(...))` zurückgeben
+  - `mode="webhook"` → existierender Webhook-Register-Flow, `None` zurück
+
+**[`zerberus/main.py`](../zerberus/main.py) lifespan:**
+- Task-Referenz `_huginn_polling_task` hält den Polling-Task
+- Beim Shutdown: wenn Task vorhanden → `task.cancel()` + `await` (mit CancelledError-Catch). Sonst alter Webhook-Deregister-Pfad.
+
+**[`config.yaml`](../config.yaml) — neuer Key:**
+```yaml
+modules:
+  telegram:
+    mode: polling  # "polling" (Default) oder "webhook"
+```
+
+### Tests
+**[`zerberus/tests/test_telegram_bot.py`](../zerberus/tests/test_telegram_bot.py) — neue Klasse `TestLongPolling` (12 Tests):**
+- `test_get_updates_no_token` — leere Liste ohne HTTP-Call
+- `test_get_me_no_token` — None
+- `test_get_updates_parses_response` — httpx-Mock, verifiziert offset/timeout/allowed_updates im Payload
+- `test_get_updates_timeout_returns_empty` — `httpx.TimeoutException` → `[]`
+- `test_get_updates_http_error_returns_empty` — HTTP 500 → `[]`
+- `test_long_polling_loop_calls_delete_webhook` — Start ruft `deregister_webhook`
+- `test_long_polling_loop_advances_offset` — `offsets_seen == [0, 11, 18]` nach 2 Batches
+- `test_long_polling_handler_exception_does_not_break_loop` — RuntimeError im Handler → Loop läuft weiter
+- `test_long_polling_loop_no_token_exits_silently` — `""` als Token → sofortige Rückkehr
+- `test_startup_huginn_polling_mode_creates_task` — asyncio.Task zurück, `_bot_user_id` gecacht
+- `test_startup_huginn_webhook_mode_returns_none` — None + `register_webhook` gerufen
+- `test_startup_huginn_disabled_returns_none` — `enabled=false` → None
+
+### Lessons-Konsolidierung
+**[`lessons.md`](../lessons.md) — vier neue Blöcke:**
+1. **Monster-Patch Session-Bilanz 2026-04-24** — Tabelle über 6 Sessions (Mega 1 bis Huginn-Polling), Test-Trajektorie 162→500 (+338 Tests), Token-Effizienz pro Patch.
+2. **Telegram hinter Tailscale** — Webhook-Problem, Long-Polling-Lösung, Guardrails (deleteWebhook vor Start, Offset-Management, explizite allowed_updates).
+3. **Vidar-Architektur** — 3 Levels (CRITICAL/IMPORTANT/COSMETIC), Verdict-Semantik (GO/WARN/FAIL), Faustregel.
+4. **Design-Konsistenz-Regel L-001** — projektübergreifend, Touch-Target 44px, Loki-Auto-Check.
+
+**[`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md):** Neuer Abschnitt "Telegram/Huginn (Patch 155)" mit `mode`-Config-Doku.
+**[`docs/DESIGN.md`](DESIGN.md):** Verweis auf Lessons-Abschnitt L-001.
+**[`SUPERVISOR_ZERBERUS.md`](../SUPERVISOR_ZERBERUS.md):** Patch 155 als aktueller Patch, Roadmap [x].
+
+### Scope-Entscheidungen
+- **Funktions-Architektur beibehalten** (kein Wechsel auf `python-telegram-bot`'s `Application`/`Handler`-Framework). Konsistent zum Rest des Codebases (`call_llm`, `send_telegram_message` sind auch freie async-Funktionen).
+- **`httpx` statt `aiohttp`** (abweichend vom Supervisor-Beispiel). `httpx` ist Projektkonvention und bereits überall im Einsatz.
+- **`_bot_user_id` jetzt endlich gecacht** (vorher war die Variable nie gesetzt, sodass `was_bot_added_to_group` immer False lieferte). Nebeneffekt-Fix durch den Polling-Start.
+
+### Tests
+- **500 passed** offline in 17s (488 vorher + **12 neue Long-Polling-Tests**).
+- Playwright/Vidar-Tests weiter server-abhängig (nicht in Offline-Suite).
+
+**Geänderte Dateien:** `zerberus/modules/telegram/bot.py`, `zerberus/modules/telegram/router.py`, `zerberus/main.py`, `config.yaml` (lokal), `zerberus/tests/test_telegram_bot.py`, `lessons.md`, `CLAUDE_ZERBERUS.md`, `SUPERVISOR_ZERBERUS.md`, `docs/DESIGN.md`, `docs/PROJEKTDOKUMENTATION.md`
+**Neue Dateien:** keine
+
+*Stand: 2026-04-24, Patch 155 — Huginn Long-Polling + Lessons-Konsolidierung.*

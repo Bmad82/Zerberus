@@ -197,10 +197,11 @@ async def lifespan(app: FastAPI):
             else:
                 logger.info(f"  ⏭️  {module_name} (deaktiviert)")
 
-    # --- Huginn / Telegram (Patch 123) ---
+    # --- Huginn / Telegram (Patch 123 + 155: Long-Polling als Default) ---
+    _huginn_polling_task = None
     try:
         from zerberus.modules.telegram.router import startup_huginn
-        await startup_huginn(settings)
+        _huginn_polling_task = await startup_huginn(settings)
     except Exception as _hg_err:
         logger.warning(f"[HUGINN-123] Startup-Hook fehlgeschlagen: {_hg_err}")
 
@@ -211,15 +212,25 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("🛑 Shutting down...")
-    # --- Huginn Webhook deregistrieren ---
+    # --- Huginn: Polling-Task stoppen bzw. Webhook deregistrieren (Patch 155) ---
     try:
         _tg_cfg = settings.modules.get("telegram", {}) or {}
         if _tg_cfg.get("enabled", False):
-            from zerberus.modules.telegram.bot import deregister_webhook, HuginnConfig
-            _cfg = HuginnConfig.from_dict(_tg_cfg)
-            if _cfg.bot_token:
-                await deregister_webhook(_cfg.bot_token)
-                logger.info("[HUGINN-123] Webhook deregistriert")
+            # Polling-Task cancellen (falls mode=polling lief)
+            if _huginn_polling_task is not None:
+                _huginn_polling_task.cancel()
+                try:
+                    await _huginn_polling_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                logger.info("[HUGINN-155] Long-Polling gestoppt")
+            else:
+                # Bei mode=webhook: Webhook bei Telegram entfernen
+                from zerberus.modules.telegram.bot import deregister_webhook, HuginnConfig
+                _cfg = HuginnConfig.from_dict(_tg_cfg)
+                if _cfg.bot_token:
+                    await deregister_webhook(_cfg.bot_token)
+                    logger.info("[HUGINN-123] Webhook deregistriert")
     except Exception:
         pass
 

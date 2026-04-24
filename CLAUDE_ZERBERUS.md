@@ -69,6 +69,14 @@ Kein reiner Freitext-Dialog, wenn eine binäre/ternäre Entscheidung ausreicht.
 
 - `config.yaml` → `auth.static_api_key` — wenn gesetzt, akzeptiert die JWT-Middleware den `X-API-Key` Header als Alternative zu Bearer
 
+## Telegram/Huginn (Patch 155)
+
+- `config.yaml` → `modules.telegram.mode`:
+  - **`polling`** (Default): Long-Polling via `getUpdates`. Funktioniert hinter Tailscale/NAT ohne öffentliche URL. Beim Shutdown wird der Polling-Task cancelt.
+  - **`webhook`**: Nur für Setups mit öffentlicher HTTPS-URL. Braucht `webhook_url`. Beim Shutdown wird der Webhook bei Telegram deregistriert.
+- Background-Task wird in `lifespan` via `startup_huginn()` gestartet, der die Task zurückgibt. `main.py` hält die Referenz und cancelt beim Shutdown.
+- Gemeinsamer Update-Handler: `zerberus.modules.telegram.router.process_update(data, settings)` — sowohl Webhook-Endpoint als auch Polling-Loop rufen ihn auf.
+
 ## Datenbank-Migrationen (Alembic, seit Patch 92)
 
 - Alembic-Config: `alembic.ini` im Projektroot, Revisionen unter `alembic/versions/`

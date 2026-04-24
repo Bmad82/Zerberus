@@ -69,3 +69,9 @@ Vor jeder UI-Änderung:
 
 Die bestehenden inline-Styles in `nala.py` und `hel.py` werden schrittweise
 auf die Tokens migriert. Neue Code-Stellen sollen sofort die Tokens nutzen.
+
+## Weiterführende Lessons
+
+Siehe [`lessons.md`](../lessons.md) → Abschnitt *"Design-Konsistenz-Regel
+(L-001, Patch 151)"* für die ausführliche Begründung und den Verweis auf
+die Touch-Target-Prüfung durch Loki.

@@ -1,8 +1,19 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 153–154 (2026-04-24) – Vidar Smoke-Agent + Farb-Default-Fix + Checklisten-Sweep*
+*Letzte Aktualisierung: Patch 155 (2026-04-24) – Huginn Long-Polling + Lessons-Konsolidierung*
 
 ## Aktueller Patch
+
+**Patch 155** — Huginn Long-Polling + Lessons-Konsolidierung (2026-04-24)
+
+- **Huginn Long-Polling (Transport-Refactor):** Telegram-Webhooks funktionieren nicht hinter Tailscale MagicDNS (`*.tail*.ts.net` ist intern-only). Umstellung auf `getUpdates`-Long-Polling. In [`bot.py`](zerberus/modules/telegram/bot.py) drei neue Funktionen via `httpx` (kein aiohttp — Projektkonvention): `get_me()` (cached bot_user_id für `was_bot_added_to_group`), `get_updates()` (Long-Poll mit 30s Telegram-Timeout, `httpx.TimeoutException` ist normal und still), `long_polling_loop()` (entfernt alten Webhook, Endlos-Loop mit Offset-Management, Handler-Exceptions loggen aber Loop läuft weiter, `CancelledError` propagiert sauber). In [`router.py`](zerberus/modules/telegram/router.py): `process_update(data, settings)` aus `telegram_webhook` extrahiert — gemeinsamer Handler für beide Transport-Modi. `startup_huginn()` liest `config.modules.telegram.mode` (Default `"polling"`), returnt `asyncio.Task` bei polling, `None` bei webhook. [`main.py`](zerberus/main.py) lifespan speichert den Task, cancelt beim Shutdown. `config.yaml`: neuer Key `mode: polling`. **12 neue Tests** (`TestLongPolling` in test_telegram_bot.py) — get_me/get_updates Happy-Path + Timeout + HTTP-Error + Offset-Fortschritt + Handler-Exception + Cancellation.
+- **Lessons-Konsolidierung:** In [`lessons.md`](lessons.md) vier neue Blöcke: (1) **Monster-Patch Session-Bilanz 2026-04-24** mit Test-Trajektorie 162→500 und Token-Effizienz-Analyse über 6 Sessions. (2) **Telegram hinter Tailscale** — Webhook vs. Long-Polling mit Guardrails (deleteWebhook vor Start, Offset-Management, explizite allowed_updates). (3) **Vidar-Architektur** — 3 Check-Levels, Verdict-Semantik, Faustregel. (4) **Design-Konsistenz-Regel L-001** — projektübergreifend, Touch-Target 44px. `CLAUDE_ZERBERUS.md` dokumentiert den `mode`-Config-Key. `docs/DESIGN.md` bekommt kurzen Verweis auf L-001-Lesson.
+
+- **Tests:** **500 passed** offline in 17s (488 vorher + **12 neue Long-Polling-Tests**). Playwright/Vidar weiter server-abhängig.
+- **Scope:** IN Scope: Transport-Refactor bot.py/router.py/main.py, Config-Mode-Flag, 12 Polling-Tests, vier Lesson-Blöcke. NICHT: Migration auf `python-telegram-bot`'s `Application`-Framework (wir bleiben bei Funktions-Architektur mit `httpx`, konsistent zum Rest des Codebases).
+- **Live-Verifikation (USER):** (1) Server starten → Log zeigt `🐦 Huginn: Long-Polling gestartet` und `[HUGINN-155] Bot-Identitaet: @HuginnBot (id=…)`. (2) DM an den Bot → kommt an und wird beantwortet. (3) Server stoppen → Log zeigt `[HUGINN-155] Long-Polling gestoppt`.
+
+---
 
 **Patch 153–154** — Vidar + Farb-Fix + Checklisten-Sweep (2026-04-24)
 
@@ -116,8 +127,9 @@
 - [x] **152** Memory-Dashboard (Tabelle + Suche + Confidence-Badges)
 - [x] **153** Vidar Smoke-Test-Agent + Farb-Default-Fix (cssToHex HSL-Bug)
 - [x] **154** Checklisten-Sweep: Loki radial-gradient Fix, B-008..B-016 Tests, Fenrir Stress
-- [ ] **155+** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
-- [ ] **156+** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
+- [x] **155** Huginn Long-Polling (Tailscale-fähig) + Lessons-Konsolidierung
+- [ ] **156+** Scheduler-Integration für Patch 150 (Config-Read + Worker-Loop)
+- [ ] **157+** Echte FAISS-Migration via `scripts/migrate_embedder.py --execute` + RAG-Eval
 - [ ] **155+** Sancho-Panza-Veto + Projekt-Oberfläche in Nala
 - [ ] **TBD** Prosodie/Audio-Sentiment (Gemma 4 E4B lokal, VRAM-Planung)
 - [ ] **TBD** Bild-Upload + Vision-Modell (Architektur-Entscheidung offen)

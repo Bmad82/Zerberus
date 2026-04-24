@@ -277,3 +277,74 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - **Jojo-Priorität als Marker:** Features mit expliziter Nutzer-Priorität (Pfoten, Feuerwerk) bekamen ausführlichere Animationen und mehr Tests als "Pflicht-Fixes". Bewusst so behandeln — schnelles Feedback-Loop für den User.
 - **Backup-First bei DB-Touch:** Patch 138 Cleanup-Script macht DB-Backup vor Delete als eingebautes Verhalten, nicht als Opt-In. Default sicher, `--execute` macht es scharf.
 - **UI-Skalierung ist die richtige Abstraktion** (ersetzt Preset-Buttons): Einfach für User, einfacher Code, persistent über CSS-Variable + `calc()`.
+
+## Monster-Patch Session-Bilanz 2026-04-24 (33 Patches an einem Tag)
+
+| Session | Patches | Tests Δ | Notizen |
+|---------|---------|---------|---------|
+| Mega 1 (122–129) | 8 | +76 | Erstes Mega-Experiment, Token ~261k |
+| Mega 2 (131–136) | 6 | +56 | Vision + Memory-Store, Token ~260k |
+| Loki/Fenrir (130) | 1 | +23 | E2E-Sweep, klein |
+| Monster 3 (137–152) | 16 | +180 | Größter Scope, Token ~383k |
+| Vidar+Fix (153–154) | 2 | +12 | cssToHex HSL-Bug, Vidar-Agent |
+| Huginn-Polling (155) | 1 | +12 | Long-Polling statt Webhook |
+| **Gesamt** | **34** | **+359** | |
+
+**Test-Trajektorie:** 162 → 500 (+338 neue Tests, alle grün, offline).
+
+**Kern-Erkenntnisse über die Sessions:**
+1. **Effizienz steigt mit Patch-Anzahl pro Session:** 33k Token/Patch bei 8 Patches → 24k Token/Patch bei 16 Patches. Je mehr Patches im selben Fenster, desto weniger Overhead pro Patch (Codebasis nur einmal eingelesen).
+2. **450k-Token-Grenze nie erreicht:** Selbst bei 16 Patches nur 383k (38% vom 1M-Fenster). Theoretisch 20+ Patches in einer Session möglich.
+3. **Token-Selbstüberwachung > hartes Limit:** Claude Code hat sich nach 8 bzw. 16 Patches selbst gestoppt — nicht wegen Token-Limit, sondern wegen Scope-Grenze. Besser als stumpfes Limit.
+4. **Leicht abbrechbare Tasks ans Ende stellen:** FAISS-Migration, Design-Audit, Memory-Dashboard — alles Dinge die bei Abbruch keinen halben Zustand hinterlassen.
+5. **Eigeninitiative erlauben:** Session 1 hat eigenständig 127–129 nachgeschoben. Session 3 alle 16 Patches ohne Nachfrage.
+6. **Bug-Propagation in Konverter-Funktionen:** Farb-Bug cssToHex (Patch 153) propagierte durch die ganze Kette: Parser → Farbpicker → localStorage → nächster Load = schwarze UI. **Lesson: Konverter-Funktionen brauchen Unit-Tests mit ALLEN Input-Formaten** (#rgb, #rrggbb, rgb(), rgba(), hsl(), hsla(), oklch(), …).
+
+**Optimaler Mega-Prompt-Aufbau (bewährt):**
+- Diagnose-grep-Befehle VOR dem Code (nicht blind coden)
+- Block-Struktur: Diagnose → Implementierung → Tests → Doku pro Patch
+- Reihenfolge: Kritische Fixes → Features → Kosmetik → Destruktive Ops
+- Token-Selbstüberwachung bei 450k als Sicherheitsnetz
+- Eigeninitiative erlauben für abgrenzbare Verbesserungen
+
+## Telegram-Bot hinter Tailscale (Webhook vs. Long-Polling, Patch 155)
+
+**Problem:** Telegram-Webhooks brauchen eine öffentlich erreichbare HTTPS-URL. Tailscale MagicDNS-Domains (`*.tail*.ts.net`) lösen nur innerhalb des Tailnets auf — Telegram-Server können sie nicht erreichen. Selbst-signierte Zertifikate helfen nicht, weil der DNS-Lookup scheitert bevor das Zertifikat geprüft wird.
+
+**Lösung:** Long-Polling statt Webhook. Der Bot fragt Telegram aktiv "was gibt's Neues?" via `getUpdates` (Long-Poll mit 30s-Timeout) statt darauf zu warten angerufen zu werden. Funktioniert hinter jeder Firewall/VPN/Tailnet.
+
+**Merke:**
+- Bei Self-Hosted-Setups ohne öffentliche IP/Domain immer Long-Polling verwenden.
+- Webhook nur für Server mit öffentlicher HTTPS-URL (Cloud-Deployments, VPS mit eigener Domain).
+- Beim Start des Polling-Loops MUSS ein evtl. gesetzter Webhook entfernt werden (`deleteWebhook`) — sonst liefert `getUpdates` HTTP 409 Conflict.
+- Offset-Management: `getUpdates(offset=<last_update_id+1>)` — sonst liefert Telegram dasselbe Update erneut.
+- `allowed_updates=["message","channel_post","callback_query","my_chat_member"]` explizit angeben — sonst filtert Telegram evtl. relevante Typen raus.
+
+## Vidar: Post-Deployment Smoke-Test-Agent (Patch 153)
+
+**Drei Test-Agenten im Zerberus-Ökosystem:**
+- **Loki** — E2E-Tests (Feature-Verifikation, Happy-Path)
+- **Fenrir** — Chaos-Tests (Edge-Cases, Stress, Destruction)
+- **Vidar** — Smoke-Tests (Post-Deployment Go/No-Go)
+
+**Vidar-Architektur:**
+- 3 Check-Levels: CRITICAL (Blocker) → IMPORTANT (Fixen) → COSMETIC (Nice-to-have)
+- Verdict-Semantik: GO (deploy) / WARN (deploy, aber fixen) / FAIL (nicht deployen)
+- Eigenes Test-Profil `vidar` mit `is_test: true` (keine echten User-Daten)
+- Prüft beide Viewports (Mobile 390×844, Desktop implizit)
+- ~21 automatisierte Checks, <60s Laufzeit
+- Aufruf: `pytest zerberus/tests/test_vidar.py -v`
+
+**Faustregel:** Vidar nach JEDEM Server-Restart laufen lassen. GO → testen. WARN → testen aber Bugs tracken. FAIL → nicht testen, erst fixen.
+
+## Design-Konsistenz-Regel (L-001, Patch 151)
+
+**Regel:** Wenn eine Design-Entscheidung für ein UI-Element getroffen wird, gilt sie projektübergreifend für ALLE ähnlichen Elemente in Nala UND Hel.
+
+**Umsetzung:**
+- `zerberus/static/css/shared-design.css` mit CSS-Custom-Properties (`--zb-*` Namespace)
+- Design-Tokens für: Farben, Spacing, Radien, Schatten, Touch-Targets, Typography
+- `docs/DESIGN.md` als Referenz
+- Vor jeder CSS-Änderung: Gibt es das gleiche Element auch anderswo? → Gleicher Style.
+
+**Touch-Target-Regel:** Minimum 44px Höhe UND Breite für ALLE klickbaren Elemente (Apple HIG). Gilt für Nala UND Hel. Loki prüft das automatisch (`test_loki_mega_patch.TestTouchTargets`).

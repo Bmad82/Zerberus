@@ -181,6 +181,120 @@ async def deregister_webhook(bot_token: str, timeout: float = 10.0) -> bool:
         return False
 
 
+# ══════════════════════════════════════════════════════════════════
+#  Patch 155: Long-Polling (funktioniert hinter Tailscale/NAT)
+# ══════════════════════════════════════════════════════════════════
+
+# Erlaubte Update-Typen — deckt alles ab was process_update() verarbeitet.
+_POLL_ALLOWED_UPDATES = ["message", "channel_post", "callback_query", "my_chat_member"]
+
+
+async def get_me(bot_token: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+    """Liefert den Bot-User (id, username, ...). None bei Fehler.
+
+    Wird beim Polling-Start einmal aufgerufen, um `_bot_user_id` zu cachen
+    (fuer was_bot_added_to_group()).
+    """
+    if not bot_token:
+        return None
+    url = TELEGRAM_API_URL.format(token=bot_token, method="getMe")
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data.get("ok"):
+            return None
+        return data.get("result")
+    except Exception as e:
+        logger.warning(f"[HUGINN-155] get_me Exception: {e}")
+        return None
+
+
+async def get_updates(
+    bot_token: str,
+    offset: int = 0,
+    timeout: int = 30,
+    allowed_updates: Optional[list[str]] = None,
+) -> list[Dict[str, Any]]:
+    """Telegram getUpdates mit Long-Poll.
+
+    `timeout` ist der Telegram-Long-Poll-Timeout (Server haelt die Verbindung
+    so lange offen, bis entweder Updates da sind oder der Timeout greift).
+    HTTP-Client-Timeout wird auf `timeout + 5` gesetzt damit wir nicht vor
+    Telegram abbrechen.
+    """
+    if not bot_token:
+        return []
+    url = TELEGRAM_API_URL.format(token=bot_token, method="getUpdates")
+    params: Dict[str, Any] = {
+        "offset": offset,
+        "timeout": timeout,
+        "allowed_updates": allowed_updates or _POLL_ALLOWED_UPDATES,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout + 5) as client:
+            resp = await client.post(url, json=params)
+        if resp.status_code != 200:
+            logger.warning(f"[HUGINN-155] getUpdates HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+        data = resp.json()
+        if not data.get("ok"):
+            logger.warning(f"[HUGINN-155] getUpdates nicht-ok: {data}")
+            return []
+        return data.get("result", []) or []
+    except httpx.TimeoutException:
+        # Long-Poll ohne neue Updates → normal, nicht loggen
+        return []
+    except Exception as e:
+        logger.warning(f"[HUGINN-155] getUpdates Exception: {e}")
+        return []
+
+
+async def long_polling_loop(
+    bot_token: str,
+    handler,
+    poll_timeout: int = 30,
+    error_backoff: float = 5.0,
+) -> None:
+    """Endlos-Loop: holt Updates von Telegram, ruft `handler(update)` pro Update.
+
+    Patch 155: Telegram-Bot funktioniert hinter Tailscale/NAT ohne Webhook.
+
+    - `handler` ist ein async callable `(update: dict) -> Any`.
+    - Beim Start wird ein ggf. alter Webhook entfernt (getUpdates darf nicht
+      parallel zu einem registrierten Webhook laufen).
+    - Fehler werden geloggt, der Loop wartet `error_backoff` Sekunden und
+      macht weiter — stoppt nur bei CancelledError (shutdown).
+    """
+    if not bot_token:
+        logger.warning("[HUGINN-155] long_polling_loop: kein bot_token, Loop nicht gestartet")
+        return
+
+    # Alten Webhook entfernen — sonst liefert getUpdates HTTP 409 (Conflict)
+    await deregister_webhook(bot_token)
+    logger.info("🐦 Huginn: Long-Polling gestartet")
+
+    offset = 0
+    while True:
+        try:
+            updates = await get_updates(bot_token, offset=offset, timeout=poll_timeout)
+            for update in updates:
+                try:
+                    await handler(update)
+                except Exception as e:
+                    logger.exception(f"[HUGINN-155] Handler-Exception fuer update_id={update.get('update_id')}: {e}")
+                # Offset immer fortschreiben — sonst liefert Telegram dasselbe Update erneut
+                offset = update["update_id"] + 1
+        except asyncio.CancelledError:
+            logger.info("🐦 Huginn: Long-Polling gestoppt (cancelled)")
+            raise
+        except Exception as e:
+            logger.warning(f"[HUGINN-155] Polling-Loop-Fehler: {e}")
+            await asyncio.sleep(error_backoff)
+
+
 async def get_file_url(bot_token: str, file_id: str, timeout: float = 10.0) -> Optional[str]:
     """Resolved eine Telegram-file_id zu einer herunterladbaren URL (Vision-Inputs)."""
     if not bot_token or not file_id:

@@ -391,3 +391,267 @@ class TestHitlHelpers:
         msg = build_group_waiting_message(req)
         assert "Admin" in msg
         assert "abc" in msg
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Patch 155: Long-Polling Tests
+# ══════════════════════════════════════════════════════════════════
+
+class TestLongPolling:
+    """Tests fuer get_me(), get_updates() und long_polling_loop()."""
+
+    def test_get_updates_no_token(self):
+        """Kein bot_token → leere Liste, kein HTTP-Call."""
+        from zerberus.modules.telegram.bot import get_updates
+        result = asyncio.run(get_updates("", offset=0))
+        assert result == []
+
+    def test_get_me_no_token(self):
+        """Kein bot_token → None."""
+        from zerberus.modules.telegram.bot import get_me
+        result = asyncio.run(get_me(""))
+        assert result is None
+
+    def test_get_updates_parses_response(self, monkeypatch):
+        """getUpdates ruft POST auf getUpdates, parst result-Array."""
+        from zerberus.modules.telegram import bot as bot_module
+
+        calls = {}
+
+        class FakeResp:
+            status_code = 200
+            text = ""
+            def json(self):
+                return {"ok": True, "result": [
+                    {"update_id": 1, "message": {"text": "hi"}},
+                    {"update_id": 2, "message": {"text": "ho"}},
+                ]}
+
+        class FakeClient:
+            def __init__(self, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            async def post(self, url, json=None):
+                calls["url"] = url
+                calls["json"] = json
+                return FakeResp()
+
+        monkeypatch.setattr(bot_module.httpx, "AsyncClient", FakeClient)
+        result = asyncio.run(bot_module.get_updates("TOKEN", offset=42, timeout=30))
+        assert len(result) == 2
+        assert result[0]["update_id"] == 1
+        # Offset + timeout + allowed_updates werden durchgereicht
+        assert calls["json"]["offset"] == 42
+        assert calls["json"]["timeout"] == 30
+        assert "message" in calls["json"]["allowed_updates"]
+        assert "callback_query" in calls["json"]["allowed_updates"]
+        assert "getUpdates" in calls["url"]
+
+    def test_get_updates_timeout_returns_empty(self, monkeypatch):
+        """httpx.TimeoutException → [] ohne Warning-Log (normaler Long-Poll-Ablauf)."""
+        from zerberus.modules.telegram import bot as bot_module
+        import httpx
+
+        class FakeClient:
+            def __init__(self, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            async def post(self, url, json=None):
+                raise httpx.TimeoutException("long-poll idle")
+
+        monkeypatch.setattr(bot_module.httpx, "AsyncClient", FakeClient)
+        result = asyncio.run(bot_module.get_updates("TOKEN", offset=0))
+        assert result == []
+
+    def test_get_updates_http_error_returns_empty(self, monkeypatch):
+        """HTTP 500 → [] (Loop macht weiter)."""
+        from zerberus.modules.telegram import bot as bot_module
+
+        class FakeResp:
+            status_code = 500
+            text = "oops"
+
+        class FakeClient:
+            def __init__(self, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            async def post(self, url, json=None):
+                return FakeResp()
+
+        monkeypatch.setattr(bot_module.httpx, "AsyncClient", FakeClient)
+        result = asyncio.run(bot_module.get_updates("TOKEN", offset=0))
+        assert result == []
+
+    def test_long_polling_loop_calls_delete_webhook(self, monkeypatch):
+        """Beim Start MUSS der alte Webhook entfernt werden (Telegram 409 sonst)."""
+        from zerberus.modules.telegram import bot as bot_module
+
+        deregistered = {"called": False}
+
+        async def fake_deregister(token, timeout=10.0):
+            deregistered["called"] = True
+            return True
+
+        async def fake_get_updates(*args, **kwargs):
+            # Direkt CancelledError werfen, damit der Loop nach einem Aufruf endet
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(bot_module, "deregister_webhook", fake_deregister)
+        monkeypatch.setattr(bot_module, "get_updates", fake_get_updates)
+
+        async def dummy_handler(update):
+            pass
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(bot_module.long_polling_loop("TOKEN", dummy_handler))
+        assert deregistered["called"], "deregister_webhook wurde nicht aufgerufen"
+
+    def test_long_polling_loop_advances_offset(self, monkeypatch):
+        """Nach Handler-Aufruf wird offset auf update_id+1 gesetzt."""
+        from zerberus.modules.telegram import bot as bot_module
+
+        offsets_seen = []
+        update_batches = [
+            [{"update_id": 10, "message": {"text": "a"}}],
+            [{"update_id": 17, "message": {"text": "b"}}],
+        ]
+
+        async def fake_deregister(token, timeout=10.0):
+            return True
+
+        async def fake_get_updates(token, offset=0, timeout=30, allowed_updates=None):
+            offsets_seen.append(offset)
+            if update_batches:
+                return update_batches.pop(0)
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(bot_module, "deregister_webhook", fake_deregister)
+        monkeypatch.setattr(bot_module, "get_updates", fake_get_updates)
+
+        handled = []
+
+        async def handler(update):
+            handled.append(update["update_id"])
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(bot_module.long_polling_loop("TOKEN", handler))
+        assert handled == [10, 17]
+        assert offsets_seen == [0, 11, 18]  # startet 0, dann update_id+1
+
+    def test_long_polling_handler_exception_does_not_break_loop(self, monkeypatch):
+        """Handler-Exception → wird geloggt, offset schreitet trotzdem fort."""
+        from zerberus.modules.telegram import bot as bot_module
+
+        async def fake_deregister(token, timeout=10.0):
+            return True
+
+        batches = [[{"update_id": 5, "message": {"text": "x"}}]]
+
+        async def fake_get_updates(token, offset=0, timeout=30, allowed_updates=None):
+            if batches:
+                return batches.pop(0)
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(bot_module, "deregister_webhook", fake_deregister)
+        monkeypatch.setattr(bot_module, "get_updates", fake_get_updates)
+
+        async def bad_handler(update):
+            raise RuntimeError("boom")
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(bot_module.long_polling_loop("TOKEN", bad_handler))
+        # Keine Assertion nötig — Test gilt als bestanden, wenn kein RuntimeError propagiert
+
+    def test_long_polling_loop_no_token_exits_silently(self):
+        """Ohne bot_token → Funktion kehrt sofort zurück, ohne Fehler."""
+        from zerberus.modules.telegram.bot import long_polling_loop
+
+        async def handler(update):
+            pass
+
+        # Kein Exception, kein Hang — läuft durch
+        asyncio.run(long_polling_loop("", handler))
+
+    def test_startup_huginn_polling_mode_creates_task(self, monkeypatch):
+        """mode=polling → startup_huginn erzeugt einen Background-Task + cached bot_user_id."""
+        from zerberus.modules.telegram import router as telegram_router
+        from zerberus.modules.telegram import bot as bot_module
+
+        class FakeSettings:
+            modules = {"telegram": {
+                "enabled": True,
+                "bot_token": "T",
+                "mode": "polling",
+            }}
+
+        async def fake_get_me(token, timeout=10.0):
+            return {"id": 999, "username": "FakeBot"}
+
+        loop_started = {"flag": False}
+
+        async def fake_loop(bot_token, handler, poll_timeout=30, error_backoff=5.0):
+            loop_started["flag"] = True
+            # Einmal yielden, damit der Task den Code erreicht, dann weitergeben
+            await asyncio.sleep(0.01)
+            # Zurueckkehren = Task done — Test-freundlich
+            return
+
+        monkeypatch.setattr(bot_module, "get_me", fake_get_me)
+        monkeypatch.setattr(telegram_router, "get_me", fake_get_me)
+        monkeypatch.setattr(bot_module, "long_polling_loop", fake_loop)
+        monkeypatch.setattr(telegram_router, "long_polling_loop", fake_loop)
+
+        async def run():
+            task = await telegram_router.startup_huginn(FakeSettings())
+            assert task is not None, "startup_huginn hat keinen Task zurueckgegeben"
+            assert isinstance(task, asyncio.Task), "Rueckgabe ist keine Task"
+            # _bot_user_id sollte gecacht sein
+            assert telegram_router._bot_user_id == 999, (
+                f"_bot_user_id nicht gecacht (ist {telegram_router._bot_user_id})"
+            )
+            # Task ausrunnen lassen
+            await task
+            assert loop_started["flag"], "fake_loop wurde nie aufgerufen"
+            assert task.done()
+
+        asyncio.run(run())
+
+    def test_startup_huginn_webhook_mode_returns_none(self, monkeypatch):
+        """mode=webhook → kein Polling-Task, alter Pfad greift."""
+        from zerberus.modules.telegram import router as telegram_router
+        from zerberus.modules.telegram import bot as bot_module
+
+        class FakeSettings:
+            modules = {"telegram": {
+                "enabled": True,
+                "bot_token": "T",
+                "mode": "webhook",
+                "webhook_url": "https://real.example.com/webhook",
+            }}
+
+        async def fake_get_me(token, timeout=10.0):
+            return {"id": 1, "username": "B"}
+
+        registered = {"called": False}
+
+        async def fake_register(token, url, timeout=10.0):
+            registered["called"] = True
+            return True
+
+        monkeypatch.setattr(bot_module, "get_me", fake_get_me)
+        monkeypatch.setattr(telegram_router, "get_me", fake_get_me)
+        monkeypatch.setattr(telegram_router, "register_webhook", fake_register)
+
+        result = asyncio.run(telegram_router.startup_huginn(FakeSettings()))
+        assert result is None, "mode=webhook darf keinen Task zurueckgeben"
+        assert registered["called"], "register_webhook wurde nicht aufgerufen"
+
+    def test_startup_huginn_disabled_returns_none(self):
+        """enabled=false → None, kein Task."""
+        from zerberus.modules.telegram import router as telegram_router
+
+        class FakeSettings:
+            modules = {"telegram": {"enabled": False}}
+
+        result = asyncio.run(telegram_router.startup_huginn(FakeSettings()))
+        assert result is None

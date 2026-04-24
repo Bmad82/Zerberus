@@ -24,7 +24,9 @@ from zerberus.modules.telegram.bot import (
     extract_message_info,
     format_code_response,
     get_file_url,
+    get_me,
     is_bot_mentioned,
+    long_polling_loop,
     register_webhook,
     send_telegram_message,
     was_bot_added_to_group,
@@ -99,18 +101,55 @@ def init_telegram(settings: Settings):
     logger.info("Telegram Bot initialisiert")
 
 
-async def startup_huginn(settings: Settings) -> None:
-    """Wird beim Server-Start aufgerufen, registriert den Webhook wenn enabled."""
+async def startup_huginn(settings: Settings) -> Optional["asyncio.Task"]:
+    """Wird beim Server-Start aufgerufen.
+
+    Patch 155: Default-Modus ist "polling" — startet einen Background-Task
+    mit long_polling_loop. Modus "webhook" bleibt als Fallback fuer Setups
+    mit oeffentlicher HTTPS-URL.
+
+    Returns:
+        Den Polling-Task bei mode="polling", sonst None.
+    """
+    import asyncio
     mod_cfg = settings.modules.get("telegram", {}) or {}
     if not mod_cfg.get("enabled", False):
-        logger.info("[HUGINN-123] Telegram-Modul deaktiviert - kein Webhook-Register")
-        return
+        logger.info("[HUGINN-123] Telegram-Modul deaktiviert - kein Bot-Start")
+        return None
     cfg = HuginnConfig.from_dict(mod_cfg)
-    webhook_url = mod_cfg.get("webhook_url", "")
-    if cfg.bot_token and webhook_url and not webhook_url.startswith("https://yourdomain"):
-        ok = await register_webhook(cfg.bot_token, webhook_url)
-        logger.info(f"[HUGINN-123] Webhook-Register: {ok}")
+    if not cfg.bot_token:
+        logger.warning("[HUGINN-155] bot_token fehlt - Bot nicht gestartet")
+        return None
+
+    # Manager schon mal anlegen (gemeinsam fuer beide Modi)
     _get_managers(settings)
+
+    # getMe() → _bot_user_id cachen fuer was_bot_added_to_group()
+    global _bot_user_id
+    me = await get_me(cfg.bot_token)
+    if me and me.get("id"):
+        _bot_user_id = int(me["id"])
+        logger.info(f"[HUGINN-155] Bot-Identitaet: @{me.get('username','?')} (id={_bot_user_id})")
+
+    mode = str(mod_cfg.get("mode", "polling")).lower()
+    if mode == "webhook":
+        webhook_url = mod_cfg.get("webhook_url", "")
+        if webhook_url and not webhook_url.startswith("https://yourdomain"):
+            ok = await register_webhook(cfg.bot_token, webhook_url)
+            logger.info(f"[HUGINN-123] Webhook-Register: {ok}")
+        else:
+            logger.warning("[HUGINN-155] mode=webhook aber keine gueltige webhook_url")
+        return None
+
+    # mode=polling (Default) — Background-Task starten
+    async def _handler(update: Dict[str, Any]) -> None:
+        await process_update(update, settings)
+
+    task = asyncio.create_task(
+        long_polling_loop(cfg.bot_token, _handler),
+        name="huginn-long-polling",
+    )
+    return task
 
 
 async def _run_guard(user_msg: str, assistant_msg: str) -> Dict[str, Any]:
@@ -193,15 +232,16 @@ async def _process_text_message(
     return {"sent": sent, "guard": guard, "latency_ms": llm_result.get("latency_ms", 0)}
 
 
-@router.post("/webhook")
-async def telegram_webhook(request: Request, settings: Settings = Depends(get_settings)):
-    """Empfaengt Telegram-Updates und routet sie durch den Huginn-Flow."""
+async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, Any]:
+    """Verarbeitet EIN Telegram-Update durch den Huginn-Flow.
+
+    Gemeinsamer Handler fuer Webhook (POST /webhook) und Long-Polling
+    (bot.long_polling_loop). Patch 155: aus telegram_webhook extrahiert,
+    damit der selbe Code beide Transport-Modi bedient.
+    """
     mod_cfg = settings.modules.get("telegram", {}) or {}
     if not mod_cfg.get("enabled", False):
-        raise HTTPException(403, "Telegram Modul deaktiviert")
-
-    data = await request.json()
-    logger.info(f"[HUGINN-123] Webhook: update_id={data.get('update_id')}")
+        return {"ok": False, "reason": "disabled"}
 
     # Event-Bus fuer legacy Listener
     bus = get_event_bus()
@@ -228,7 +268,7 @@ async def telegram_webhook(request: Request, settings: Settings = Depends(get_se
                     req.requester_chat_id,
                     build_group_decision_message(req),
                 )
-        return {"ok": True}
+        return {"ok": True, "kind": "callback"}
 
     info = extract_message_info(data)
     if not info:
@@ -301,6 +341,22 @@ async def telegram_webhook(request: Request, settings: Settings = Depends(get_se
         return {"ok": True, "result": result}
 
     return {"ok": True, "skipped": "unknown_chat_type"}
+
+
+@router.post("/webhook")
+async def telegram_webhook(request: Request, settings: Settings = Depends(get_settings)):
+    """Empfaengt Telegram-Updates und routet sie durch den Huginn-Flow.
+
+    Patch 155: Default-Transport ist jetzt Long-Polling (funktioniert hinter
+    Tailscale/NAT). Dieser Webhook-Endpunkt bleibt als Fallback fuer Setups
+    mit oeffentlicher HTTPS-URL (mode: "webhook" in config).
+    """
+    mod_cfg = settings.modules.get("telegram", {}) or {}
+    if not mod_cfg.get("enabled", False):
+        raise HTTPException(403, "Telegram Modul deaktiviert")
+    data = await request.json()
+    logger.info(f"[HUGINN-123] Webhook: update_id={data.get('update_id')}")
+    return await process_update(data, settings)
 
 
 @router.get("/set_webhook")
