@@ -348,3 +348,34 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Vor jeder CSS-Änderung: Gibt es das gleiche Element auch anderswo? → Gleicher Style.
 
 **Touch-Target-Regel:** Minimum 44px Höhe UND Breite für ALLE klickbaren Elemente (Apple HIG). Gilt für Nala UND Hel. Loki prüft das automatisch (`test_loki_mega_patch.TestTouchTargets`).
+
+## Settings-Singleton + YAML-Writer (Patch 156)
+
+**Regel:** Jede Funktion, die `config.yaml` schreibt, MUSS den Settings-Singleton invalidieren — sonst liefert der nächste `get_settings()`-Aufruf den alten gecachten Wert.
+
+**Warum:** `get_settings()` in [`zerberus/core/config.py`](zerberus/core/config.py) ist ein Modul-globaler Singleton (`_settings`), der `config.yaml` nur beim ersten Aufruf liest. Ein YAML-Write ohne anschließenden `reload_settings()` führt zu Stale-State: Hel-UI speichert ein neues Modell, der direkt darauf folgende `huginnReload()`-GET liefert den alten Wert, das Dropdown springt zurück. Der Bug ist still — der HTTP-Roundtrip gibt `200 OK` zurück, das Symptom ist nur kosmetisch sichtbar.
+
+**Pattern (seit Patch 156 Pflicht für alle YAML-Writer):**
+
+```python
+from zerberus.core.config import invalidates_settings
+
+@router.post("/admin/foo/config")
+@invalidates_settings  # ruft reload_settings() nach jedem Aufruf, sync + async
+async def post_foo_config(request: Request):
+    ...
+```
+
+Alternativ als Kontextmanager (granularer, falls nur ein Pfad in der Funktion schreibt):
+
+```python
+from zerberus.core.config import settings_writer
+
+with settings_writer():
+    with open("config.yaml", "w") as f:
+        yaml.safe_dump(cfg, f)
+```
+
+**Wo das schon fehlte (Patch 156-Sweep):** `post_huginn_config`, `post_vision_config`, `post_pacemaker_processes`, `post_pacemaker_config` (alle in [`hel.py`](zerberus/app/routers/hel.py)) und `_save_profile_hash` ([`nala.py`](zerberus/app/routers/nala.py)) — fünf Endpoints schrieben YAML ohne Cache-Invalidate. Inkonsistente Mischung mit zwei korrekten Endpoints (`reset_password`, `post_provider_blacklist` — manueller `reload_settings()`-Call). Der Decorator macht das Pattern uniform und Copy-Paste-sicher.
+
+**Test-Pattern:** POST → GET in einem Test, mit tmp-cwd-Fixture und `_settings = None`-Reset davor und danach. Siehe [`test_huginn_config_endpoint.py`](zerberus/tests/test_huginn_config_endpoint.py).

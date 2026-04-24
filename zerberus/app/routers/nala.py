@@ -25,7 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import httpx
 
-from zerberus.core.config import get_settings, Settings
+from zerberus.core.config import get_settings, invalidates_settings, Settings
 from zerberus.core.dialect import detect_dialect_marker, apply_dialect
 from zerberus.core.cleaner import clean_transcript
 from zerberus.core.event_bus import get_event_bus, Event
@@ -59,6 +59,7 @@ def _load_profiles() -> dict:
     return data.get("profiles", {})
 
 
+@invalidates_settings  # Patch 156: Cache nach YAML-Write neu laden
 def _save_profile_hash(profile_key: str, hashed: str) -> None:
     """Schreibt den bcrypt-Hash für ein Profil zurück in config.yaml."""
     import yaml

@@ -359,16 +359,9 @@ async def telegram_webhook(request: Request, settings: Settings = Depends(get_se
     return await process_update(data, settings)
 
 
-@router.get("/set_webhook")
-async def set_webhook(settings: Settings = Depends(get_settings)):
-    """Registriert den konfigurierten Webhook bei Telegram (manueller Trigger)."""
-    mod_cfg = settings.modules.get("telegram", {}) or {}
-    cfg = HuginnConfig.from_dict(mod_cfg)
-    webhook_url = mod_cfg.get("webhook_url", "")
-    if not cfg.bot_token or not webhook_url:
-        return {"ok": False, "reason": "bot_token oder webhook_url fehlt"}
-    ok = await register_webhook(cfg.bot_token, webhook_url)
-    return {"ok": ok, "webhook_url": webhook_url}
+# Patch 156: GET /set_webhook entfernt — Long-Polling ist Default-Modus.
+# Falls mode=webhook gesetzt ist, registriert startup_huginn() den Webhook
+# automatisch beim Start (siehe oben register_webhook-Aufruf).
 
 
 @router.get("/health")

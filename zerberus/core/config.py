@@ -1,7 +1,12 @@
 """
 Zentrale Konfiguration mit Pydantic und YAML.
 Patch 61: ProfileConfig mit temperature-Feld (Per-User Temperatur-Override).
+Patch 156: settings_writer / invalidates_settings — strukturelle Cache-Invalidierung
+fuer alle config.yaml-Writer (siehe lessons.md).
 """
+import asyncio
+from contextlib import contextmanager
+from functools import wraps
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from typing import Optional, Dict, List, Any
@@ -177,3 +182,46 @@ def reload_settings():
     global _settings
     _settings = load_settings()
     return _settings
+
+
+@contextmanager
+def settings_writer():
+    """Patch 156: Kontextmanager fuer alle config.yaml-Writer.
+
+    Verwendung:
+        with settings_writer():
+            with open("config.yaml", "w") as f:
+                yaml.dump(cfg, f)
+
+    Nach dem with-Block wird der Settings-Cache automatisch invalidiert,
+    damit der naechste get_settings()-Aufruf die neuen Werte sieht.
+    """
+    try:
+        yield
+    finally:
+        reload_settings()
+
+
+def invalidates_settings(func):
+    """Patch 156: Decorator fuer Funktionen, die config.yaml schreiben.
+
+    Sorgt dafuer, dass nach dem Funktionsaufruf der Settings-Singleton
+    neu aus der YAML geladen wird. Funktioniert sowohl fuer sync- als
+    auch async-Funktionen (z.B. FastAPI-Handler).
+    """
+    if asyncio.iscoroutinefunction(func):
+        @wraps(func)
+        async def _awrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                reload_settings()
+        return _awrapper
+
+    @wraps(func)
+    def _wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        finally:
+            reload_settings()
+    return _wrapper

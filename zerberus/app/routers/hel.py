@@ -19,7 +19,7 @@ import yaml
 
 from zerberus.core.config import get_settings
 from zerberus.core.database import get_all_sessions, get_session_messages, get_latest_metrics, get_metrics_summary, get_message_costs, get_last_cost
-from zerberus.core.config import get_settings, reload_settings, Settings
+from zerberus.core.config import get_settings, reload_settings, invalidates_settings, Settings
 from zerberus.core.cleaner import clean_transcript
 from zerberus.core.dialect import detect_dialect_marker, apply_dialect
 from zerberus.core.llm import LLMService
@@ -1061,9 +1061,6 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <button type="button" onclick="huginnReload()" style="padding:10px 18px;min-height:44px;background:#333;color:#eee;border:1px solid #555;border-radius:8px;cursor:pointer;">
                   &#8635; Neu laden
                 </button>
-                <button type="button" onclick="huginnSetWebhook()" style="padding:10px 18px;min-height:44px;background:#2c5282;color:#eee;border:none;border-radius:8px;cursor:pointer;">
-                  &#128279; Webhook registrieren
-                </button>
               </div>
               <div id="huginn-save-status" style="margin-top:10px;color:#8f8;min-height:1.4em;"></div>
             </div>
@@ -1398,24 +1395,8 @@ ADMIN_HTML = """<!DOCTYPE html>
             }
         }
 
-        async function huginnSetWebhook() {
-            const statusEl = document.getElementById('huginn-save-status');
-            statusEl.style.color = '#8f8';
-            statusEl.textContent = 'Registriere Webhook...';
-            try {
-                const r = await fetch('/telegram/set_webhook');
-                const data = await r.json();
-                if (data.ok) {
-                    statusEl.textContent = '\u2705 Webhook registriert: ' + data.webhook_url;
-                } else {
-                    statusEl.style.color = '#f88';
-                    statusEl.textContent = '\u26a0 ' + (data.reason || 'unbekannter Fehler');
-                }
-            } catch (e) {
-                statusEl.style.color = '#f88';
-                statusEl.textContent = '\u274c ' + e.message;
-            }
-        }
+        // Patch 156: Webhook-Registrierungs-Funktion entfernt — Long-Polling
+        // ist Default, Webhook-Setup erfolgt nicht mehr ueber das Hel-UI.
 
         async function loadModelsAndBalance() {
             const balanceEl = document.getElementById('balanceDisplay');
@@ -2989,6 +2970,7 @@ async def get_huginn_config():
 
 
 @router.post("/admin/huginn/config")
+@invalidates_settings  # Patch 156: Cache nach YAML-Write neu laden
 async def post_huginn_config(request: Request):
     """Patch 123: Speichert Huginn-Config in config.yaml.
     Akzeptiert nur definierte Felder - kein blindes YAML-Update."""
@@ -3219,6 +3201,7 @@ async def get_vision_config_endpoint():
 
 
 @router.post("/admin/vision/config")
+@invalidates_settings  # Patch 156: Cache nach YAML-Write neu laden
 async def post_vision_config(request: Request):
     """Speichert `vision:`-Block in config.yaml. Nur Vision-Modelle akzeptiert."""
     import yaml as _yaml
@@ -4072,6 +4055,7 @@ async def get_pacemaker_processes():
 
 
 @router.post("/admin/pacemaker/processes")
+@invalidates_settings  # Patch 156: Cache nach YAML-Write neu laden
 async def post_pacemaker_processes(request: Request):
     """Speichert Pacemaker-Prozess-Konfiguration in config.yaml."""
     data = await request.json()
@@ -4102,6 +4086,7 @@ async def get_pacemaker_config():
 
 
 @router.post("/admin/pacemaker/config")
+@invalidates_settings  # Patch 156: Cache nach YAML-Write neu laden
 async def post_pacemaker_config(request: Request):
     """Speichert keep_alive_minutes in config.yaml (wirkt nach Neustart)."""
     data = await request.json()
@@ -4219,6 +4204,7 @@ async def test_hash(request: Request):
 
 
 @router.post("/admin/auth/reset-password")
+@invalidates_settings  # Patch 156: Cache nach YAML-Write neu laden (ersetzt manuellen reload_settings())
 async def reset_password(request: Request):
     """Setzt das Passwort eines Profils neu (bcrypt, rounds=12)."""
     import bcrypt
@@ -4251,7 +4237,7 @@ async def reset_password(request: Request):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail=f"Fehler beim Speichern: {e}")
 
-    reload_settings()
+    # Patch 156: reload via @invalidates_settings — kein manueller Call mehr noetig
     logger.info(f"[DEBUG-83] Passwort für Profil '{profile_key}' zurückgesetzt.")
     return {"success": True, "profile": profile_key}
 
@@ -4272,6 +4258,7 @@ async def get_provider_blacklist():
 
 
 @router.post("/admin/provider_blacklist")
+@invalidates_settings  # Patch 156: Cache nach YAML-Write neu laden (ersetzt manuellen reload_settings())
 async def post_provider_blacklist(request: Request):
     """Speichert neue Provider-Blacklist in config.yaml und lädt Settings neu."""
     data = await request.json()
@@ -4297,7 +4284,7 @@ async def post_provider_blacklist(request: Request):
             os.unlink(temp_path)
         raise HTTPException(500, f"Fehler beim Schreiben: {e}")
 
-    reload_settings()
+    # Patch 156: reload via @invalidates_settings — kein manueller Call mehr noetig
     return {"status": "ok"}
 
 

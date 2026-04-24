@@ -1,8 +1,18 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 155 (2026-04-24) – Huginn Long-Polling + Lessons-Konsolidierung*
+*Letzte Aktualisierung: Patch 156 (2026-04-24) – Huginn Config-Save-Fix (struktureller Cache-Invalidate) + Webhook-Button entfernt*
 
 ## Aktueller Patch
+
+**Patch 156** — Huginn Config-Save-Fix + Webhook-Button-Removal (2026-04-24)
+
+- **Stale-Config-Bug (Root-Cause + struktureller Fix):** `get_settings()` in [`config.py`](zerberus/core/config.py) ist ein Modul-globaler Singleton (`_settings`). Vor Patch 156 schrieb [`post_huginn_config()`](zerberus/app/routers/hel.py) zwar `config.yaml`, invalidierte aber nie den Cache → der direkt darauf folgende `huginnReload()`-GET las den alten Wert, das Modell-Dropdown sprang zurück. Selbe Lücke in 4 weiteren YAML-Writern (`post_vision_config`, `post_pacemaker_processes`, `post_pacemaker_config`, `nala._save_profile_hash`). Strukturelle Lösung: zwei neue Helper in `config.py` — `@invalidates_settings` (Decorator, sync + async) und `settings_writer()` (Kontextmanager). Decorator ruft nach jedem Funktionsaufruf `reload_settings()`. Auf alle 5 buggy Endpoints angewendet, plus die zwei bereits korrekten (`reset_password`, `post_provider_blacklist`) als Konsistenz-Refactor — manuelle `reload_settings()`-Calls dort entfernt.
+- **Webhook-Button entfernt:** `Webhook registrieren`-Button im Huginn-Tab und JS-Funktion `huginnSetWebhook()` ersatzlos gelöscht (Long-Polling ist seit Patch 155 Default). Auch die dazugehörige Backend-Route `GET /telegram/set_webhook` aus [`telegram/router.py`](zerberus/modules/telegram/router.py) entfernt — `register_webhook()` selbst bleibt, weil `startup_huginn()` sie bei `mode=webhook` automatisch aufruft.
+- **Tests:** 5 neue Tests in [`test_huginn_config_endpoint.py`](zerberus/tests/test_huginn_config_endpoint.py) — Cache-Invalidate (POST→GET liefert neuen Wert), YAML-Persist, Button-Removal in HTML/JS, Route-Removal in telegram/router. **510 passed** offline (505 vorher + 5 neue).
+- **Scope:** IN Scope: Cache-Helper, Decorator-Anwendung auf 7 Endpoints, Button + Route-Removal, 5 Tests. NICHT: Mode-Switcher als UI-Dropdown (webhook-Modus wird nicht mehr per UI gesteuert — `config.yaml` editieren); Migration aller Inline-`reload_settings()`-Calls in nicht-betroffenen Modulen; structured `TelegramConfig`-Pydantic-Klasse.
+- **Live-Verifikation (USER):** (1) Hel → Huginn-Tab → Modell ändern → Speichern → Dropdown bleibt auf neuem Wert, springt **nicht** mehr zurück. (2) Reload-Button: zeigt weiterhin neuen Wert. (3) Kein „Webhook registrieren"-Button mehr im UI. (4) Telegram-Bot empfängt weiterhin Nachrichten (Long-Polling unverändert).
+
+---
 
 **Patch 155** — Huginn Long-Polling + Lessons-Konsolidierung (2026-04-24)
 
