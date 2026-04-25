@@ -13,10 +13,12 @@ HitL für destruktive Aktionen (Code-Ausführung, Gruppenbeitritt).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import httpx
@@ -25,6 +27,10 @@ logger = logging.getLogger("zerberus.huginn")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/{method}"
+
+# Patch 162: Persistenter Offset gegen Doppelverarbeitung nach Server-Restart.
+# Telegram liefert sonst alle nicht-bestätigten Updates erneut.
+OFFSET_FILE = Path("data/huginn_offset.json")
 
 # Patch 158: Huginn hat jetzt eine richtige Persona. Der alte "brave Rabe"-Prompt
 # ist weg; stattdessen der zynische Rabe. Kann in Hel ueberschrieben werden.
@@ -133,9 +139,14 @@ async def send_telegram_message(
     reply_to_message_id: Optional[int] = None,
     parse_mode: str = "Markdown",
     reply_markup: Optional[Dict[str, Any]] = None,
+    message_thread_id: Optional[int] = None,
     timeout: float = 10.0,
 ) -> bool:
-    """Schickt eine Nachricht an einen Chat. True wenn HTTP 200."""
+    """Schickt eine Nachricht an einen Chat. True wenn HTTP 200.
+
+    Patch 162: ``message_thread_id`` durchreichen, damit Antworten in Topics
+    (Forum-Gruppen) im richtigen Thread landen statt im General.
+    """
     if not bot_token:
         logger.warning("[HUGINN-123] Kein bot_token - send_telegram_message uebersprungen")
         return False
@@ -150,6 +161,8 @@ async def send_telegram_message(
         payload["reply_to_message_id"] = reply_to_message_id
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if message_thread_id is not None:
+        payload["message_thread_id"] = message_thread_id
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -202,7 +215,29 @@ async def deregister_webhook(bot_token: str, timeout: float = 10.0) -> bool:
 # ══════════════════════════════════════════════════════════════════
 
 # Erlaubte Update-Typen — deckt alles ab was process_update() verarbeitet.
-_POLL_ALLOWED_UPDATES = ["message", "channel_post", "callback_query", "my_chat_member"]
+# Patch 162: ``channel_post`` rausgenommen — wird in process_update() ohnehin
+# verworfen (D9), spart Telegram-Bandbreite und macht den Filter explizit.
+_POLL_ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member"]
+
+
+def _load_offset() -> int:
+    """Lädt den letzten verarbeiteten Update-Offset (Patch 162, D8)."""
+    try:
+        if OFFSET_FILE.exists():
+            data = json.loads(OFFSET_FILE.read_text(encoding="utf-8"))
+            return int(data.get("offset", 0))
+    except (json.JSONDecodeError, IOError, ValueError, TypeError):
+        logger.warning("[HUGINN-162] Offset-Datei korrupt, starte bei 0")
+    return 0
+
+
+def _save_offset(offset: int) -> None:
+    """Speichert den letzten verarbeiteten Update-Offset (Patch 162, D8)."""
+    try:
+        OFFSET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        OFFSET_FILE.write_text(json.dumps({"offset": offset}), encoding="utf-8")
+    except IOError as e:
+        logger.error("[HUGINN-162] Offset speichern fehlgeschlagen: %s", e)
 
 
 async def get_me(bot_token: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
@@ -290,9 +325,10 @@ async def long_polling_loop(
 
     # Alten Webhook entfernen — sonst liefert getUpdates HTTP 409 (Conflict)
     await deregister_webhook(bot_token)
-    logger.info("🐦 Huginn: Long-Polling gestartet")
 
-    offset = 0
+    offset = _load_offset()
+    logger.info("🐦 Huginn: Long-Polling gestartet (offset=%d)", offset)
+
     while True:
         try:
             updates = await get_updates(bot_token, offset=offset, timeout=poll_timeout)
@@ -303,6 +339,7 @@ async def long_polling_loop(
                     logger.exception(f"[HUGINN-155] Handler-Exception fuer update_id={update.get('update_id')}: {e}")
                 # Offset immer fortschreiben — sonst liefert Telegram dasselbe Update erneut
                 offset = update["update_id"] + 1
+                _save_offset(offset)
         except asyncio.CancelledError:
             logger.info("🐦 Huginn: Long-Polling gestoppt (cancelled)")
             raise
@@ -336,6 +373,9 @@ def extract_message_info(update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     Liefert None bei Updates die nicht verarbeitet werden sollen
     (edited messages ohne Text, reine Service-Events, etc.).
+
+    Patch 162: ``is_forwarded`` und ``message_thread_id`` werden mit-extrahiert
+    (Sanitizer-Metadata bzw. Topic-Routing).
     """
     msg = update.get("message") or update.get("channel_post")
     if not msg:
@@ -353,8 +393,45 @@ def extract_message_info(update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "photo_file_ids": [p["file_id"] for p in (msg.get("photo") or []) if p.get("file_id")],
         "reply_to_message": msg.get("reply_to_message"),
         "new_chat_members": msg.get("new_chat_members") or [],
+        "is_forwarded": "forward_origin" in msg or "forward_from" in msg or "forward_from_chat" in msg,
+        "message_thread_id": msg.get("message_thread_id"),
     }
     return info
+
+
+async def answer_callback_query(
+    callback_query_id: str,
+    bot_token: str,
+    text: Optional[str] = None,
+    show_alert: bool = False,
+    timeout: float = 10.0,
+) -> bool:
+    """Beantwortet eine Telegram-Callback-Query (Patch 162).
+
+    ``show_alert=True`` zeigt ein modales Popup statt eines kleinen Toasts —
+    sinnvoll für Sicherheits-Hinweise wie 'Nicht deine Anfrage' (O3).
+    """
+    if not bot_token or not callback_query_id:
+        return False
+    url = TELEGRAM_API_URL.format(token=bot_token, method="answerCallbackQuery")
+    payload: Dict[str, Any] = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    if show_alert:
+        payload["show_alert"] = True
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, json=payload)
+        if resp.status_code != 200:
+            logger.warning(
+                "[HUGINN-162] answerCallbackQuery HTTP %d: %s",
+                resp.status_code, resp.text[:200],
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.warning("[HUGINN-162] answerCallbackQuery Exception: %s", e)
+        return False
 
 
 def is_bot_mentioned(text: str, bot_username: str = "HuginnBot", bot_name: str = "Huginn") -> bool:

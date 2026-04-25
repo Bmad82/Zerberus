@@ -17,10 +17,12 @@ from pydantic import BaseModel
 
 from zerberus.core.config import get_settings, Settings
 from zerberus.core.event_bus import get_event_bus, Event
+from zerberus.core.input_sanitizer import get_sanitizer
 from zerberus.modules.telegram.bot import (
     DEFAULT_HUGINN_PROMPT,
     DEFAULT_SYSTEM_PROMPT,
     HuginnConfig,
+    answer_callback_query,
     call_llm,
     extract_message_info,
     format_code_response,
@@ -230,6 +232,30 @@ async def _process_text_message(
         system_prompt = _resolve_huginn_prompt(settings)
     user_msg = info.get("text", "") or ""
 
+    # Patch 162 (K1, K3, N8): Sanitizer-Pass vor jedem LLM-Call.
+    # Findings landen im Log, der User sieht sie nicht. ``blocked=True`` ist
+    # im Huginn-Modus aktuell nicht erreichbar — Pfad steht für Rosa bereit.
+    sanitizer = get_sanitizer()
+    sanitize_result = sanitizer.sanitize(
+        user_msg,
+        metadata={
+            "user_id": str(info.get("user_id") or ""),
+            "chat_type": info.get("chat_type", "private"),
+            "is_forwarded": bool(info.get("is_forwarded")),
+            "is_reply": info.get("reply_to_message") is not None,
+        },
+    )
+    if sanitize_result.blocked:
+        await send_telegram_message(
+            cfg.bot_token,
+            info["chat_id"],
+            "🚫 Nachricht wurde aus Sicherheitsgründen blockiert.",
+            reply_to_message_id=info.get("message_id"),
+            message_thread_id=info.get("message_thread_id"),
+        )
+        return {"sent": False, "reason": "sanitizer_blocked", "findings": sanitize_result.findings}
+    user_msg = sanitize_result.cleaned_text
+
     # Bilder → Vision: file_ids in URLs resolven
     image_urls: list[str] = []
     if info.get("photo_file_ids"):
@@ -273,6 +299,7 @@ async def _process_text_message(
         info["chat_id"],
         text_out,
         reply_to_message_id=info.get("message_id"),
+        message_thread_id=info.get("message_thread_id"),
     )
 
     # Patch 158: Zweistufiges Verhalten.
@@ -311,6 +338,36 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
     if not mod_cfg.get("enabled", False):
         return {"ok": False, "reason": "disabled"}
 
+    # Patch 162 (D9): channel_post wird komplett ignoriert — Bots haben in
+    # Channels nichts verloren, das Update käme nur über Webhook-Setups rein
+    # (Long-Polling filtert es bereits per allowed_updates raus).
+    if "channel_post" in data or "edited_channel_post" in data:
+        logger.debug("[HUGINN-162] channel_post ignoriert update_id=%s", data.get("update_id"))
+        return {"ok": True, "skipped": "channel_post"}
+
+    # Patch 162 (O2): edited_message wird geloggt aber NICHT erneut verarbeitet —
+    # sonst kann jemand seine Nachricht nachträglich auf einen Jailbreak ändern
+    # und Huginn würde nochmal antworten.
+    if "edited_message" in data:
+        edited = data["edited_message"]
+        logger.info(
+            "[HUGINN-162] edited_message ignoriert user=%s chat=%s preview=%r",
+            edited.get("from", {}).get("id"),
+            edited.get("chat", {}).get("id"),
+            (edited.get("text", "") or "")[:50],
+        )
+        return {"ok": True, "skipped": "edited_message"}
+
+    # Patch 162 (O1): Unbekannte Update-Typen lautlos ignorieren.
+    _KNOWN_UPDATE_TYPES = {"message", "callback_query", "my_chat_member"}
+    update_types_present = set(data.keys()) - {"update_id"}
+    if not update_types_present.intersection(_KNOWN_UPDATE_TYPES):
+        logger.debug(
+            "[HUGINN-162] Unbekannter Update-Typ ignoriert types=%s update_id=%s",
+            sorted(update_types_present), data.get("update_id"),
+        )
+        return {"ok": True, "skipped": "unknown_update_type"}
+
     # Event-Bus fuer legacy Listener
     bus = get_event_bus()
     await bus.publish(Event(type="telegram_message", data=data))
@@ -323,19 +380,43 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
     if callback:
         cb_data = callback.get("data", "")
         parsed = parse_callback_data(cb_data)
-        if parsed and str(callback.get("from", {}).get("id")) == str(cfg.admin_chat_id):
-            req = hitl_mgr.get(parsed["request_id"])
-            if req:
-                if parsed["action"] == "hitl_approve":
-                    hitl_mgr.approve(parsed["request_id"])
-                else:
-                    hitl_mgr.reject(parsed["request_id"])
-                # Bestaetigungs-Message in der anfragenden Gruppe
-                await send_telegram_message(
-                    cfg.bot_token,
-                    req.requester_chat_id,
-                    build_group_decision_message(req),
-                )
+        clicker_id = callback.get("from", {}).get("id")
+        if not parsed:
+            return {"ok": True, "kind": "callback", "skipped": "unparsed"}
+
+        req = hitl_mgr.get(parsed["request_id"])
+        if not req:
+            return {"ok": True, "kind": "callback", "skipped": "unknown_request"}
+
+        # Patch 162 (O3): Callback-Spoofing-Schutz. Klick darf nur vom Admin
+        # ODER dem ursprünglich Anfragenden kommen — sonst Popup + Log.
+        admin_id = cfg.admin_chat_id
+        allowed_ids = {str(admin_id)} if admin_id else set()
+        if req.requester_user_id is not None:
+            allowed_ids.add(str(req.requester_user_id))
+        if str(clicker_id) not in allowed_ids:
+            await answer_callback_query(
+                callback.get("id", ""),
+                cfg.bot_token,
+                text="🚫 Das ist nicht deine Anfrage.",
+                show_alert=True,
+            )
+            logger.warning(
+                "[HUGINN-162] Callback-Spoofing blockiert (O3) clicker=%s allowed=%s data=%s",
+                clicker_id, sorted(allowed_ids), parsed,
+            )
+            return {"ok": True, "kind": "callback", "skipped": "spoofing"}
+
+        if parsed["action"] == "hitl_approve":
+            hitl_mgr.approve(parsed["request_id"])
+        else:
+            hitl_mgr.reject(parsed["request_id"])
+        # Bestaetigungs-Message in der anfragenden Gruppe
+        await send_telegram_message(
+            cfg.bot_token,
+            req.requester_chat_id,
+            build_group_decision_message(req),
+        )
         return {"ok": True, "kind": "callback"}
 
     info = extract_message_info(data)
@@ -353,6 +434,7 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
                     requester_chat_id=info["chat_id"],
                     requester_username=info.get("chat_title", "?"),
                     details=f"Huginn wurde eingeladen zu: {info.get('chat_title','?')} (ID: {info['chat_id']})",
+                    requester_user_id=info.get("user_id"),
                 )
                 await send_telegram_message(
                     cfg.bot_token,
@@ -378,9 +460,20 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
 
         # Autonomer Einwurf muss vom LLM validiert werden
         if decision["needs_llm_decision"]:
-            prompt = build_smart_interjection_prompt(
-                group_mgr.recent_messages_text(info["chat_id"], limit=10)
+            # Patch 162 (K1): Auch der Gruppen-Kontext, der ans LLM geht, läuft
+            # durch den Sanitizer — Findings landen im Log, nicht beim User.
+            sanitizer = get_sanitizer()
+            recent_text = group_mgr.recent_messages_text(info["chat_id"], limit=10)
+            sanitized_recent = sanitizer.sanitize(
+                recent_text,
+                metadata={
+                    "user_id": str(info.get("user_id") or ""),
+                    "chat_type": info.get("chat_type", "group"),
+                    "is_forwarded": bool(info.get("is_forwarded")),
+                    "is_reply": False,
+                },
             )
+            prompt = build_smart_interjection_prompt(sanitized_recent.cleaned_text)
             llm_result = await call_llm(prompt, cfg.model)
             candidate = llm_result.get("content", "") or ""
             if is_skip_response(candidate):
@@ -396,6 +489,7 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
                 cfg.bot_token,
                 info["chat_id"],
                 format_code_response(candidate),
+                message_thread_id=info.get("message_thread_id"),
             )
             if guard.get("verdict") == "WARNUNG" and cfg.admin_chat_id:
                 try:

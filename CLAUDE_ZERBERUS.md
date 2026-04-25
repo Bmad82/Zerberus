@@ -69,7 +69,7 @@ Kein reiner Freitext-Dialog, wenn eine binäre/ternäre Entscheidung ausreicht.
 
 - `config.yaml` → `auth.static_api_key` — wenn gesetzt, akzeptiert die JWT-Middleware den `X-API-Key` Header als Alternative zu Bearer
 
-## Telegram/Huginn (Patch 155 + 158)
+## Telegram/Huginn (Patch 155 + 158 + 162)
 
 - `config.yaml` → `modules.telegram.mode`:
   - **`polling`** (Default): Long-Polling via `getUpdates`. Funktioniert hinter Tailscale/NAT ohne öffentliche URL. Beim Shutdown wird der Polling-Task cancelt.
@@ -78,6 +78,23 @@ Kein reiner Freitext-Dialog, wenn eine binäre/ternäre Entscheidung ausreicht.
 - Gemeinsamer Update-Handler: `zerberus.modules.telegram.router.process_update(data, settings)` — sowohl Webhook-Endpoint als auch Polling-Loop rufen ihn auf.
 - `config.yaml` → `modules.telegram.system_prompt` (Patch 158): Huginn-Persona (Default: zynischer Rabe). Editierbar in Hel → Huginn-Tab als Textarea. Default-Konstante: [`DEFAULT_HUGINN_PROMPT`](zerberus/modules/telegram/bot.py). 3-Wege-Resolver `_resolve_huginn_prompt(settings)` in [`router.py`](zerberus/modules/telegram/router.py): Key fehlt → Default, leerer String → leer bleibt leer (Opt-Out), sonst → Config-String.
 - **BotFather "Group Privacy"** muss AUS sein, damit der Bot in Gruppen Nachrichten ohne `@`-Mention sieht (nötig für `respond_to_name` und `autonomous_interjection`). Nach Umschalten: Bot aus Gruppe entfernen + neu hinzufügen (Telegram cached die Privacy-Stufe pro Gruppen-Beitritt). Siehe `lessons.md` → "Telegram Group Privacy".
+- **Update-Typ-Filter (Patch 162):** `process_update()` verwirft ganz oben `channel_post`, `edited_channel_post`, `edited_message` und unbekannte Update-Typen (`poll`, `my_chat_member`-only, etc.). `_POLL_ALLOWED_UPDATES` in [`bot.py`](zerberus/modules/telegram/bot.py) listet nur noch die durchgereichten Typen. Bei neuen Update-Typen: erst entscheiden ob Huginn sie verarbeiten soll, dann den Filter erweitern UND `_KNOWN_UPDATE_TYPES` in `process_update()` ergänzen.
+- **Offset-Persistenz (Patch 162):** `data/huginn_offset.json` speichert den letzten verarbeiteten `update_id`. Beim Boot lädt `long_polling_loop()` ihn via `_load_offset()` — gegen Doppelverarbeitung der nicht-bestätigten Update-Queue nach Server-Restart. Tests müssen `OFFSET_FILE` per `monkeypatch.setattr(bot_module, "OFFSET_FILE", tmp_path / "off.json")` umlenken, sonst kontaminieren sie die echte Datei.
+- **Forum-Topics / `message_thread_id` (Patch 162, D10):** `extract_message_info()` exposed `message_thread_id` und `is_forwarded`. Alle `send_telegram_message`-Calls in `router.py` reichen `message_thread_id=info.get("message_thread_id")` durch — ohne das landet die Antwort im General statt im Topic. Telegram ignoriert den Key bei `None`, wir setzen ihn deshalb nur ins Payload wenn truthy.
+
+## Input-Sanitizer (Patch 162)
+
+- [`zerberus/core/input_sanitizer.py`](zerberus/core/input_sanitizer.py) — Interface `InputSanitizer` (Rosa-Skelett) + `RegexSanitizer` (Huginn-jetzt). Singleton via `get_sanitizer()`.
+- **Aufgerufen wird er VOR jedem LLM-Call:** in [`_process_text_message()`](zerberus/modules/telegram/router.py) für Direktnachrichten, im autonomen Gruppen-Einwurf-Pfad für den `recent_messages_text`-Kontext. Wer einen neuen LLM-Pfad baut, ruft `get_sanitizer().sanitize(text, metadata={...})` davor auf.
+- **Findings werden geloggt, nicht geblockt** (Tag `[SANITIZE-162]`). Im Huginn-Modus ist `blocked` immer `False` — der Guard (Mistral Small) entscheidet final. Der `blocked=True`-Pfad ist im Sanitizer-Konsumenten implementiert (sendet „🚫 Nachricht wurde aus Sicherheitsgründen blockiert.") und kommt mit Rosa zum Tragen, sobald der Config-Key `security.input_sanitizer.mode = "ml"` exists.
+- **Patterns sind bewusst konservativ:** Lieber ein Pattern weniger als ein False-Positive auf normales Deutsch (z. B. „Kannst du das ignorieren?" darf NICHT triggern). Neue Patterns: erst gegen [`test_input_sanitizer.py::TestInjectionDetection::test_sanitize_normal_german_no_false_positive`](zerberus/tests/test_input_sanitizer.py) prüfen.
+- **Metadata-Felder:** `user_id`, `chat_type`, `is_forwarded`, `is_reply`. `is_forwarded=True` → Finding `FORWARDED_MESSAGE` (K3-Vektor: Chat-Übernahme via Reply-Chain). Future-Use: ML-Sanitizer kann anhand von Chat-Typ/Reply-Status unterschiedlich strikt sein.
+
+## Callback-Spoofing-Schutz (Patch 162, O3)
+
+- `HitlRequest` hat `requester_user_id: Optional[int]`. `process_update()` validiert bei `callback_query`: clicker_id muss in `{admin_chat_id, requester_user_id}` sein, sonst Popup („🚫 Das ist nicht deine Anfrage.") via [`answer_callback_query()`](zerberus/modules/telegram/bot.py) mit `show_alert=True`.
+- **Wer neue HitL-Pfade baut** (Code-Ausführung, Datei-Operationen, etc.) MUSS `requester_user_id=info.get("user_id")` an `create_request()` übergeben — sonst fällt der Schutz zurück auf nur-Admin (was für DM-only-HitL ok ist, aber In-Group-Buttons wären offen).
+- **String-Vergleich:** Telegram liefert `from.id` als int, `admin_chat_id` ist oft als String konfiguriert. Im Validator `str(...)` auf beiden Seiten anwenden.
 
 ## Guard-Kontext (Patch 158)
 

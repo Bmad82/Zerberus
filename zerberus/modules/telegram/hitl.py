@@ -32,6 +32,9 @@ class HitlRequest:
     status: str = "pending"  # pending | approved | rejected | timeout
     resolved_at: Optional[float] = None
     admin_comment: str = ""
+    # Patch 162 (O3): User-ID des Anfragenden — gegen Callback-Spoofing in
+    # Gruppen. Default None: alte Aufrufer ohne user_id-Wissen brechen nicht.
+    requester_user_id: Optional[int] = None
 
 
 class HitlManager:
@@ -49,6 +52,7 @@ class HitlManager:
         requester_username: str,
         details: str,
         payload: Optional[Dict[str, Any]] = None,
+        requester_user_id: Optional[int] = None,
     ) -> HitlRequest:
         req = HitlRequest(
             request_id=uuid.uuid4().hex[:12],
@@ -57,6 +61,7 @@ class HitlManager:
             requester_username=requester_username,
             details=details,
             payload=payload or {},
+            requester_user_id=requester_user_id,
         )
         self._requests[req.request_id] = req
         self._events[req.request_id] = asyncio.Event()

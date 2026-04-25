@@ -26,6 +26,8 @@ logs/
 data/vectors/
 # Patch 133: Index-Backups (lokal, binär, nie ins Repo)
 data/backups/
+# Patch 162: Huginn-Long-Polling Offset (Runtime-State)
+data/huginn_offset.json
 
 # Huggingface / ML Models
 .cache/
