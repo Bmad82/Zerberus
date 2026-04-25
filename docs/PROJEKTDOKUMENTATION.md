@@ -3471,3 +3471,62 @@ Patch 162 wurde committet und gepusht ohne Eintrag in `docs/PROJEKTDOKUMENTATION
 **Neue Dateien:** keine
 
 *Stand: 2026-04-25, Patch 162b — Doku-Disziplin korrigiert: PROJEKTDOKUMENTATION-Eintrag ist ab jetzt fester Bestandteil jedes Patches.*
+
+---
+
+## Patch 163 — Bibel-Fibel-Kompression (CLAUDE_ZERBERUS.md + lessons.md)
+*2026-04-25*
+
+### Problem
+`CLAUDE_ZERBERUS.md` und `lessons.md` werden von Claude Code bei jedem Patch eingelesen und in den Kontext geladen. Beide Dateien waren in voller deutscher Prosa geschrieben — mit Artikeln, Stoppwörtern, ausformulierten Listen und teilweise redundanten Lessons. Geschätzter Token-Verbrauch zusammen: 10.000–15.000 Token pro Patch. Da der einzige Leser dieser beiden Dateien ein LLM ist, ist Prosa-Form unnötig — Pipe-Format, Stichpunkte und Abkürzungen werden mindestens genauso gut verstanden.
+
+### Lösung
+Reiner Doku-Patch ohne Code-Änderung. Beide Dateien wurden nach Bibel-Fibel-Regeln komprimiert:
+
+- **Artikel weg:** „Der Guard prüft die Antwort" → „Guard prüft Antwort"
+- **Stoppwörter weg:** „es ist wichtig dass" → entfällt
+- **Listen → Pipes:** „Es gibt drei Modi: polling, webhook und hybrid" → „Modi: polling|webhook|hybrid"
+- **Prosa → Stichpunkte:** Absätze werden zu `- Kern|Detail|Referenz`
+- **Redundanz weg:** Lessons, die dieselbe Information in zwei Sektionen wiederholen, einmal behalten
+- **Überschriften bleiben** (für Grep/Search), Code-Blöcke bleiben (Pfade, Befehle, Config-Keys), Patch-Nummern bleiben (Navigation)
+
+### Umsetzung
+**[`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md):** 165 → 148 Zeilen (~25% weniger Bytes, 14.973 → 11.232). Neue Sektion „Token-Effizienz" eingefügt mit Regeln für künftige Patches:
+- Datei bereits im Kontext → nicht nochmal lesen
+- Doku-Updates am Patch-Ende, ein Read→Write-Zyklus pro Datei
+- Neue Einträge in CLAUDE_ZERBERUS.md + lessons.md IMMER im komprimierten Format schreiben
+- SUPERVISOR/PROJEKTDOKU/README/Patch-Prompts bleiben Prosa (menschliche Leser)
+- Die alte Zeile „Vor Arbeitsbeginn: `lessons/`-Ordner auf relevante Einträge prüfen" wurde durch „lessons/ nur bei Bedarf prüfen|nicht rituell bei jedem Patch" ersetzt — das verhindert reflexhaftes Einlesen der globalen Lessons.
+
+**[`lessons.md`](../lessons.md):** 429 → 258 Zeilen (~40% weniger Zeilen, ~45% weniger Bytes, 60.639 → 33.552). Mehrere Sektions-Konsolidierungen:
+- „Konfiguration" und „Konfiguration (Fortsetzung)" zusammengeführt
+- „RAG" und „RAG (Fortsetzung)" zusammengeführt
+- Mega-Patch-Sessions (122–129, 131–136, 137–152) in eine konsolidierte Sektion „Mega-Patch-Erkenntnisse" mit Sub-Kategorien (Effizienz / Strategie / Test-Pattern / Polish-Migration / Modellwahl-Scope) verschmolzen — die einzelnen Session-Logs hatten sich teilweise überlappt
+- Tabelle „Monster-Patch Session-Bilanz" entfernt (war Snapshot, nicht handlungsleitend)
+
+**Stichproben-Grep zur Qualitätssicherung** (alle ✓):
+- `invalidates_settings` → CLAUDE_ZERBERUS.md (Settings-Cache-Regel intakt)
+- `OFFSET_FILE` → lessons.md (Patch-162-Lesson intakt)
+- `MiniLM.*schwach` → lessons.md (Cross-Encoder-Lesson intakt)
+- `struct.*log` → lessons.md (structlog-Lesson intakt)
+
+### Scope
+**IN Scope:**
+- CLAUDE_ZERBERUS.md komplett komprimiert
+- lessons.md komplett komprimiert + Redundanzen eliminiert
+- Neue Sektion „Token-Effizienz" in CLAUDE_ZERBERUS.md
+- PROJEKTDOKUMENTATION.md-Eintrag (in Prosa, dieser Eintrag)
+- README-Footer auf Patch 163
+
+**NICHT in Scope:**
+- SUPERVISOR_ZERBERUS.md bleibt Prosa (wird von Chris/Supervisor-Claude gelesen)
+- PROJEKTDOKUMENTATION.md bleibt Prosa (Archiv für Menschen)
+- Code-Änderungen (reiner Doku-Patch, kein Test-Delta — 538 offline-Baseline unverändert)
+
+### Erwartete Wirkung
+Pro Patch sollten ~5.000–7.000 Token weniger im Kontext landen, sobald CLAUDE_ZERBERUS.md und lessons.md geladen werden. Bei einem typischen Patch mit ~30k Token Verbrauch entspricht das ~15–20% Einsparung. Bei Mega-Patches mit 16+ Patches in einer Session ist die Einsparung absolut größer, weil die Dateien dann nur einmal initial gelesen werden. Sekundäreffekt: neue Lessons werden ab jetzt direkt im komprimierten Format hinzugefügt — die Verdichtung bleibt erhalten.
+
+**Geänderte Dateien:** `CLAUDE_ZERBERUS.md`, `lessons.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`
+**Neue Dateien:** keine
+
+*Stand: 2026-04-25, Patch 163 — CLAUDE_ZERBERUS.md und lessons.md auf Bibel-Fibel-Format komprimiert, ~40% Zeilen-Reduktion, alle Stichproben-Greps grün, Tests unverändert (538 offline-Baseline).*

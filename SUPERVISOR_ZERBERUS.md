@@ -1,8 +1,23 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 162 (2026-04-25) – Input-Sanitizer + Telegram-Hardening*
+*Letzte Aktualisierung: Patch 163 (2026-04-25) – Bibel-Fibel-Kompression CLAUDE_ZERBERUS.md + lessons.md*
 
 ## Aktueller Patch
+
+**Patch 163** — Bibel-Fibel-Kompression CLAUDE_ZERBERUS.md + lessons.md (2026-04-25)
+
+- **Reiner Doku-Patch, kein Code-Change.** Querschnitts-Aufgabe „Token-Effizienz". `CLAUDE_ZERBERUS.md` und `lessons.md` werden bei jedem Patch von Claude Code in den Kontext geladen — beide waren in voller deutscher Prosa geschrieben mit ~10–15k Token Verbrauch. Da der einzige Leser dieser beiden Dateien ein LLM ist, wurde Prosa nach Bibel-Fibel-Regeln zu Pipe-Format/Stichpunkten verdichtet.
+- **Kompressionsregeln angewandt:** Artikel weg („Der Guard prüft die Antwort" → „Guard prüft Antwort"), Stoppwörter weg, Listen → Pipes (`Modi: polling|webhook|hybrid`), Prosa → Stichpunkte (`- Kern|Detail|Referenz`), Redundanzen zwischen Lessons eliminiert. Überschriften, Code-Blöcke (Pfade/Befehle/Config-Keys) und Patch-Nummern bleiben unverändert (Grep/Search).
+- **CLAUDE_ZERBERUS.md:** 165 → 148 Zeilen, 14.973 → 11.232 Bytes (~25% weniger). Neue Sektion „Token-Effizienz" als Top-Level-Block: Datei bereits im Kontext → nicht nochmal lesen; Doku-Updates am Patch-Ende; neue Einträge IMMER im komprimierten Format. Die alte Zeile „Vor Arbeitsbeginn lessons/-Ordner prüfen" wurde durch „lessons/ nur bei Bedarf prüfen|nicht rituell" ersetzt — gegen reflexhaftes Einlesen der globalen Lessons.
+- **lessons.md:** 429 → 258 Zeilen, 60.639 → 33.552 Bytes (~40% weniger Zeilen, ~45% weniger Bytes). Sektions-Konsolidierungen: „Konfiguration" + „Konfiguration (Fortsetzung)" → eine Sektion; „RAG" + „RAG (Fortsetzung)" → eine Sektion. Mega-Patch-Sessions (122–129, 131–136, 137–152) in eine konsolidierte Sektion „Mega-Patch-Erkenntnisse" mit Sub-Kategorien (Effizienz / Strategie / Test-Pattern / Polish-Migration / Modellwahl-Scope) verschmolzen — die einzelnen Session-Logs hatten sich teilweise überlappt. Tabelle „Monster-Patch Session-Bilanz" entfernt (Snapshot, nicht handlungsleitend).
+- **SUPERVISOR_ZERBERUS.md, PROJEKTDOKUMENTATION.md, README.md, Patch-Prompts** bleiben Prosa — sie werden von Menschen gelesen (Chris/Supervisor-Claude). Nur die beiden Dateien mit reinem LLM-Lesepublikum wurden komprimiert.
+- **Stichproben-Grep zur Qualitätssicherung (alle ✓):** `invalidates_settings` → CLAUDE_ZERBERUS.md (Settings-Cache-Regel), `OFFSET_FILE` → lessons.md (Patch-162-Lesson), `MiniLM.*schwach` → lessons.md (Cross-Encoder-Lesson), `struct.*log` → lessons.md (structlog-Lesson). Keine Information verloren.
+- **Tests:** Keine Test-Änderungen (Doku-Patch). Bestand: **538 passed** offline (aus Patch 162), unverändert.
+- **Scope:** IN Scope: CLAUDE_ZERBERUS.md, lessons.md, README-Footer, PROJEKTDOKUMENTATION-Eintrag, SUPERVISOR-Eintrag (dieser). NICHT: Code-Änderungen, Komprimierung anderer Doku-Dateien.
+- **Erwartete Wirkung:** ~5–7k Token weniger im Kontext pro Patch. Bei typischem ~30k-Patch ≈ 15–20% Einsparung. Bei Mega-Patches (16+ Patches in einer Session) absolut größere Einsparung, weil Dateien nur einmal initial geladen werden. Sekundäreffekt: neue Lessons werden ab jetzt direkt im komprimierten Format hinzugefügt — die Verdichtung bleibt erhalten.
+- **Live-Verifikation (USER):** (1) `wc -l CLAUDE_ZERBERUS.md lessons.md` → 148 + 258 (vorher 165 + 429). (2) `grep "Token-Effizienz" CLAUDE_ZERBERUS.md` → neue Sektion existiert. (3) `grep "OFFSET_FILE" lessons.md` und `grep "invalidates_settings" CLAUDE_ZERBERUS.md` → Inhalte intakt.
+
+---
 
 **Patch 162** — Input-Sanitizer + Telegram-Hardening (2026-04-25)
 

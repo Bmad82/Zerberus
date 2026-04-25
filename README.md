@@ -366,4 +366,4 @@ Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-25, Patch 162 (Input-Sanitizer + Telegram-Hardening)*
+*Zerberus Pro 4.0 – Stand: 2026-04-25, Patch 163 (Bibel-Fibel-Kompression CLAUDE_ZERBERUS.md + lessons.md)*
