@@ -20,6 +20,24 @@
 - PROJEKTDOKUMENTATION.md = vollständiges Archiv, nur bei Bedarf konsultiert
 - Vollständige Doku: `docs/PROJEKTDOKUMENTATION.md`
 
+## Auto-Test-Policy (P165)
+- GRUNDSATZ: Alles was Coda testen kann → Coda testet|Mensch nur für Untestbares
+- CODA TESTET:
+  - Unit/Integration-Tests (pytest)|API-Calls gegen echte Services (OpenRouter/Telegram/Whisper)
+  - System-Prompt-Validation (LLM-Output-Format)|Config-Konsistenz (YAML-Keys vs Code)
+  - Doku-Konsistenz (Patch-Nummern|Datei-Referenzen|tote Links|README-Footer)
+  - Regressions-Sweep nach jedem Patch|Import/AST-Checks|Log-Tag-Konsistenz
+  - Live-Validation-Scripts in `scripts/` (wie `validate_intent_router.py`)
+- MENSCH TESTET (nicht delegierbar):
+  - UI-Rendering auf echtem Gerät (iPhone/Android)|Touch-Feedback|visuelles Layout
+  - Telegram-Gruppen-Dynamik mit echten Usern (Forwards|Edits|Multi-User)
+  - Whisper mit echtem Mikrofon + Umgebungsgeräusche
+  - UX-Gefühl ("fühlt sich richtig an")
+- NACH JEDEM PATCH: Coda führt `pytest zerberus/tests/ -v --tb=short` aus|bei Failures: fixen BEVOR Commit
+- LIVE-VALIDATION: Bei neuen Features die externe APIs nutzen → Validation-Script in `scripts/` anlegen + ausführen
+- DOKU-CHECKER: `scripts/check_docs_consistency.py` (P165) prüft Patch-Nummer-Sync|Tote Links|Log-Tag-Konsistenz|Imports|Settings-Keys|nach jedem Patch laufen lassen, additiv zu pytest
+- RETROAKTIV: Code-Stellen ohne Tests gefunden → Tests nachrüsten (kein separater Patch nötig)
+
 ## Projektpfad
 ```
 C:\Users\chris\Python\Rosa\Nala_Rosa\Zerberus

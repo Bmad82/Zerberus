@@ -224,6 +224,15 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Gruppen-Einwurf-Filter: autonome Antworten nur bei {CHAT,SEARCH,IMAGE}|CODE/FILE/ADMIN unterdrückt|Bot darf in Gruppen nicht autonom Code ausführen
 - Logging-Tags: `[INTENT-164]` (Parser+Router), `[EFFORT-164]` (Effort-Bucketing low/mid/high), `[HITL-POLICY-164]` (Policy-Decisions)
 
+## Auto-Test-Policy (P165)
+- Mensch=unzuverlässiger Tester|Coda=systematisch+unbestechlich
+- Alles was automatisiert testbar ist MUSS automatisiert getestet werden
+- Nur UI-Rendering/echte Geräte/echte Mikrofone/UX-Gefühl bleiben beim Menschen
+- Live-Validation-Scripts in `scripts/` für API-abhängige Features (Beispiel: [`scripts/validate_intent_router.py`](scripts/validate_intent_router.py))
+- Doku-Konsistenz-Checker [`scripts/check_docs_consistency.py`](scripts/check_docs_consistency.py): Patch-Nummer-Sync|tote Links|Log-Tag-Validierung|Import-Resolvability|Settings-Keys|nach jedem Patch additiv zu pytest
+- Retroaktiv: Code ohne Tests → Tests nachrüsten bei Gelegenheit (kein eigener Patch nötig)
+- P165-Sweep: 88 neue Tests (test_dialect_core, test_prompt_features, test_hitl_manager, test_language_detector, test_db_helpers) für vorher untestete Pure-Function-Module
+
 ## Sync-Pflicht nach jedem Push (P164)
 - Coda-Setup pusht zuverlässig nach Zerberus, vergisst aber `sync_repos.ps1`|Ratatoskr+Claude-Repo driften unbemerkt
 - Regel: Sync ist LETZTER Schritt jedes Patches|Patch gilt erst als abgeschlossen wenn alle 3 Repos synchron|nicht „am Session-Ende" oder „nach 5 Patches"

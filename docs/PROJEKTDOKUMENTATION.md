@@ -3681,3 +3681,73 @@ Der Bot kann ab jetzt seine eigene Aktion klassifizieren (CHAT vs. CODE vs. ADMI
 **Neue Dateien:** `zerberus/core/intent.py`, `zerberus/core/intent_parser.py`, `zerberus/core/hitl_policy.py`, `zerberus/tests/test_intent.py`, `zerberus/tests/test_intent_parser.py`, `zerberus/tests/test_hitl_policy.py`
 
 *Stand: 2026-04-25, Patch 164 — Phase-B-Auftakt. 39 neue Tests grün, 628 passed im offline-friendly-Subset (keine Regression). Nächster Schritt: Phase B-Mitte (Patch 165+), Config-driven Policy-Severity und LLM-getriebene HitL-Bestätigungs-Texte.*
+
+---
+
+## Patch 165 — Auto-Test-Policy + Retroaktiver Test-Sweep + Doku-Checker (2026-04-25)
+
+**Querschnitts-Patch (Qualitätssicherung), kein Feature-Code.** Drei Blöcke: (0) Auto-Test-Policy festschreiben, (1) Tests für bisher untestete Module nachrüsten, (2) ein automatischer Doku-Konsistenz-Checker als Netz-Check zusätzlich zu pytest. Hintergrund: bei Patch 164b kam die Live-Validation des Intent-Routers nicht via Mensch, sondern via Live-Script — diese Arbeitsteilung („Coda testet alles Maschinelle, Mensch nur das Untestbare") war bisher nirgends durchformuliert.
+
+### Block 0 — Auto-Test-Policy
+
+Neue Bibel-Fibel-Sektion in [`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md), Prosa-Block in [`SUPERVISOR_ZERBERUS.md`](../SUPERVISOR_ZERBERUS.md), Lesson in [`lessons.md`](../lessons.md). Kernsatz: **Alles, was Coda testen kann, wird von Coda getestet — der Mensch testet nur, was nicht delegierbar ist.**
+
+- **Coda testet:** Unit/Integration-Tests, Live-API-Validation-Scripts, System-Prompt-Validation, Config-Konsistenz, Doku-Konsistenz (Patch-Nummern, Datei-Referenzen, tote Links), Regressions-Sweeps nach jedem Patch, Import/AST-Checks, Log-Tag-Konsistenz.
+- **Mensch testet (nicht delegierbar):** UI-Rendering auf echten Geräten (iPhone Safari + Android Chrome), Touch-Feedback, Telegram-Gruppendynamik mit echten Usern (Forwards, Edits, Multi-User), Whisper mit echtem Mikrofon + Umgebungsgeräusche, UX-Gefühl („fühlt sich richtig an").
+- **Pflicht-Workflow:** nach jedem Patch `pytest zerberus/tests/ -v --tb=short`; bei Failures wird gefixt **vor** dem Commit. Bei neuen Features mit externen APIs: Live-Validation-Script in `scripts/` ablegen + ausführen (Vorbild: [`scripts/validate_intent_router.py`](../scripts/validate_intent_router.py) aus P164b).
+- **Retroaktiv:** wenn Code-Stellen ohne Tests gefunden werden, rüstet Coda die Tests bei Gelegenheit nach — kein eigener Patch nötig, kein Approval-Gate.
+
+### Block 1 — Retroaktiver Test-Sweep
+
+Inventar der `zerberus/`-Module ohne eigene `test_<modul>.py`-Datei: 21 Kandidaten. Davon nach Analyse 11 mit testbarer Logik, 10 entweder bereits indirekt abgedeckt (z. B. `vision_models.py` über `test_vision.py`, `category_router.py` über `test_category_detect.py`, `group_handler.py` über `test_telegram_bot.py`) oder Skip-Kandidaten (Glue-Code wie `dependencies.py`, Setup-Module wie `logging.py`, Live-Server/Docker-Abhängigkeiten wie `sandbox/executor.py`, APScheduler-Jobs wie `sentiment/overnight.py`).
+
+**5 neue Test-Dateien mit 88 Tests gesamt:**
+
+- [`test_dialect_core.py`](../zerberus/tests/test_dialect_core.py) — **17 Tests**: Marker-Erkennung 5×Bär/Brezel/✨ (P103: ×4 darf NICHT triggern), Wortgrenzen-Matching (`ich` darf nicht in `nich` matchen), Multi-Wort-Keys werden vor Einzel-Wörtern gematcht (`haben wir` → `hamm wa`), Umlaut-Boundaries, Legacy-Patterns-Format, graceful Behavior bei fehlender `dialect.json`.
+- [`test_prompt_features.py`](../zerberus/tests/test_prompt_features.py) — **8 Tests**: Decision-Box-Hint nur bei aktivem `features.decision_boxes`-Flag, kein Append wenn Feature deaktiviert oder `features` fehlt, Doppel-Injection-Schutz via `[DECISION]`-Marker-Check, Hint-Konstante enthält Marker-Vokabular.
+- [`test_hitl_manager.py`](../zerberus/tests/test_hitl_manager.py) — **26 Tests**: HitlManager-Lifecycle (create unique IDs, default status pending, payload-Default leeres Dict, `requester_user_id` durchgereicht), approve/reject (status, comment, resolved_at, Event-Set), Doppel-Approve schlägt fehl, `wait_for_decision` mit Timeout/Approve/Unknown-ID, `parse_callback_data` für `hitl_approve:rid` / `hitl_reject:rid`, Inline-Keyboard-Builder, Admin-Message-Builder mit 1500-Char-Truncation, Group-Decision-Messages für approved/rejected/timeout. Bisher gab es nur `test_hitl_policy.py` (reine Policy-Decisions); die Manager-Klasse selbst war ungetestet.
+- [`test_language_detector.py`](../zerberus/tests/test_language_detector.py) — **17 Tests**: DE/EN-Erkennung für RAG-Dokumente (P126), Code-Token-Filter verhindert .py→EN-Fehlklassifikation, Umlaut-Boost (+3) tippt das Gleichgewicht zu DE, Default-Fallback DE bei < 5 Tokens, `_strip_wrappers` für YAML-Frontmatter (count=1, zweiter Block bleibt drin), `language_confidence` liefert Scores für Debug.
+- [`test_db_helpers.py`](../zerberus/tests/test_db_helpers.py) — **20 Tests**: `compute_metrics` (Wortzahl, Satz-Counts via `[.!?]`, TTR perfekt vs. mit Wiederholung, Hapax-Counts, Yule-K finit, Shannon-Entropy = log₂(n) bei Gleichverteilung), `_compute_sentiment` (P85-Dämpfung: score 0.5 → 0.3, capped bei 1.0), graceful Fallback bei fehlendem Sentiment-Modul (sys.modules-Mock auf None bzw. raising-Stub).
+
+### Block 2 — Doku-Konsistenz-Checker
+
+Neues Script [`scripts/check_docs_consistency.py`](../scripts/check_docs_consistency.py) mit fünf Checks:
+
+1. **README-Footer-Patch == SUPERVISOR-Header-Patch.** Beide nennen die aktuelle Patch-Nummer; Drift führt zu Konfusion beim Supervisor.
+2. **In `CLAUDE_ZERBERUS.md` referenzierte Markdown-Links zeigen auf existierende Dateien.** Tote `[label](pfad/foo.py)`-Verweise wandern sonst unbemerkt durch.
+3. **Log-Tags `[XYZ-NNN]` referenzieren existierende Patches.** Verhindert Tippfehler wie `[INTENT-999]`. Tags wie `[INTENT-164]`, `[HUGINN-162]`, `[DEDUP-113]` werden gegen die höchste bekannte Patch-Nummer aus dem SUPERVISOR-Header validiert. Hotfixes (`162a`/`162b`) sind erlaubt.
+4. **Externe Top-Level-Imports in `zerberus/*.py` sind im venv installiert** — via `importlib.util.find_spec`. Findet `pip install` vergessen / Tippfehler / fehlende Optional-Dependency.
+5. **Settings-Pfade aus dem Code (`settings.legacy.models.cloud_model`-Heuristik) existieren in `config.yaml`** — mit Allowlist für Pydantic-Default-only-Keys (`settings.features.*`) und Filter für Dict-Method-Calls (`settings.modules.get(...)` ist kein Settings-Key, sondern Dict-Access).
+
+Script ist additiv zu pytest, läuft in < 1 s, Exit-Code 0/1. **5/5 Checks grün** beim ersten produktiven Lauf nach dem Patch.
+
+### Tests
+
+Baseline vor Patch (offline-friendly Subset, ohne Playwright/Loki/Fenrir/Vidar/Katzenpfoten): **615 passed**. Nach P165: **615 + 88 = 703 passed** im selben Subset, **keine Regression**. Test-Suite-Komposition aktuell: 50 Test-Dateien, 88 davon neu in diesem Patch (5 neue Dateien × 17/8/26/17/20 Tests).
+
+### Logging-Tags
+Keine neuen — Querschnitts-Patch ohne Code-Änderungen am Bestand.
+
+### Scope
+
+**IN Scope:**
+- Auto-Test-Policy in 3 Doku-Dateien (CLAUDE_ZERBERUS / SUPERVISOR_ZERBERUS / lessons)
+- 5 neue Test-Dateien (88 Tests)
+- `scripts/check_docs_consistency.py` mit 5 Checks
+- README-Footer + SUPERVISOR-Header + dieser PROJEKTDOKUMENTATION.md-Eintrag
+- `sync_repos.ps1` als letzter Schritt
+
+**NICHT in Scope:**
+- Code-Änderungen an bestehenden Modulen (nur Tests + Doku)
+- Playwright-Erweiterungen (Loki/Fenrir/Vidar bleiben unverändert)
+- Coverage-Reporting-Tool (`coverage.py`-Integration könnte später als eigener Patch kommen)
+- Tests für Module, die nur via Live-Server/Docker testbar sind: `sandbox/executor.py` (Docker-Container), `sentiment/overnight.py` (APScheduler + DB), `core/middleware.py` (FastAPI-Request-Lifecycle)
+- Live-Validation-Scripts für andere APIs (kommen mit den jeweiligen Feature-Patches)
+
+### Erwartete Wirkung
+Der Bot wird ab jetzt vor jedem Commit konsistent durch die Test-Suite + Doku-Checker geführt — Drift zwischen Code, Doku und Config wird systematisch gefangen statt erst beim nächsten Inhaltschock entdeckt. Die Auto-Test-Policy klärt eine wiederkehrende Reibung: bisher war unklar, ob Coda Whisper-Mikrofon-Tests „selbst testen" sollte (kann sie nicht) oder ob Chris OpenRouter-Live-Calls manuell durchklicken muss (sollte er nicht). Mit der Policy ist das jetzt formell festgehalten. Der retroaktive Test-Sweep schließt die größten Coverage-Lücken in `core/dialect`, `core/database`-Helpers, `core/prompt_features`, `modules/telegram/hitl` und `modules/rag/language_detector` — alle waren testbar, aber bisher ungetestet.
+
+**Geänderte Dateien:** `CLAUDE_ZERBERUS.md`, `SUPERVISOR_ZERBERUS.md`, `lessons.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`
+**Neue Dateien:** `zerberus/tests/test_dialect_core.py`, `zerberus/tests/test_prompt_features.py`, `zerberus/tests/test_hitl_manager.py`, `zerberus/tests/test_language_detector.py`, `zerberus/tests/test_db_helpers.py`, `scripts/check_docs_consistency.py`
+
+*Stand: 2026-04-25, Patch 165 — Querschnitts-Patch Qualitätssicherung. 88 neue Tests grün, 703 passed im offline-friendly-Subset (keine Regression). Doku-Checker 5/5 grün. Nächster Schritt: Phase-B-Mitte (Config-driven Policy-Severity, Effort-basiertes Routing).*
