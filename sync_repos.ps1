@@ -27,12 +27,23 @@ $ratatoskrFiles = @(
     @("docs\PROJEKTDOKUMENTATION.md","PROJEKTDOKUMENTATION.md"),
     @("lessons.md",                  "lessons.md"),
     @("backlog_nach_patch83.md",     "backlog_nach_patch83.md"),
-    @("README.md",                   "README.md")
+    @("README.md",                   "README.md"),
+    # Patch 161 follow-up: Huginn-Roadmap + Review als Referenz auch in Ratatoskr,
+    # damit der Supervisor (claude.ai) sie ohne Zerberus-Checkout sieht. Bleibt
+    # unter docs/ statt flach nach Root, damit kuenftige Doku-Dateien dort
+    # logisch gruppiert sind und keine Root-Namenskollision riskieren.
+    @("docs\huginn_roadmap_v2.md",   "docs\huginn_roadmap_v2.md"),
+    @("docs\huginn_review_final.md", "docs\huginn_review_final.md")
 )
 foreach ($pair in $ratatoskrFiles) {
     $src = Join-Path $zerberus $pair[0]
     $dst = Join-Path $ratatoskr $pair[1]
     if (Test-Path $src) {
+        # Zielverzeichnis ggf. anlegen (z. B. docs/ in Ratatoskr beim ersten Sync)
+        $dstDir = Split-Path $dst -Parent
+        if ($dstDir -and -not (Test-Path $dstDir)) {
+            New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
+        }
         Copy-Item $src $dst -Force
         Write-Host "  copy: $($pair[0]) -> $($pair[1])"
     } else {
