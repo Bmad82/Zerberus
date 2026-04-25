@@ -8,6 +8,7 @@ Patch 123: Huginn als vollwertiger Telegram-Chat-Partner.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Dict, Optional
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 from zerberus.core.config import get_settings, Settings
 from zerberus.core.event_bus import get_event_bus, Event
 from zerberus.core.input_sanitizer import get_sanitizer
+from zerberus.core.rate_limiter import get_rate_limiter
 from zerberus.modules.telegram.bot import (
     DEFAULT_HUGINN_PROMPT,
     DEFAULT_SYSTEM_PROMPT,
@@ -32,6 +34,7 @@ from zerberus.modules.telegram.bot import (
     long_polling_loop,
     register_webhook,
     send_telegram_message,
+    send_telegram_message_throttled,
     was_bot_added_to_group,
 )
 from zerberus.modules.telegram.group_handler import (
@@ -213,6 +216,78 @@ async def _run_guard(
         return {"verdict": "ERROR", "reason": str(e)[:100], "latency_ms": 0}
 
 
+# ══════════════════════════════════════════════════════════════════
+#  Patch 163 — Graceful Degradation Helpers (K4, O10)
+# ══════════════════════════════════════════════════════════════════
+
+# Retry-Parameter für OpenRouter — exponentielles Backoff 2s/4s/8s.
+LLM_MAX_RETRIES = 3
+LLM_BACKOFF_BASE = 2.0
+
+
+def _resolve_guard_fail_policy(settings: Settings) -> str:
+    """Patch 163 (K4): Liest ``security.guard_fail_policy`` aus der Config.
+
+    Werte: ``"allow"`` (Default, Huginn-Modus — Antwort durchlassen),
+    ``"block"`` (Rosa-Modus — Antwort zurückhalten),
+    ``"degrade"`` (Future — Fallback auf lokales Modell, aktuell wie ``allow``).
+    """
+    sec = getattr(settings, "security", None)
+    if not isinstance(sec, dict):
+        return "allow"
+    return str(sec.get("guard_fail_policy", "allow")).lower()
+
+
+def _is_retryable_llm_error(error_str: str) -> bool:
+    """True wenn der OpenRouter-Fehler nach Backoff retryt werden sollte.
+
+    Retryable: 429 (Rate-Limit), 503 (Service Unavailable), generelles
+    "rate"-Schlagwort. NICHT retryable: 400 (Bad Request), 401 (Auth),
+    404, 500, sonstige.
+    """
+    if not error_str:
+        return False
+    lower = error_str.lower()
+    return "429" in lower or "503" in lower or "rate" in lower
+
+
+async def _call_llm_with_retry(**call_llm_kwargs: Any) -> Dict[str, Any]:
+    """Wrappt ``call_llm`` mit exponentiellem Backoff bei OpenRouter 429/503.
+
+    Patch 163 (O10): ``call_llm`` selbst raised nicht — Fehler kommen als
+    ``{"content": "", "error": "HTTP 429"}`` zurück. Diese Funktion erkennt
+    retryable Fehler und versucht es bis zu ``LLM_MAX_RETRIES`` mal mit
+    Backoff (2s, 4s, 8s). Andere Fehler (400, 401, …) werden sofort
+    zurückgegeben — kein Retry-Sinn.
+    """
+    last_result: Dict[str, Any] = {}
+    for attempt in range(LLM_MAX_RETRIES):
+        result = await call_llm(**call_llm_kwargs)
+        last_result = result
+        error_str = result.get("error") or ""
+        if not error_str:
+            return result
+        if not _is_retryable_llm_error(error_str):
+            return result
+        if attempt < LLM_MAX_RETRIES - 1:
+            wait = LLM_BACKOFF_BASE * (2 ** attempt)
+            logger.warning(
+                "[HUGINN-163] OpenRouter Retry %d/%d in %.1fs (err=%s)",
+                attempt + 1, LLM_MAX_RETRIES, wait, error_str[:80],
+            )
+            await asyncio.sleep(wait)
+    logger.error(
+        "[HUGINN-163] OpenRouter nach %d Retries nicht erreichbar (err=%s)",
+        LLM_MAX_RETRIES, (last_result.get("error") or "")[:120],
+    )
+    return last_result
+
+
+_FALLBACK_LLM_UNAVAILABLE = (
+    "Meine Kristallkugel ist gerade trüb. Versucht's später nochmal. 🔮"
+)
+
+
 async def _process_text_message(
     info: Dict[str, Any],
     cfg: HuginnConfig,
@@ -278,7 +353,8 @@ async def _process_text_message(
     else:
         model = cfg.model
 
-    llm_result = await call_llm(
+    # Patch 163 (O10): LLM-Call mit Backoff-Retry bei 429/503.
+    llm_result = await _call_llm_with_retry(
         user_message=user_msg,
         model=model,
         system_prompt=system_prompt,
@@ -286,12 +362,42 @@ async def _process_text_message(
     )
     answer = llm_result.get("content", "") or ""
     if not answer.strip():
+        # Echte Erschöpfung (Retries durch + immer noch error) → Kristallkugel.
+        if llm_result.get("error"):
+            await send_telegram_message(
+                cfg.bot_token,
+                info["chat_id"],
+                _FALLBACK_LLM_UNAVAILABLE,
+                reply_to_message_id=info.get("message_id"),
+                message_thread_id=info.get("message_thread_id"),
+            )
+            return {"sent": False, "reason": "llm_unavailable", "error": llm_result.get("error")}
         return {"sent": False, "reason": "empty_llm"}
 
     # Guard-Check auf Antwort. Patch 158: caller_context mitgeben, damit
     # Persona-Elemente nicht als Halluzination gelten.
     guard_ctx = _build_huginn_guard_context(system_prompt)
     guard = await _run_guard(user_msg, answer, caller_context=guard_ctx)
+
+    # Patch 163 (K4): Guard-Fail-Policy. ``ERROR`` = Guard nicht
+    # erreichbar/kaputt. Default ist ``allow`` (Antwort durchlassen + loggen),
+    # konfigurierbar über ``security.guard_fail_policy`` in config.yaml.
+    if guard.get("verdict") == "ERROR":
+        fail_policy = _resolve_guard_fail_policy(settings)
+        if fail_policy == "block":
+            logger.warning("[HUGINN-163] Guard-Fail Policy='block' → Antwort zurückgehalten")
+            await send_telegram_message(
+                cfg.bot_token,
+                info["chat_id"],
+                "⚠️ Sicherheitsprüfung nicht verfügbar. Antwort zurückgehalten.",
+                reply_to_message_id=info.get("message_id"),
+                message_thread_id=info.get("message_thread_id"),
+            )
+            return {"sent": False, "reason": "guard_fail_block", "guard": guard}
+        # "allow" (Default) und "degrade" (Future) → durchlassen
+        logger.warning(
+            "[HUGINN-163] Guard-Fail Policy='%s' → Antwort wird durchgelassen", fail_policy,
+        )
 
     text_out = format_code_response(answer)
     sent = await send_telegram_message(
@@ -367,6 +473,35 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
             sorted(update_types_present), data.get("update_id"),
         )
         return {"ok": True, "skipped": "unknown_update_type"}
+
+    # Patch 163 (N3, D1): Per-User Rate-Limit. Nur für User-Messages, nicht
+    # für Callback-Queries (Admin-HitL-Klicks dürfen jederzeit). User-ID kommt
+    # aus ``message.from.id``. Bei Überschreitung: genau EIN „Sachte, Keule"-
+    # Reply (``first_rejection=True``), danach werden Folge-Nachrichten still
+    # ignoriert. Der Bot-Token wird hier direkt aus ``mod_cfg`` gezogen, weil
+    # ``HuginnConfig`` erst weiter unten gebaut wird.
+    if "message" in data and isinstance(data["message"], dict):
+        message = data["message"]
+        user_id = str(message.get("from", {}).get("id") or "")
+        if user_id:
+            rate_limiter = get_rate_limiter()
+            rate_result = rate_limiter.check(user_id)
+            if not rate_result.allowed:
+                if rate_result.first_rejection:
+                    bot_token = str(
+                        mod_cfg.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+                    )
+                    chat_id = message.get("chat", {}).get("id")
+                    thread_id = message.get("message_thread_id")
+                    if bot_token and chat_id is not None:
+                        await send_telegram_message(
+                            bot_token,
+                            chat_id,
+                            "Sachte, Keule. Du feuerst schneller als Huginn denken kann. "
+                            f"Warte {int(rate_result.retry_after)} Sekunden.",
+                            message_thread_id=thread_id,
+                        )
+                return {"ok": True, "skipped": "rate_limited", "user_id": user_id}
 
     # Event-Bus fuer legacy Listener
     bus = get_event_bus()
@@ -474,8 +609,21 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
                 },
             )
             prompt = build_smart_interjection_prompt(sanitized_recent.cleaned_text)
-            llm_result = await call_llm(prompt, cfg.model)
+            # Patch 163 (O10): Auch hier Retry bei 429/503.
+            llm_result = await _call_llm_with_retry(
+                user_message=prompt,
+                model=cfg.model,
+            )
             candidate = llm_result.get("content", "") or ""
+            if not candidate.strip():
+                # Bei autonomem Einwurf NIE den Kristallkugel-Fallback senden —
+                # niemand hat gefragt. Einfach still überspringen.
+                if llm_result.get("error"):
+                    logger.warning(
+                        "[HUGINN-163] Autonom skip: LLM unerreichbar (err=%s)",
+                        (llm_result.get("error") or "")[:80],
+                    )
+                return {"ok": True, "skipped": "autonomous_llm_unavailable"}
             if is_skip_response(candidate):
                 return {"ok": True, "skipped": "autonomous_skip"}
             # Guard-Check — Patch 158: mit Persona-Kontext, nur Admin-Hinweis
@@ -485,7 +633,20 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
             guard = await _run_guard(
                 "(gruppen-kontext)", candidate, caller_context=guard_ctx
             )
-            sent = await send_telegram_message(
+            # Patch 163 (K4): Guard-Fail-Policy auch im autonomen Pfad.
+            if guard.get("verdict") == "ERROR":
+                fail_policy = _resolve_guard_fail_policy(settings)
+                if fail_policy == "block":
+                    logger.warning(
+                        "[HUGINN-163] Autonom skip: Guard-Fail Policy='block'",
+                    )
+                    return {"ok": True, "skipped": "autonomous_guard_fail_block"}
+                logger.warning(
+                    "[HUGINN-163] Autonom: Guard-Fail Policy='%s' → durchlassen", fail_policy,
+                )
+            # Patch 163 (D1): Ausgangs-Throttle für autonome Gruppen-Einwürfe —
+            # konservativ unter dem Telegram-Limit von 20 msg/min/Gruppe.
+            sent = await send_telegram_message_throttled(
                 cfg.bot_token,
                 info["chat_id"],
                 format_code_response(candidate),

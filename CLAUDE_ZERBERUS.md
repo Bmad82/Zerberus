@@ -79,6 +79,19 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - **Offset-Persistenz (P162):** `data/huginn_offset.json` speichert letzten `update_id`|Boot lädt via `_load_offset()`|gegen Doppelverarbeitung nach Restart|Tests müssen `OFFSET_FILE` per `monkeypatch.setattr(bot_module, "OFFSET_FILE", tmp_path/"off.json")` umlenken
 - **Forum-Topics / `message_thread_id` (P162, D10):** `extract_message_info()` exposed `message_thread_id`+`is_forwarded`|Alle `send_telegram_message`-Calls in `router.py` reichen `message_thread_id=info.get("message_thread_id")` durch|sonst Antwort im General statt Topic|Telegram ignoriert bei None → nur truthy ins Payload
 
+## Rate-Limiting + Graceful Degradation (P163)
+- [`core/rate_limiter.py`](zerberus/core/rate_limiter.py): Interface `RateLimiter` (Rosa-Skelett für Redis) + `InMemoryRateLimiter` (Huginn-jetzt)|Singleton via `get_rate_limiter()`|Default 10 msg/min/User|Cooldown 60s
+- Integration in [`process_update()`](zerberus/modules/telegram/router.py) GANZ oben (nach Update-Typ-Filter, vor Event-Bus)|nur für `message`-Updates|Callback-Queries ausgenommen (Admin-HitL-Klicks)
+- `RateLimitResult.first_rejection`-Flag: genau EIN „Sachte, Keule"-Reply pro Cooldown-Periode|Folge-Nachrichten still ignorieren|sonst spammt der Bot selbst|Test-Reset via `_reset_rate_limiter_for_tests()` (Modul-Singleton)
+- `cleanup()` entfernt Buckets nach 5min Inaktivität (Memory-Leak-Schutz)
+- Guard-Fail-Policy `security.guard_fail_policy` ∈ {`allow`,`block`,`degrade`}|Default `allow` (Huginn — Antwort durchlassen + Log-Warnung)|`block` (Rosa — „⚠️ Sicherheitsprüfung nicht verfügbar.")|`degrade` reserviert (Future Ollama)|Helper `_resolve_guard_fail_policy(settings)` via `getattr(settings, "security", None)` (Pydantic `extra="allow"`)
+- Trigger: Guard-Verdict `ERROR` (Guard-Call selbst raised nicht, returnt `{"verdict":"ERROR"}`)|beide Pfade respektieren Policy: `_process_text_message` + autonomer Gruppen-Einwurf
+- OpenRouter-Retry `_call_llm_with_retry()` wrappt `call_llm`|`call_llm` raised NICHT → Error-String prüfen via `_is_retryable_llm_error`|Retryable: `429`/`503`/„rate"|Backoff 2s/4s/8s|max 3 Versuche|400/401/etc. SOFORT zurück (kein Retry-Sinn)
+- Erschöpfung: DM → Fallback „Meine Kristallkugel ist gerade trüb. Versucht's später nochmal. 🔮"|autonom → still überspringen (niemand hat gefragt)
+- Ausgangs-Throttle [`bot.py::send_telegram_message_throttled`](zerberus/modules/telegram/bot.py): 15 msg/min/Chat (konservativ unter TG ~20/min/Gruppe)|wartet via `asyncio.sleep` statt drop|Modul-Singleton `_outgoing_timestamps`|Test-Reset via `_reset_outgoing_throttle_for_tests()`|aktuell nur autonomer Gruppen-Einwurf|DMs bei `send_telegram_message` direkt
+- Config-Keys VORBEREITET nicht aktiv: `limits.per_user_rpm`/`limits.cooldown_seconds` in `config.yaml`|aktives Reading mit Phase-B-Config-Refactor|jetzige Defaults im Code (max_rpm=10, cooldown=60)|`security.guard_fail_policy` IST aktiv gelesen
+- Logging-Tags: `[RATELIMIT-163]` (Rate-Limiter), `[HUGINN-163]` (Router/Bot — Throttle/Retry/Guard-Fail/LLM-Unavailable)
+
 ## Input-Sanitizer (P162)
 - [`input_sanitizer.py`](zerberus/core/input_sanitizer.py): Interface `InputSanitizer` (Rosa-Skelett) + `RegexSanitizer` (Huginn-jetzt)|Singleton via `get_sanitizer()`
 - VOR jedem LLM-Call: in [`_process_text_message()`](zerberus/modules/telegram/router.py) für DMs + autonomer Gruppen-Einwurf|Neue LLM-Pfade: `get_sanitizer().sanitize(text, metadata={...})` davor

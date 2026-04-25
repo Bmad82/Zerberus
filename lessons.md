@@ -206,6 +206,22 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Callback-Spoofing in Gruppen: TG validiert nicht, wer Inline-Button klickt|Bot muss validieren|Vor P162 nur Admin-DM (implizit sicher)|Mit `requester_user_id` jetzt für In-Group-Buttons vorbereitet|Erlaubte Klicker: `{admin_chat_id, requester_user_id}`|String-Vergleich (TG `from.id` int, Config oft String)
 - `message_thread_id` muss durchgereicht werden, nicht nur extrahiert|Forum-Topics verlieren sonst Kontext (Antwort im General statt Thread)|`extract_message_info()` exposed Feld|ALLE `send_telegram_message`-Calls in `router.py` reichen als kwarg durch|Pattern: `message_thread_id=info.get("message_thread_id")` immer mitgeben|TG ignoriert wenn None → nur truthy ins Payload
 
+## Token-Effizienz bei Doku-Reads (P163)
+- Keine rituellen File-Reads|`SUPERVISOR_ZERBERUS.md`/`lessons.md`/`CLAUDE_ZERBERUS.md` werden via CLAUDE.md schon in den Kontext geladen|Re-Read = 2-4k Token verschwendet pro Patch
+- Regel: Datei nur lesen wenn (a) NICHT im Kontext sichtbar ODER (b) man sie direkt danach schreiben will|„Lies alles nochmal als Sicherheit" ist kein guter Grund
+- Doku-Updates bleiben Pflicht|aber am Patch-Ende|EIN Read→Write-Zyklus pro Datei|kein separater Read am Anfang + Write am Ende
+- Neue Einträge in CLAUDE_ZERBERUS.md + lessons.md IMMER im Bibel-Fibel-Format (Pipes|Stichpunkte|ArtikelWeg)|sonst zerfasert die in P163 gewonnene Kompression wieder
+
+## Rate-Limiting + Graceful Degradation (P163)
+- Per-User-Limit gegen Telegram-Spam: 10 msg/min/User|Cooldown 60s|InMemory-Singleton in [`core/rate_limiter.py`](zerberus/core/rate_limiter.py) mit Interface `RateLimiter` (Rosa-Skelett für Redis-Variante) + `InMemoryRateLimiter` (Huginn-jetzt)|`first_rejection`-Flag liefert genau EIN „Sachte, Keule"-Reply, danach still ignorieren
+- Sliding-Window pro User: nur Timestamps der letzten 60s halten|`cleanup()` entfernt Buckets nach 5min Inaktivität|Test-Reset via Modul-Singleton-Reset (`rate_limiter._rate_limiter = None`)
+- Rate-Limit-Check in `process_update()` GANZ oben (nach Update-Typ-Filter, vor Sanitizer/Manager)|nur für `message`-Updates, nicht für `callback_query`|`user_id` aus `message.from.id`
+- Guard-Fail-Policy konfigurierbar: `security.guard_fail_policy` ∈ {`allow`,`block`,`degrade`}|Default `allow` (Huginn-Modus, Antwort durchlassen + Log-Warnung)|`block` blockiert mit User-Hinweis|`degrade` reserviert für lokales Modell (Ollama-Future)|`_run_guard()` returnt `{"verdict": "ERROR"}` bei Fail → router prüft Policy
+- OpenRouter-Retry mit Backoff: nur bei 429/503/„rate"|2s/4s/8s exponentiell|max 3 Versuche|400/401/etc. NICHT retryen (Bad Request bleibt Bad Request)|Nach Erschöpfung: User-Fallback „Meine Kristallkugel ist gerade trüb."
+- Ausgangs-Throttle pro Chat in `bot.py`: `send_telegram_message_throttled` mit 15 msg/min/Chat (konservativ unter TG-Limit 20/min/Gruppe)|wartet via `asyncio.sleep` statt Drop|nur für autonome Gruppen-Einwürfe nötig (DMs nicht limitiert)|Modul-Singleton `_outgoing_timestamps` als defaultdict
+- Config-Keys VORBEREITET, nicht aktiv gelesen: `limits.per_user_rpm`/`limits.cooldown_seconds`/`security.guard_fail_policy` in `config.yaml`|aktives Reading mit Config-Refactor Phase B|jetzige Defaults im Code (max_rpm=10, cooldown=60, fail_policy="allow")
+- Logging-Tags: `[RATELIMIT-163]` (rate-limiter) + `[HUGINN-163]` (router/bot)
+
 ## Mega-Patch-Erkenntnisse (Sessions 122-152, 2026-04-23/24)
 
 ### Effizienz

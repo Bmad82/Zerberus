@@ -3530,3 +3530,75 @@ Pro Patch sollten ~5.000–7.000 Token weniger im Kontext landen, sobald CLAUDE_
 **Neue Dateien:** keine
 
 *Stand: 2026-04-25, Patch 163 — CLAUDE_ZERBERUS.md und lessons.md auf Bibel-Fibel-Format komprimiert, ~40% Zeilen-Reduktion, alle Stichproben-Greps grün, Tests unverändert (538 offline-Baseline).*
+
+---
+
+## Patch 163 (Hauptteil) — Rate-Limiting + Graceful Degradation (2026-04-25)
+
+### Kontext
+Phase A (Sicherheits-Fundament) wird mit diesem Patch abgeschlossen. Adressiert die letzten kritischen Findings aus dem 7-LLM-Review für Phase A: **N3** (kein Per-User Rate-Limit gegen Spam/Cost-Eskalation), **D1** (Telegram-eigenes Rate-Limit von ~20 msg/min/Gruppe wird vom Bot nicht respektiert — 429-/Shadowban-Gefahr), **K4** (OpenRouter ist Single Point of Failure ohne Retry/Fallback) und **O10** (das Verhalten bei Guard-Fail ist implizit „durchlassen", aber nicht konfigurierbar — für Rosa-Setups mit strikteren Sicherheits-Anforderungen ungeeignet). Block 0 dieses Patches (Token-Effizienz-Doku) wurde bereits im Vorlauf-Commit `d098738` umgesetzt; der vorliegende Hauptteil bringt die Code-Änderungen.
+
+### Umsetzung
+**Block 1 — Per-User Rate-Limiter (N3, D1):** Neue Datei [`zerberus/core/rate_limiter.py`](../zerberus/core/rate_limiter.py) mit zwei Komponenten:
+
+- Interface `RateLimiter` (abstract base class) — Rosa-Skelett, damit später eine Redis-basierte Implementierung ohne Änderung der Aufrufer eingehängt werden kann.
+- Implementierung `InMemoryRateLimiter` — Sliding-Window pro User: maximal 10 Nachrichten pro 60-Sekunden-Fenster. Bei Überschreitung 60 Sekunden Cooldown. Singleton via `get_rate_limiter()` analog zu `get_settings()` und `get_sanitizer()`.
+
+Das wichtigste Detail steckt im `RateLimitResult.first_rejection`-Flag: beim ersten Block in einer Cooldown-Periode antwortet Huginn genau einmal mit „Sachte, Keule. Du feuerst schneller als Huginn denken kann. Warte X Sekunden.", danach werden Folge-Nachrichten still ignoriert. Ohne dieses Flag würde der Bot bei jedem rate-limited Hit eine Antwort senden — und damit selbst zum Spammer. `cleanup()` entfernt Buckets nach 5 Minuten Inaktivität (Memory-Leak-Schutz für Long-Running-Bots).
+
+Integration in [`process_update()`](../zerberus/modules/telegram/router.py): Der Rate-Limit-Check sitzt ganz oben — direkt nach dem Update-Typ-Filter (Patch 162) und vor dem Event-Bus, der Manager-Initialisierung und der Sanitizer-Ebene. Geprüft wird nur bei `message`-Updates; `callback_query`-Updates (Admin-HitL-Klicks) sind explizit ausgenommen, weil sie aus dem Admin-Konto kommen und ohnehin selten sind. Der `bot_token` wird hier direkt aus `mod_cfg`/`os.environ` gezogen, weil `HuginnConfig.from_dict()` erst weiter unten gebaut wird — kleine Code-Duplikation, dafür sauberer Order.
+
+**Block 2 — Graceful Degradation + Guard-Fail-Policy (K4, O10):** Drei zusammenhängende Änderungen in [`router.py`](../zerberus/modules/telegram/router.py):
+
+- *Config-Key `security.guard_fail_policy`* mit Werten `allow` (Default, Huginn-Modus — Antwort durchlassen + Warnung loggen), `block` (Rosa-Modus — Antwort zurückhalten und „⚠️ Sicherheitsprüfung nicht verfügbar." senden) und `degrade` (Future, fällt aktuell auf `allow` zurück — Pfad reserviert für lokales Modell via Ollama). Ausgelesen über den neuen Helper `_resolve_guard_fail_policy(settings)`, der via `getattr(settings, "security", None)` auf das Top-Level-Dict zugreift (Pydantic-Settings hat `extra = "allow"`, daher landen unbekannte YAML-Keys als Attribute).
+- *OpenRouter-Retry mit Backoff* — neuer Wrapper `_call_llm_with_retry()` um `call_llm()`. Da `call_llm` selbst nicht raised, sondern Fehler als `{"content": "", "error": "HTTP 429"}` zurückgibt, prüft der Wrapper den Error-String per `_is_retryable_llm_error()` (Treffer bei `429`/`503`/„rate"). Retryable Fehler werden mit exponentiellem Backoff (2s/4s/8s) bis zu 3-mal wiederholt; nicht-retryable Fehler (`400` Bad Request, `401` Auth, etc.) werden sofort zurückgegeben.
+- *Fallback-Nachricht bei LLM-Erschöpfung* — wenn `_call_llm_with_retry` nach allen Retries einen Error im Result hat und der Content leer ist, sendet die DM-Pipeline „Meine Kristallkugel ist gerade trüb. Versucht's später nochmal. 🔮" Im autonomen Gruppen-Einwurf wird stattdessen still übersprungen — niemand hat gefragt, also keine Fehlermeldung in die Gruppe.
+
+Beide Pfade — `_process_text_message` (DMs + direkte Gruppen-Ansprache) und der autonome Gruppen-Einwurf in `process_update` — respektieren die Guard-Fail-Policy.
+
+**Block 3 — Telegram-Ausgangs-Throttle (D1):** Neuer Helper `send_telegram_message_throttled()` in [`bot.py`](../zerberus/modules/telegram/bot.py) mit Modul-Singleton `_outgoing_timestamps: Dict[chat_id, list[float]]`. Pro Chat werden ausgehende Timestamps der letzten 60 Sekunden getrackt. Bei Überschreitung von 15 msg/min (konservativ unter Telegrams ~20 msg/min/Gruppe-Limit) wartet die Funktion via `asyncio.sleep`, bis das älteste Fenster-Element rausfällt — die Nachricht wird **nicht** gedroppt, sondern verzögert gesendet. Aktuell genutzt im autonomen Gruppen-Einwurf-Pfad. DMs (privat) bleiben bei `send_telegram_message` direkt, weil dort kein Gruppen-Limit greift; Telegrams ~30 msg/s an verschiedene Chats wird in der Praxis nicht erreicht.
+
+**Block 0 — Token-Effizienz-Doku (Vorlauf + Lesson):** Die neue Sektion in `CLAUDE_ZERBERUS.md` aus Commit `d098738` ist aktiv (keine rituellen File-Reads, ein Read→Write-Zyklus pro Datei am Patch-Ende, neue Einträge im Bibel-Fibel-Format). In `lessons.md` sind jetzt zwei neue Lessons eingetragen: „Token-Effizienz bei Doku-Reads (P163)" (Erinnerung an die Regel) und „Rate-Limiting + Graceful Degradation (P163)" (technische Entscheidungen — Singleton, `first_rejection`, Retry nur bei 429/503, Throttle wartet statt droppt, Config-Keys vorbereitet aber nicht aktiv gelesen).
+
+**Config-Keys vorbereitet:** `limits.per_user_rpm` (10), `limits.cooldown_seconds` (60), `security.guard_fail_policy` (`allow`) sind in `config.yaml` eingetragen. **Aktiv gelesen wird nur** `security.guard_fail_policy` — die `limits.*`-Werte sind als Hooks für Phase B (Config-Refactor) vorbereitet, bis dahin steuern die Defaults aus dem Code. Das verhindert, dass wir jetzt schon Pydantic-Modell-Erweiterungen für eine erst Phase-B-relevante Konfiguration einbauen.
+
+### Tests
+22 neue Tests in der neuen Datei [`zerberus/tests/test_rate_limiter.py`](../zerberus/tests/test_rate_limiter.py):
+
+- `TestInMemoryRateLimiter` (8): allowed_under_limit, blocked_over_limit, cooldown_persists_no_repeat_first_rejection, cooldown_expires, sliding_window_drops_old_timestamps, different_users_independent, cleanup_stale_buckets, remaining_count_decreases.
+- `TestRateLimiterSingleton` (2): Singleton-Identität, Reset-Helper.
+- `TestRateLimitIntegration` (2): rate_limited_user_gets_one_message (genau 1× „Sachte, Keule", keine Folge-Sends), rate_limit_skips_callback_query.
+- `TestGuardFailPolicy` (4): resolve_default_is_allow, resolve_block, guard_fail_allow_passes_response_through, guard_fail_block_holds_response.
+- `TestOpenRouterRetry` (4): retry_succeeds_after_429, retry_exhausted, no_retry_on_400, llm_unavailable_sends_kristallkugel.
+- `TestOutgoingThrottle` (2): throttle_under_limit_no_wait, throttle_at_limit_waits.
+
+Alle 22 grün. Im non-browser-Subset (Telegram-Bot + Sanitizer + Rate-Limiter + Hallucination-Guard + Huginn-Config-Endpoint) zusammen: **140 passed**, keine Regression.
+
+### Logging-Tags
+- `[RATELIMIT-163]` — Rate-Limiter intern (Init, Block-Event, Cleanup).
+- `[HUGINN-163]` — Router/Bot (Throttle-Wartezeit, Retry-Versuch, Guard-Fail-Policy, LLM unerreichbar, autonome Skip-Gründe).
+
+### Scope
+**IN Scope:**
+- Neue Datei `zerberus/core/rate_limiter.py` (Interface + InMemoryRateLimiter + Singleton + Test-Reset-Helper)
+- Erweiterungen in `zerberus/modules/telegram/router.py` (Rate-Limit-Check, Guard-Fail-Policy-Helper, LLM-Retry-Wrapper, Kristallkugel-Fallback, autonomer Pfad mit Throttle)
+- Erweiterung in `zerberus/modules/telegram/bot.py` (`send_telegram_message_throttled` + Modul-State + Reset-Helper)
+- `config.yaml` mit `limits.*`- und `security.guard_fail_policy`-Keys vorbereitet
+- Neue Test-Datei `zerberus/tests/test_rate_limiter.py` mit 22 Tests
+- Doku: SUPERVISOR-Eintrag (kombiniert mit Vorlauf-Bibel-Fibel-Eintrag), CLAUDE_ZERBERUS-Sektion bleibt (war Vorlauf), `lessons.md` mit zwei neuen Sektionen, README-Footer, dieser Eintrag in PROJEKTDOKUMENTATION.md
+
+**NICHT in Scope:**
+- Aktives Config-Reading der `limits.*`-Werte (kommt mit Phase B Config-Refactor)
+- Budget-Warnung (`daily_budget_eur`) — Key auskommentiert vorbereitet
+- `degrade`-Fallback auf lokales Modell (braucht Ollama-Integration, eigener Patch)
+- Redis-basierter Rate-Limiter (Rosa-Zukunft, Interface ist vorbereitet)
+- Intent-Router (Patch 164, Phase B)
+- Nala-seitiges Rate-Limiting (eigene Pipeline, eigener Patch)
+
+### Erwartete Wirkung
+Per-User-Rate-Limit verhindert Cost-Eskalation und Bot-Spam (echter Schutz bei kompromittiertem User-Account oder versehentlicher Loop-Schleife in einem Client). Ausgangs-Throttle verhindert Telegram-429-Treffer in Gruppen und damit potenziellen Shadowban des Bots. OpenRouter-Retry fängt transiente Provider-Ausfälle ab — bei Mistral Small 3 (Guard) sieht Chris davon im typischen Betrieb gar nichts mehr. Die Kristallkugel-Antwort signalisiert dem User klar, dass das Problem nicht beim Eingabetext liegt, sondern beim Provider — der Frust ist kalibrierter. Mit `security.guard_fail_policy: block` ist Rosa später ohne Code-Änderung in einem strikteren Sicherheits-Modus betreibbar.
+
+**Geänderte Dateien:** `zerberus/modules/telegram/router.py`, `zerberus/modules/telegram/bot.py`, `config.yaml`, `lessons.md`, `SUPERVISOR_ZERBERUS.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`
+**Neue Dateien:** `zerberus/core/rate_limiter.py`, `zerberus/tests/test_rate_limiter.py`
+
+*Stand: 2026-04-25, Patch 163 — Phase-A-Abschluss. 22 neue Tests grün, 140 passed im non-browser-Subset (keine Regression). Nächster Schritt: Phase B, Patch 164 (Intent-Router, LLM-gestützt).*

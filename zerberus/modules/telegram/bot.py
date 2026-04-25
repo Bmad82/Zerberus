@@ -17,9 +17,10 @@ import json
 import logging
 import os
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -180,6 +181,60 @@ async def send_telegram_message(
     except Exception as e:
         logger.warning(f"[HUGINN-123] send_telegram_message Exception: {e}")
         return False
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Patch 163 (D1) — Ausgangs-Throttle pro Chat
+# ══════════════════════════════════════════════════════════════════
+#
+# Telegram limitiert ausgehende Nachrichten auf ~30 msg/s an verschiedene
+# Chats und ~20 msg/min in einer Gruppe. Bei autonomen Gruppen-Einwürfen
+# riskiert Huginn sonst einen 429/Shadowban. Statt einer vollen Message-
+# Queue: simpler Cooldown-Tracker pro Chat. Bei Limit-Treffer wartet die
+# Funktion via ``asyncio.sleep`` statt die Nachricht zu droppen.
+
+_OUTGOING_LIMIT_PER_MINUTE = 15  # konservativ unter Telegrams ~20/min/Gruppe
+_outgoing_timestamps: Dict[Any, List[float]] = defaultdict(list)
+
+
+def _reset_outgoing_throttle_for_tests() -> None:
+    """Test-Hilfe: leert die Ausgangs-Tracking-Map."""
+    _outgoing_timestamps.clear()
+
+
+async def send_telegram_message_throttled(
+    bot_token: str,
+    chat_id: int | str,
+    text: str,
+    **kwargs: Any,
+) -> bool:
+    """``send_telegram_message`` mit Ausgangs-Throttle pro Chat (Patch 163, D1).
+
+    Wenn das Limit pro 60-Sekunden-Fenster erreicht ist, wartet die Funktion
+    bis das älteste Fenster-Element rausfällt — die Nachricht wird NICHT
+    gedroppt. Für DMs (privat) reicht der direkte ``send_telegram_message``,
+    da dort kein Gruppen-Rate-Limit greift; aufrufende Stellen entscheiden.
+    """
+    now = time.time()
+    window_start = now - 60.0
+    timestamps = [t for t in _outgoing_timestamps[chat_id] if t > window_start]
+
+    if len(timestamps) >= _OUTGOING_LIMIT_PER_MINUTE:
+        oldest = timestamps[0]
+        wait = oldest + 60.0 - now + 0.5  # + 0.5s Puffer
+        if wait > 0:
+            logger.info(
+                "[HUGINN-163] Ausgangs-Throttle: warte %.1fs für chat_id=%s",
+                wait, chat_id,
+            )
+            await asyncio.sleep(wait)
+            now = time.time()
+            window_start = now - 60.0
+            timestamps = [t for t in timestamps if t > window_start]
+
+    timestamps.append(time.time())
+    _outgoing_timestamps[chat_id] = timestamps
+    return await send_telegram_message(bot_token, chat_id, text, **kwargs)
 
 
 async def register_webhook(bot_token: str, webhook_url: str, timeout: float = 10.0) -> bool:
