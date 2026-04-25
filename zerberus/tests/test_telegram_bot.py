@@ -1030,3 +1030,236 @@ class TestAnswerCallbackQuery:
         from zerberus.modules.telegram import bot as bot_module
         ok = asyncio.run(bot_module.answer_callback_query("qid", bot_token=""))
         assert ok is False
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Patch 164: Intent-Router-Integration (Gruppen-Filter, Header-Strip)
+# ══════════════════════════════════════════════════════════════════
+
+
+class _FakeSettings164:
+    """Minimal-Settings fuer P164-Integrationstests."""
+    def __init__(self):
+        self.modules = {
+            "telegram": {
+                "enabled": True,
+                "bot_token": "T",
+                "admin_chat_id": "42",
+                "model": "test/model",
+                "group_behavior": {
+                    "respond_to_name": True,
+                    "respond_to_mention": True,
+                    "respond_to_direct_reply": True,
+                    "autonomous_interjection": True,
+                    "interjection_trigger": "smart",
+                    "interjection_cooldown_seconds": 0,
+                },
+            }
+        }
+
+
+def _reset_router_state_164():
+    from zerberus.modules.telegram import router as telegram_router
+    telegram_router._group_manager = None
+    telegram_router._hitl_manager = None
+    telegram_router._bot_user_id = None
+
+
+class TestGroupInterjectionIntentFilter:
+    """Patch 164 (Block 3, D3/D4/O6) — autonome Einwuerfe nur fuer
+    CHAT/SEARCH/IMAGE; CODE/FILE/ADMIN werden unterdrueckt."""
+
+    def _run_autonomous(self, monkeypatch, llm_response: str):
+        """Fuehrt einen autonomen Gruppen-Einwurf-Pfad mit gegebener
+        LLM-Antwort durch und liefert das Ergebnis aus ``process_update``."""
+        from zerberus.modules.telegram import router as telegram_router
+
+        _reset_router_state_164()
+
+        # Bot-User-ID setzen, damit `was_bot_added_to_group` greift (sonst
+        # nicht relevant fuer den autonomen Pfad, aber sauber).
+        telegram_router._bot_user_id = 999
+
+        # Rate-Limiter neu, damit kein State leckt.
+        from zerberus.core import rate_limiter as rl_module
+        rl_module._reset_rate_limiter_for_tests()
+
+        sends = []
+
+        async def fake_send(token, chat_id, text, **kwargs):
+            sends.append({"chat_id": chat_id, "text": text})
+            return True
+
+        async def fake_send_throttled(token, chat_id, text, **kwargs):
+            sends.append({"chat_id": chat_id, "text": text, "throttled": True})
+            return True
+
+        async def fake_call_llm(**kw):
+            return {"content": llm_response, "latency_ms": 5}
+
+        async def fake_run_guard(*a, **kw):
+            return {"verdict": "OK"}
+
+        monkeypatch.setattr(telegram_router, "send_telegram_message", fake_send)
+        monkeypatch.setattr(
+            telegram_router, "send_telegram_message_throttled", fake_send_throttled,
+        )
+        monkeypatch.setattr(telegram_router, "call_llm", fake_call_llm)
+        monkeypatch.setattr(telegram_router, "_run_guard", fake_run_guard)
+
+        update = {
+            "update_id": 1,
+            "message": {
+                "message_id": 100,
+                "chat": {"id": -1001, "type": "supergroup", "title": "Testgruppe"},
+                "from": {"id": 7, "username": "alice"},
+                "text": "irgendwas, kein direkter Trigger",
+            },
+        }
+        result = asyncio.run(telegram_router.process_update(update, _FakeSettings164()))
+        return result, sends
+
+    def test_chat_intent_passes_through(self, monkeypatch):
+        llm = (
+            '{"intent": "CHAT", "effort": 2, "needs_hitl": false}\n'
+            "Was meinst du dazu, Alice?"
+        )
+        result, sends = self._run_autonomous(monkeypatch, llm)
+        # CHAT ist erlaubt — entweder gesendet ODER (cooldown) skipped
+        assert result.get("skipped") != "autonomous_intent_blocked"
+
+    def test_code_intent_blocked(self, monkeypatch):
+        llm = (
+            '{"intent": "CODE", "effort": 4, "needs_hitl": true}\n'
+            "Hier waere der Code: ..."
+        )
+        result, sends = self._run_autonomous(monkeypatch, llm)
+        assert result.get("skipped") == "autonomous_intent_blocked"
+        assert result.get("intent") == "CODE"
+        # Es darf nichts in die Gruppe gehen
+        assert all(s["chat_id"] != -1001 for s in sends)
+
+    def test_admin_intent_blocked(self, monkeypatch):
+        llm = (
+            '{"intent": "ADMIN", "effort": 2, "needs_hitl": false}\n'
+            "/restart Server"
+        )
+        result, sends = self._run_autonomous(monkeypatch, llm)
+        assert result.get("skipped") == "autonomous_intent_blocked"
+        assert result.get("intent") == "ADMIN"
+
+    def test_file_intent_blocked(self, monkeypatch):
+        llm = (
+            '{"intent": "FILE", "effort": 3, "needs_hitl": true}\n'
+            "Datei wird geschrieben."
+        )
+        result, sends = self._run_autonomous(monkeypatch, llm)
+        assert result.get("skipped") == "autonomous_intent_blocked"
+
+
+class TestIntentHeaderStrippedBeforeGuardAndUser:
+    """Patch 164 — Guard und User sehen Body OHNE JSON-Header."""
+
+    def test_header_stripped(self, monkeypatch):
+        """In `_process_text_message`: Guard.assistant_msg und der an den
+        User gesendete Text enthalten KEIN JSON-Header-Praefix."""
+        from zerberus.modules.telegram import router as telegram_router
+        from zerberus.modules.telegram.bot import HuginnConfig
+
+        _reset_router_state_164()
+        from zerberus.core import rate_limiter as rl_module
+        rl_module._reset_rate_limiter_for_tests()
+
+        guard_calls = []
+        sends = []
+
+        async def fake_send(token, chat_id, text, **kwargs):
+            sends.append(text)
+            return True
+
+        async def fake_call_llm(**kw):
+            return {
+                "content": (
+                    '{"intent": "CHAT", "effort": 2, "needs_hitl": false}\n'
+                    "Hallo Mensch."
+                ),
+                "latency_ms": 5,
+            }
+
+        async def fake_run_guard(user_msg, assistant_msg, caller_context=""):
+            guard_calls.append({"user": user_msg, "assistant": assistant_msg})
+            return {"verdict": "OK"}
+
+        monkeypatch.setattr(telegram_router, "send_telegram_message", fake_send)
+        monkeypatch.setattr(telegram_router, "call_llm", fake_call_llm)
+        monkeypatch.setattr(telegram_router, "_run_guard", fake_run_guard)
+
+        info = {
+            "chat_id": 100, "message_id": 1, "user_id": 99, "username": "chris",
+            "text": "hi", "chat_type": "private", "is_forwarded": False,
+            "reply_to_message": None, "photo_file_ids": [], "message_thread_id": None,
+        }
+        cfg = HuginnConfig(enabled=True, bot_token="T", model="m")
+
+        class S:
+            modules = {"telegram": {"enabled": True}}
+
+        result = asyncio.run(telegram_router._process_text_message(
+            info, cfg, S(), system_prompt=""
+        ))
+
+        # Guard-Argument darf KEINEN JSON-Header enthalten
+        assert len(guard_calls) == 1
+        assistant_seen = guard_calls[0]["assistant"]
+        assert "intent" not in assistant_seen.lower() or "json" not in assistant_seen
+        assert assistant_seen.startswith("Hallo Mensch")
+
+        # User-Send: erste Nachricht ist die Antwort (ohne Header)
+        # (Admin-DMs koennten zusaetzlich rausgehen, aber unsere Antwort
+        # ist mindestens dabei und enthaelt keinen JSON-Header).
+        user_messages = [s for s in sends if "Hallo Mensch" in s]
+        assert len(user_messages) >= 1
+        for msg in user_messages:
+            assert not msg.lstrip().startswith("{")
+
+    def test_no_header_falls_back_to_raw_body(self, monkeypatch):
+        """LLM ohne JSON-Header → Default CHAT, body = gesamter Text,
+        wird ungekuerzt an den User gesendet."""
+        from zerberus.modules.telegram import router as telegram_router
+        from zerberus.modules.telegram.bot import HuginnConfig
+
+        _reset_router_state_164()
+        from zerberus.core import rate_limiter as rl_module
+        rl_module._reset_rate_limiter_for_tests()
+
+        sends = []
+
+        async def fake_send(token, chat_id, text, **kwargs):
+            sends.append(text)
+            return True
+
+        async def fake_call_llm(**kw):
+            return {"content": "Plain text ohne Header.", "latency_ms": 5}
+
+        async def fake_run_guard(*a, **kw):
+            return {"verdict": "OK"}
+
+        monkeypatch.setattr(telegram_router, "send_telegram_message", fake_send)
+        monkeypatch.setattr(telegram_router, "call_llm", fake_call_llm)
+        monkeypatch.setattr(telegram_router, "_run_guard", fake_run_guard)
+
+        info = {
+            "chat_id": 100, "message_id": 1, "user_id": 99, "username": "chris",
+            "text": "hi", "chat_type": "private", "is_forwarded": False,
+            "reply_to_message": None, "photo_file_ids": [], "message_thread_id": None,
+        }
+        cfg = HuginnConfig(enabled=True, bot_token="T", model="m")
+
+        class S:
+            modules = {"telegram": {"enabled": True}}
+
+        result = asyncio.run(telegram_router._process_text_message(
+            info, cfg, S(), system_prompt=""
+        ))
+        assert result["sent"] is True
+        assert any("Plain text ohne Header" in s for s in sends)

@@ -57,6 +57,63 @@ Kontext:
 DEFAULT_SYSTEM_PROMPT = DEFAULT_HUGINN_PROMPT
 
 
+# Patch 164: Intent-Instruction. Wird an den Persona-Prompt angehaengt, sodass
+# das Haupt-LLM jede Antwort mit einem JSON-Header beginnt. Der Router parst
+# diesen Header (`intent_parser.parse_llm_response`) und strippt ihn vor der
+# Ausgabe. Begruendung Roadmap v2 / Finding K2: Intent via LLM-Output statt
+# Regex (Whisper-Fehler) oder separatem Classifier-Call (verdoppelt Latenz).
+INTENT_INSTRUCTION = """
+
+WICHTIG: Beginne JEDE Antwort mit einem JSON-Header in der allerersten Zeile:
+{"intent": "<INTENT>", "effort": <1-5>, "needs_hitl": <true/false>}
+
+Intents:
+- CHAT: Gespraech, Fragen, Smalltalk, Meinungen
+- CODE: Code generieren, analysieren, erklaeren, debuggen
+- FILE: Datei lesen, schreiben, konvertieren, hochladen
+- SEARCH: Web-Suche, Fakten nachschlagen, aktuelle Infos
+- IMAGE: Bild analysieren oder beschreiben
+- ADMIN: Bot-Befehle (/status, /config, /help, /restart)
+
+effort (1-5):
+1 = Trivial (Greeting, Ja/Nein)
+2 = Einfach (kurze Antwort, simple Frage)
+3 = Mittel (Erklaerung, Code-Snippet)
+4 = Komplex (lange Analyse, Multi-File-Code)
+5 = Sehr komplex (Architektur, Research)
+
+needs_hitl: true wenn die Aktion Dateien veraendert, Code ausfuehrt oder
+Admin-Operationen durchfuehrt. false fuer reine Text-Antworten.
+
+Beispiel:
+User: "Wie wird das Wetter morgen?"
+{"intent": "SEARCH", "effort": 2, "needs_hitl": false}
+Ich kann leider keine Wettervorhersagen abrufen...
+
+User: "Schreib mir eine Python-Funktion zum Sortieren"
+{"intent": "CODE", "effort": 2, "needs_hitl": false}
+Hier ist eine einfache Sortier-Funktion:
+```python
+...
+```
+
+WICHTIG: Der JSON-Header ist IMMER die allererste Zeile. Kein Text davor,
+kein Markdown-Fence drumherum.
+"""
+
+
+def build_huginn_system_prompt(persona: str) -> str:
+    """Patch 164: Persona + Intent-Instruction in einem System-Prompt.
+
+    ``persona`` darf leer sein (User hat Persona explizit deaktiviert) — dann
+    bekommt das LLM nur die Intent-Instruction. Diese ist Pflicht, damit der
+    Intent-Router parsen kann.
+    """
+    if not persona:
+        return INTENT_INSTRUCTION.lstrip()
+    return persona.rstrip() + "\n" + INTENT_INSTRUCTION
+
+
 @dataclass
 class HuginnConfig:
     """Laufzeit-Konfiguration aus config.yaml.modules.telegram."""

@@ -18,13 +18,17 @@ from pydantic import BaseModel
 
 from zerberus.core.config import get_settings, Settings
 from zerberus.core.event_bus import get_event_bus, Event
+from zerberus.core.hitl_policy import get_hitl_policy
 from zerberus.core.input_sanitizer import get_sanitizer
+from zerberus.core.intent import HuginnIntent
+from zerberus.core.intent_parser import parse_llm_response
 from zerberus.core.rate_limiter import get_rate_limiter
 from zerberus.modules.telegram.bot import (
     DEFAULT_HUGINN_PROMPT,
     DEFAULT_SYSTEM_PROMPT,
     HuginnConfig,
     answer_callback_query,
+    build_huginn_system_prompt,
     call_llm,
     extract_message_info,
     format_code_response,
@@ -305,6 +309,9 @@ async def _process_text_message(
     """
     if system_prompt is None:
         system_prompt = _resolve_huginn_prompt(settings)
+    # Patch 164: Intent-Instruction an den Persona-Prompt anhaengen, damit das
+    # LLM jeden Output mit einem JSON-Header versieht (CHAT/CODE/FILE/...).
+    effective_system_prompt = build_huginn_system_prompt(system_prompt)
     user_msg = info.get("text", "") or ""
 
     # Patch 162 (K1, K3, N8): Sanitizer-Pass vor jedem LLM-Call.
@@ -357,7 +364,7 @@ async def _process_text_message(
     llm_result = await _call_llm_with_retry(
         user_message=user_msg,
         model=model,
-        system_prompt=system_prompt,
+        system_prompt=effective_system_prompt,
         image_urls=image_urls or None,
     )
     answer = llm_result.get("content", "") or ""
@@ -374,8 +381,66 @@ async def _process_text_message(
             return {"sent": False, "reason": "llm_unavailable", "error": llm_result.get("error")}
         return {"sent": False, "reason": "empty_llm"}
 
-    # Guard-Check auf Antwort. Patch 158: caller_context mitgeben, damit
-    # Persona-Elemente nicht als Halluzination gelten.
+    # Patch 164: Intent-Header parsen + von der eigentlichen Antwort trennen.
+    # Wenn das LLM keinen Header geliefert hat, faellt der Parser auf
+    # ``CHAT/effort=3/needs_hitl=False`` zurueck und ``parsed.body`` enthaelt
+    # den gesamten Text — das alte Pre-164-Verhalten bleibt damit erhalten.
+    parsed = parse_llm_response(answer)
+    # Schutz gegen LLM-Output, das nur den JSON-Header enthaelt: dann
+    # liefern wir die rohe Antwort zurueck (Header inklusive) — das ist
+    # haesslich, aber besser als eine leere Telegram-Nachricht. In der
+    # Praxis tritt das nur bei kaputten/zu kurzen LLM-Antworten auf.
+    if parsed.raw_header is not None and not parsed.body.strip():
+        logger.warning(
+            "[INTENT-164] LLM lieferte nur Header, kein Body — sende Roh-Antwort",
+        )
+        answer = answer  # urspruengliches LLM-Ergebnis behalten
+    else:
+        answer = parsed.body  # ab hier sehen Guard + User die Antwort OHNE Header
+    user_id_str = str(info.get("user_id") or "")
+    logger.info(
+        "[INTENT-164] Route: user=%s intent=%s effort=%d hitl=%s",
+        user_id_str, parsed.intent.value, parsed.effort, parsed.needs_hitl,
+    )
+    # Patch 164 (1e): Effort-Score Logging — Datengrundlage fuer die
+    # Aufwands-Kalibrierung in Phase C. Heute wird der Score nicht aktiv
+    # genutzt (nur geloggt).
+    effort_bucket = "low" if parsed.effort <= 2 else "mid" if parsed.effort <= 3 else "high"
+    logger.info(
+        "[EFFORT-164] user=%s intent=%s effort=%d bucket=%s",
+        user_id_str, parsed.intent.value, parsed.effort, effort_bucket,
+    )
+
+    # Patch 164 (Block 2, K5/K6/G3/G5): HitL-Policy auswerten. Statische
+    # Regeln pro Intent — NEVER_HITL ueberstimmt LLM-Flag, ADMIN erzwingt
+    # immer Button-HitL. K6: Bestaetigung waere ein Inline-Keyboard,
+    # NICHT natuerliche Sprache. Aktuell wird die Decision nur geloggt
+    # bzw. als Admin-DM gespiegelt — der eigentliche Button-Flow fuer
+    # CODE/FILE/ADMIN-Aktionen folgt mit Phase D (Sandbox/Code-Exec).
+    policy = get_hitl_policy()
+    hitl_decision = policy.evaluate(parsed)
+    if hitl_decision["needs_hitl"]:
+        logger.warning(
+            "[HITL-POLICY-164] Empfehlung: %s (intent=%s, reason=%s)",
+            hitl_decision["hitl_type"], parsed.intent.value, hitl_decision["reason"],
+        )
+        if cfg.admin_chat_id:
+            try:
+                await send_telegram_message(
+                    cfg.bot_token,
+                    cfg.admin_chat_id,
+                    f"🛎 *HitL-Hinweis (P164)*\n"
+                    f"Chat: {info.get('chat_id')}\n"
+                    f"User: {info.get('username', 'unbekannt')}\n"
+                    f"Intent: `{parsed.intent.value}` (effort {parsed.effort})\n"
+                    f"Grund: {hitl_decision['reason']}\n"
+                    f"_Inline-Button-Flow folgt mit Phase D (Sandbox)._",
+                )
+            except Exception as e:
+                logger.warning("[HITL-POLICY-164] Admin-Hinweis fehlgeschlagen: %s", e)
+
+    # Guard-Check auf den Body (ohne JSON-Header). Patch 158: caller_context
+    # mitgeben, damit Persona-Elemente nicht als Halluzination gelten.
     guard_ctx = _build_huginn_guard_context(system_prompt)
     guard = await _run_guard(user_msg, answer, caller_context=guard_ctx)
 
@@ -610,9 +675,14 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
             )
             prompt = build_smart_interjection_prompt(sanitized_recent.cleaned_text)
             # Patch 163 (O10): Auch hier Retry bei 429/503.
+            # Patch 164: System-Prompt mit Intent-Instruction, damit das LLM
+            # auch bei autonomen Einwuerfen einen Header liefert (CHAT-only
+            # Filter folgt unten).
+            persona_for_prompt = _resolve_huginn_prompt(settings)
             llm_result = await _call_llm_with_retry(
                 user_message=prompt,
                 model=cfg.model,
+                system_prompt=build_huginn_system_prompt(persona_for_prompt),
             )
             candidate = llm_result.get("content", "") or ""
             if not candidate.strip():
@@ -625,6 +695,31 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
                     )
                 return {"ok": True, "skipped": "autonomous_llm_unavailable"}
             if is_skip_response(candidate):
+                return {"ok": True, "skipped": "autonomous_skip"}
+            # Patch 164 (Block 3, D3/D4/O6): Intent-Header parsen und
+            # autonome Einwuerfe auf CHAT/SEARCH/IMAGE beschraenken. Ein Bot
+            # darf in einer Gruppe nicht autonom Code ausfuehren oder
+            # Admin-Befehle absetzen.
+            parsed_autonom = parse_llm_response(candidate)
+            allowed_autonomous = {
+                HuginnIntent.CHAT, HuginnIntent.SEARCH, HuginnIntent.IMAGE,
+            }
+            if parsed_autonom.intent not in allowed_autonomous:
+                logger.info(
+                    "[INTENT-164] Gruppen-Einwurf unterdrueckt: Intent %s nicht erlaubt",
+                    parsed_autonom.intent.value,
+                )
+                return {
+                    "ok": True,
+                    "skipped": "autonomous_intent_blocked",
+                    "intent": parsed_autonom.intent.value,
+                }
+            # Body (ohne Header) ist die eigentliche Antwort — falls Header
+            # fehlt, nutzt der Parser den gesamten Text als Body.
+            candidate = parsed_autonom.body or candidate
+            if is_skip_response(candidate):
+                # Falls der Body selbst ein SKIP ist (z. B. weil das LLM nur
+                # Header + "SKIP" geliefert hat).
                 return {"ok": True, "skipped": "autonomous_skip"}
             # Guard-Check — Patch 158: mit Persona-Kontext, nur Admin-Hinweis
             # bei WARNUNG, Antwort wird trotzdem gesendet.

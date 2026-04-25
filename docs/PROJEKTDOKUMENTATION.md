@@ -3602,3 +3602,82 @@ Per-User-Rate-Limit verhindert Cost-Eskalation und Bot-Spam (echter Schutz bei k
 **Neue Dateien:** `zerberus/core/rate_limiter.py`, `zerberus/tests/test_rate_limiter.py`
 
 *Stand: 2026-04-25, Patch 163 — Phase-A-Abschluss. 22 neue Tests grün, 140 passed im non-browser-Subset (keine Regression). Nächster Schritt: Phase B, Patch 164 (Intent-Router, LLM-gestützt).*
+
+---
+
+## Patch 164 — Intent-Router (LLM-gestützt) + HitL-Policy + Sync-Pflicht-Fix (2026-04-25)
+
+### Kontext
+Phase B (Intent-Router + Policy) wird mit diesem Patch eröffnet. Adressiert die nächsten Findings aus dem 7-LLM-Review: **K2** (Intent-Detection ohne Regex-Falle), **K5** (Effort als Jailbreak-Verstärker), **K6** (HitL-Bestätigung via natürlicher Sprache gefährlich), **G3/G5** (Policy-Layer muss VOR Persona-Layer stehen), **D3/D4** (autonome Gruppen-Einwürfe sind nicht gleich CHAT — der Bot darf in einer Gruppe nicht autonom Code ausführen oder Admin-Befehle absetzen), **O4/O6** (Intent ist Routing-Information, nicht nur Output-Form). Außerdem als Block 0 ein **Sync-Pflicht-Fix**, der das wiederkehrende Driften von Ratatoskr und Claude-Repo abstellt.
+
+### Architektur-Entscheidung
+Intent kommt vom **Haupt-LLM via JSON-Header in der eigenen Antwort**, nicht via Regex und nicht via separatem Classifier-Call. Begründung (aus Roadmap v2): Whisper-Transkriptionsfehler machen Regex-Intent-Detection unbrauchbar, ein Extra-Classifier-Call verdoppelt die Latenz, und das Haupt-LLM kann beides — Intent + Antwort — in einem einzigen Call liefern. Der Router parst den JSON-Header, routet entsprechend, und strippt ihn vor der Ausgabe an den User und vor der Übergabe an den Halluzinations-Guard.
+
+Format::
+
+    {"intent": "CHAT|CODE|FILE|SEARCH|IMAGE|ADMIN", "effort": 1-5, "needs_hitl": <bool>}
+    <eigentliche Antwort>
+
+Optional darf der Header in einem ```json-Code-Fence stehen, damit Modelle, die per Default Markdown ausgeben, nicht stolpern.
+
+### Umsetzung
+
+**Block 1 — Intent-Router (drei neue Core-Module):**
+
+- [`zerberus/core/intent.py`](../zerberus/core/intent.py) — `HuginnIntent`-Enum mit den 6 aktiven Kern-Intents (CHAT, CODE, FILE, SEARCH, IMAGE, ADMIN). Die 9 weiteren Intents aus dem Review (EXECUTE, MEMORY, RAG, SCHEDULE, TRANSLATE, SUMMARIZE, CREATIVE, SYSTEM, MULTI) sind als Kommentar reserviert für Phase D/E — `HuginnIntent.from_str("EXECUTE")` fällt heute auf CHAT zurück, anstatt auf einen halb-fertigen Pfad zu zeigen. `from_str()` toleriert None, leeren String und unbekannte Werte (alle → CHAT) und ist case-insensitive.
+
+- [`zerberus/core/intent_parser.py`](../zerberus/core/intent_parser.py) — `parse_llm_response(raw)` mit einem **Brace-Counter** statt einer naiven `[^}]+`-Regex-Klasse, weil Header in Zukunft auch Sonderzeichen enthalten können. Robustheit-Garantien: kein Header → Default `(CHAT, effort=3, needs_hitl=False)` und `body` = Original-Text; kaputtes JSON → Default + Warning-Log; unbekannter Intent → CHAT; effort außerhalb 1–5 → in den Bereich geclampt; effort nicht-numerisch → 3; JSON-Array statt Objekt am Anfang → kein Header gefunden, Body bleibt der ganze Text. Liefert ein `ParsedResponse(intent, effort, needs_hitl, body, raw_header)`-Dataclass.
+
+- [`zerberus/core/hitl_policy.py`](../zerberus/core/hitl_policy.py) — `HitlPolicy.evaluate(parsed)` als zentrale Entscheidungsstelle für „braucht diese Aktion eine Bestätigung?". **NEVER_HITL = {CHAT, SEARCH, IMAGE}** überstimmt LLM-`needs_hitl=true` (K5-Schutz: kein Effort-Inflation-Trick als Jailbreak — „das ist nur effort 1, also egal"). **BUTTON_REQUIRED = {CODE, FILE, ADMIN}** braucht Inline-Keyboard ✅/❌. **ADMIN erzwingt IMMER HitL**, auch wenn das LLM `needs_hitl=false` setzt — Schutz gegen jailbroken LLM, das sein eigenes HitL-Flag manipuliert (K6). „button" heißt Inline-Keyboard, NIE „antworte 'ja' im Chat" — natürliche Sprache als HitL-Bestätigung ist explizit ausgeschlossen, weil „Ja, lösch alles" oder „Ja, mach kaputt" mit Whisper-Fehlern und Sarkasmus zu unsicher sind. Singleton via `get_hitl_policy()` analog zu den anderen Core-Modulen.
+
+**Router-Integration ([`router.py`](../zerberus/modules/telegram/router.py)):** `_process_text_message` benutzt jetzt einen neuen Helper `build_huginn_system_prompt(persona)` aus [`bot.py`](../zerberus/modules/telegram/bot.py), der den Persona-Prompt mit der `INTENT_INSTRUCTION` kombiniert. Persona darf leer sein (User hat sie explizit deaktiviert) — die Intent-Instruction bleibt Pflicht, sonst kann der Parser nichts lesen. Nach dem LLM-Call (mit Retry-Wrapper aus P163) läuft `parse_llm_response()`, dann werden Intent + Effort geloggt (`[INTENT-164]` für Routing, `[EFFORT-164]` mit Bucket low/mid/high) und die Policy ausgewertet (`[HITL-POLICY-164]`). Der Halluzinations-Guard sieht ab jetzt **`parsed.body` (ohne JSON-Header)** statt der rohen LLM-Antwort — sonst hätte Mistral Small den JSON-Header als Halluzination gemeldet, weil ein JSON-Block keine Persona-Antwort ist. Der User sieht ebenfalls den Body ohne Header.
+
+Edge-Case: LLM liefert nur den Header, kein Body → die Roh-Antwort wird gesendet (Header inklusive). Hässlich, aber besser als eine leere Telegram-Nachricht, die mit HTTP 400 abgelehnt würde. In der Praxis tritt das nur bei kaputten oder zu kurzen LLM-Antworten auf.
+
+**HitL-Policy aktuell (P164-Stand):** Decision wird **geloggt + als Admin-DM-Hinweis** verschickt (Chat-ID + User + Intent + Effort + Policy-Reason + Hinweis „_Inline-Button-Flow folgt mit Phase D (Sandbox)._"). Der eigentliche Button-Flow für CODE/FILE/ADMIN-Aktionen folgt mit Phase D, wenn die Sandbox/Code-Execution dazukommt — vorher ist der Flow nicht handlungsfähig (was sollte ein „Approve" für eine reine Text-Antwort heißen?). Der Effort-Score wird in diesem Patch nur geloggt, aktive Routing-Entscheidungen (z. B. „effort 5 → anderes Modell") kommen mit Phase C (Aufwands-Kalibrierung).
+
+**Block 3 — Gruppen-Einwurf-Filter (D3/D4/O6):** Autonome Einwürfe in Gruppen sind ab jetzt **nur für CHAT/SEARCH/IMAGE** erlaubt. CODE/FILE/ADMIN werden unterdrückt mit `skipped="autonomous_intent_blocked"`, ohne Send. Der LLM-Call im Gruppen-Pfad bekommt jetzt ebenfalls den `INTENT_INSTRUCTION`-Block, damit der Parser den Intent erkennen kann; davor lief der Smart-Interjection-Prompt ohne Header-Pflicht. Falls der Body selbst ein „SKIP" ist (LLM hat Header geliefert + nur SKIP als Body), wird das genauso behandelt wie ein bisheriger SKIP-Output.
+
+**Block 0 — Sync-Pflicht-Fix:** Neue Sektion in [`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md) (Bibel-Fibel-Format) und [`SUPERVISOR_ZERBERUS.md`](../SUPERVISOR_ZERBERUS.md) (Prosa). Die Regel: `sync_repos.ps1` ist LETZTER Schritt jedes Patches; der Patch gilt erst als abgeschlossen, wenn Zerberus, Ratatoskr und Claude-Repo synchron sind. Falls Claude Code den Sync nicht selbst ausführen kann (z. B. PowerShell nicht verfügbar oder das Skript wirft Fehler), MUSS er das explizit melden — etwa mit „⚠️ sync_repos.ps1 nicht ausgeführt — bitte manuell nachholen". Stillschweigendes Überspringen ist nicht zulässig. Die alte Formulierung „Session-Ende ODER nach 5. Patch" ist damit überholt, weil die Coda-Umgebung zuverlässig pusht, aber den Sync regelmäßig vergisst.
+
+### Tests
+
+39 neue Tests in vier Dateien:
+
+- [`test_intent.py`](../zerberus/tests/test_intent.py) — 6 Tests: `from_str` valid/case-insensitive/invalid/None/empty/Wert-gleich-Name.
+- [`test_intent_parser.py`](../zerberus/tests/test_intent_parser.py) — 16 Tests: einfacher Header, CODE-mit-HitL, ```json-Fence, case-insensitive Fence; no-header Default-Fallback, broken JSON, empty/None Input, effort-Clamping (≥99→5, ≤−7→1, non-numeric→3), unknown intent → CHAT, missing fields → defaults, JSON-Array-am-Anfang → kein Header; Body-Preservation mit Newlines und Code-Block.
+- [`test_hitl_policy.py`](../zerberus/tests/test_hitl_policy.py) — 11 Tests: NEVER_HITL überstimmt LLM (CHAT/SEARCH/IMAGE), BUTTON_REQUIRED (CODE/FILE), CODE-without-hitl-passes (LLM-Vertrauen), ADMIN-always-hitl (mit + ohne LLM-Flag), Singleton + Reset.
+- [`test_telegram_bot.py`](../zerberus/tests/test_telegram_bot.py) — 6 neue Integration-Tests: `TestGroupInterjectionIntentFilter` (CHAT durchgelassen, CODE blockiert, ADMIN blockiert, FILE blockiert) und `TestIntentHeaderStrippedBeforeGuardAndUser` (Guard sieht Body ohne Header, no-header-fallback liefert raw body).
+
+**Alle 39 grün.** Im fokussierten Subset (Telegram + Sanitizer + Rate-Limiter + Hallucination-Guard + Huginn-Config-Endpoint + Intent + Parser + Policy): **179 passed**. In der breiteren offline-friendly Suite ohne Browser-Tests: **628 passed** (P163-Baseline 589 + 39 P164 = 628 exakt, **keine Regression**).
+
+### Logging-Tags
+- `[INTENT-164]` — Parser intern (Parse-Fehler-Warnung, Debug-Log mit Intent + Effort + Body-Length) und Router-Entscheidung pro Turn (Routing + Edge-Case „nur Header, kein Body" + Gruppen-Einwurf-Unterdrückung).
+- `[EFFORT-164]` — Effort-Score-Logging mit Bucket low (1–2) / mid (3) / high (4–5). Datengrundlage für die Aufwands-Kalibrierung in Phase C.
+- `[HITL-POLICY-164]` — Policy-Decisions, Override-Warnungen (LLM wollte HitL für NEVER_HITL-Intent; ADMIN ohne Flag erzwungen), Admin-Hinweis-Empfehlung, Admin-DM-Fehler.
+
+### Scope
+
+**IN Scope:**
+- Drei neue Core-Module (`intent.py`, `intent_parser.py`, `hitl_policy.py`)
+- `INTENT_INSTRUCTION` + `build_huginn_system_prompt(persona)` in `bot.py`
+- Router-Integration: System-Prompt-Erweiterung, Parsing nach LLM-Call, Header-Strip vor Guard + User, Intent + Effort + Policy-Decision-Logging, Admin-DM-Hinweis
+- Gruppen-Einwurf-Filter (CHAT/SEARCH/IMAGE only)
+- Sync-Pflicht-Fix in CLAUDE_ZERBERUS.md + SUPERVISOR_ZERBERUS.md
+- 4 neue Test-Dateien (39 Tests gesamt)
+- Vollständige Doku (lessons.md, CLAUDE_ZERBERUS.md, SUPERVISOR_ZERBERUS.md, README-Footer, dieser Eintrag)
+
+**NICHT in Scope:**
+- Aktiver Inline-Keyboard-Button-Flow für CODE/FILE/ADMIN — wartet auf Phase D (Sandbox/Code-Execution); ohne ausführbare Aktion macht ein „Approve"-Button keinen Sinn
+- Aktive Effort-basierte Routing-Entscheidungen — Phase C (Aufwands-Kalibrierung), heute nur Logging
+- Rosa-Intents EXECUTE/MEMORY/RAG/SCHEDULE/TRANSLATE/SUMMARIZE/CREATIVE/SYSTEM/MULTI — als Kommentar reserviert, aktiv erst Phase D/E
+- Config-basierte Policy-Regeln — aktuell hardcoded in `HitlPolicy`; Config-Refactor liefert das mit Phase B-Mitte
+- Aufwands-Kalibrierung Dashboard
+
+### Erwartete Wirkung
+Der Bot kann ab jetzt seine eigene Aktion klassifizieren (CHAT vs. CODE vs. ADMIN), und die Policy-Layer ist als Entscheidungspunkt **vor** der Persona-Layer eingezogen — die Persona kann nicht mehr „durchschlagen" und gefährliche Aktionen mit Sarkasmus durchführen. K5/K6 sind explizit adressiert: weder Effort-Inflation noch natürlich-sprachliche Bestätigung kann den HitL-Schutz aushebeln. Im Gruppen-Modus verhindert der Intent-Filter, dass Huginn autonom Code ausführt oder Admin-Befehle absetzt — autonome Einwürfe sind ab jetzt nachweislich auf CHAT/SEARCH/IMAGE beschränkt. Der Effort-Score sammelt Daten für Phase C, ohne heute schon Routing-Entscheidungen zu fällen — das hält den Patch-Scope schlank. Mit dem Sync-Pflicht-Fix sollten Ratatoskr und Claude-Repo nicht mehr unbemerkt driften.
+
+**Geänderte Dateien:** `zerberus/modules/telegram/router.py`, `zerberus/modules/telegram/bot.py`, `lessons.md`, `CLAUDE_ZERBERUS.md`, `SUPERVISOR_ZERBERUS.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`, `zerberus/tests/test_telegram_bot.py`
+**Neue Dateien:** `zerberus/core/intent.py`, `zerberus/core/intent_parser.py`, `zerberus/core/hitl_policy.py`, `zerberus/tests/test_intent.py`, `zerberus/tests/test_intent_parser.py`, `zerberus/tests/test_hitl_policy.py`
+
+*Stand: 2026-04-25, Patch 164 — Phase-B-Auftakt. 39 neue Tests grün, 628 passed im offline-friendly-Subset (keine Regression). Nächster Schritt: Phase B-Mitte (Patch 165+), Config-driven Policy-Severity und LLM-getriebene HitL-Bestätigungs-Texte.*

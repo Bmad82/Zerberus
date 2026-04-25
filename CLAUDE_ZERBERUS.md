@@ -79,6 +79,20 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - **Offset-Persistenz (P162):** `data/huginn_offset.json` speichert letzten `update_id`|Boot lädt via `_load_offset()`|gegen Doppelverarbeitung nach Restart|Tests müssen `OFFSET_FILE` per `monkeypatch.setattr(bot_module, "OFFSET_FILE", tmp_path/"off.json")` umlenken
 - **Forum-Topics / `message_thread_id` (P162, D10):** `extract_message_info()` exposed `message_thread_id`+`is_forwarded`|Alle `send_telegram_message`-Calls in `router.py` reichen `message_thread_id=info.get("message_thread_id")` durch|sonst Antwort im General statt Topic|Telegram ignoriert bei None → nur truthy ins Payload
 
+## Intent-Router (P164)
+- Architektur: Intent kommt vom Haupt-LLM via JSON-Header in der Antwort|kein Regex (Whisper-Fehler) + kein extra Classifier-Call (Latenz)
+- Format: `{"intent":"CHAT|CODE|FILE|SEARCH|IMAGE|ADMIN","effort":1-5,"needs_hitl":bool}` als allererste Zeile|optional in ```json-Fence|Body folgt
+- Enum [`core/intent.py`](zerberus/core/intent.py): 6 Kern-Intents aktiv|Rosa-Future (EXECUTE/MEMORY/RAG/SCHEDULE/TRANSLATE/SUMMARIZE/CREATIVE/SYSTEM/MULTI) als Kommentar reserviert|`HuginnIntent.from_str()` Fallback auf CHAT bei None/Empty/Unknown
+- Parser [`core/intent_parser.py`](zerberus/core/intent_parser.py): Brace-Counter (statt naivem `[^}]+`)|robuste Defaults bei kaputtem JSON, fehlendem Header, unbekanntem Intent, effort außerhalb 1-5
+- `INTENT_INSTRUCTION` + `build_huginn_system_prompt(persona)` in [`bot.py`](zerberus/modules/telegram/bot.py)|wird in `_process_text_message` und im autonomen Gruppen-Einwurf an Persona angehängt|Persona darf leer sein, Intent-Block bleibt
+- Router parsing: Body=`parsed.body` (ohne JSON-Header)|Guard sieht Body, User sieht Body|Edge: nur Header ohne Body → Roh-Antwort als Fallback (Log-Warnung)
+- HitL-Policy [`core/hitl_policy.py`](zerberus/core/hitl_policy.py): NEVER_HITL={CHAT,SEARCH,IMAGE} überstimmt LLM-`needs_hitl=true` (K5)|BUTTON_REQUIRED={CODE,FILE,ADMIN} braucht ✅/❌-Inline-Keyboard|ADMIN erzwingt HitL auch bei `needs_hitl=false` (K6 — jailbroken-LLM-Schutz)|aktuell P164: Decision wird geloggt + Admin-DM-Hinweis|echter Button-Flow folgt Phase D
+- K6-Regel: HitL-Bestätigung NIE per natürlicher Sprache („ja, mach kaputt" kein gültiger GO)|nur Inline-Keyboard
+- Effort-Score: nur geloggt (Bucket low/mid/high)|aktive Routing-Entscheidung kommt mit Phase C (Aufwands-Kalibrierung)
+- Gruppen-Einwurf-Filter (D3/D4/O6): autonome Antworten nur bei {CHAT,SEARCH,IMAGE}|CODE/FILE/ADMIN unterdrückt mit `skipped="autonomous_intent_blocked"`
+- Logging-Tags: `[INTENT-164]` (Parsing+Routing), `[EFFORT-164]` (Effort-Logging), `[HITL-POLICY-164]` (Policy-Decisions)
+- Test-Pattern: `parse_llm_response(raw)` direkt testen (16 Parser-Tests)|Policy `.evaluate(parsed)` direkt testen (11 Policy-Tests)|Integration via `_process_text_message`-Mock (Guard, Send, LLM gemockt)|6 Integration-Tests fuer Gruppen-Filter + Header-Strip
+
 ## Rate-Limiting + Graceful Degradation (P163)
 - [`core/rate_limiter.py`](zerberus/core/rate_limiter.py): Interface `RateLimiter` (Rosa-Skelett für Redis) + `InMemoryRateLimiter` (Huginn-jetzt)|Singleton via `get_rate_limiter()`|Default 10 msg/min/User|Cooldown 60s
 - Integration in [`process_update()`](zerberus/modules/telegram/router.py) GANZ oben (nach Update-Typ-Filter, vor Event-Bus)|nur für `message`-Updates|Callback-Queries ausgenommen (Admin-HitL-Klicks)
@@ -156,6 +170,10 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - Nach jedem Patch: PROJEKTDOKUMENTATION.md anhängen (am Ende, bestehende nicht ändern):
   - Patch-Nr+Titel|Datum (ISO)|Was geändert (1-3 Sätze)|Dateien neu/geändert|Teststand (X grün)
 - PROJEKTDOKUMENTATION.md-Eintrag = Teil jedes Patches, von Claude Code erledigt|alte „liegt beim Supervisor"-Notizen ungültig
-- Session-Ende ODER nach 5. Patch: `powershell -ExecutionPolicy Bypass -File sync_repos.ps1`|sync Ratatoskr (SUPERVISOR/CLAUDE/PROJEKTDOKU/lessons/backlog/README) + Claude-Repo (lessons.md→`lessons/zerberus_lessons.md`)|zieht Commit-Msg aus letztem Zerberus-Commit|pusht nur bei Änderungen
+- **Nach jedem `git push`: `sync_repos.ps1` ausführen** (P164 — Sync ist LETZTER Schritt jedes Patches, Patch gilt erst als abgeschlossen wenn alle 3 Repos synchron)
+- Falls `sync_repos.ps1` Fehler wirft: Chris informieren, NICHT stillschweigend überspringen
+- Falls Umgebung kein PowerShell hat: explizit melden „⚠️ sync_repos.ps1 nicht ausgeführt — bitte manuell nachholen"|nicht „vergessen"
+- Session-Ende ODER nach 5. Patch ist KEINE Ausrede mehr|sync nach JEDEM push (Coda-Setup pusht zuverlässig, vergisst aber Sync)
+- `powershell -ExecutionPolicy Bypass -File sync_repos.ps1`|sync Ratatoskr (SUPERVISOR/CLAUDE/PROJEKTDOKU/lessons/backlog/README) + Claude-Repo (lessons.md→`lessons/zerberus_lessons.md`)|zieht Commit-Msg aus letztem Zerberus-Commit|pusht nur bei Änderungen
 - NIEMALS Ratatoskr/Claude-Repo manuell editieren|nur via `sync_repos.ps1`|direkte Commits werden überschrieben
 - Universelle Lessons können direkt in `C:\Users\chris\Python\Claude\lessons\` (z.B. `sqlite-db.md`)|Sync-Script fasst sie nicht an (schreibt nur `zerberus_lessons.md`)

@@ -212,6 +212,23 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Doku-Updates bleiben Pflicht|aber am Patch-Ende|EIN Read→Write-Zyklus pro Datei|kein separater Read am Anfang + Write am Ende
 - Neue Einträge in CLAUDE_ZERBERUS.md + lessons.md IMMER im Bibel-Fibel-Format (Pipes|Stichpunkte|ArtikelWeg)|sonst zerfasert die in P163 gewonnene Kompression wieder
 
+## Intent-Router via JSON-Header (P164)
+- Architektur-Entscheidung: Intent kommt vom Haupt-LLM via JSON-Header in der eigenen Antwort, NICHT via Regex/Classifier|Whisper-Transkriptionsfehler machen Regex unbrauchbar|Extra-Classifier-Call verdoppelt Latenz
+- Format: `{"intent":"CHAT|CODE|FILE|SEARCH|IMAGE|ADMIN", "effort":1-5, "needs_hitl":bool}`|allererste Zeile, optional in ```json-Fence|Body folgt darunter
+- Parser [`core/intent_parser.py`](zerberus/core/intent_parser.py): Brace-Counter statt naivem `[^}]+`-Regex (Header mit Sonderzeichen)|Robustheit-Garantien: kein Header→CHAT/3/false+Body=Original, kaputtes JSON→Default+Warning, Unbekannt-Intent→CHAT, effort außerhalb 1-5→geclampt, non-numeric effort→3, JSON-Array statt Objekt→kein Header
+- `INTENT_INSTRUCTION` in [`bot.py`](zerberus/modules/telegram/bot.py)|wird via `build_huginn_system_prompt(persona)` an Persona angehängt|Persona darf leer sein (User-Opt-Out), Intent-Block bleibt Pflicht
+- Guard sieht IMMER `parsed.body` (ohne Header)|sonst meldet Mistral Small den JSON-Header als Halluzination|User sieht ebenfalls `parsed.body` ohne Header
+- Edge-Case: LLM liefert nur Header ohne Body → Roh-Antwort senden (Header inklusive)|hässlich aber besser als leere TG-Nachricht|in Praxis selten
+- HitL-Policy [`core/hitl_policy.py`](zerberus/core/hitl_policy.py): NEVER_HITL={CHAT,SEARCH,IMAGE} überstimmt LLM `needs_hitl=true` (K5-Schutz gegen Effort-Inflation)|BUTTON_REQUIRED={CODE,FILE,ADMIN} braucht Inline-Keyboard|ADMIN erzwingt HitL auch bei `needs_hitl=false` (K6-Schutz gegen jailbroken LLM)|`button` heißt ✅/❌ Inline-Keyboard, NIE „antworte 'ja' im Chat"
+- Aktueller Stand P164: Policy evaluiert + loggt + Admin-DM-Hinweis|echter Button-Flow für CODE/FILE/ADMIN-Aktionen folgt mit Phase D (Sandbox/Code-Exec)|Effort-Score ebenfalls nur geloggt (Datengrundlage Phase C Aufwands-Kalibrierung)
+- Gruppen-Einwurf-Filter: autonome Antworten nur bei {CHAT,SEARCH,IMAGE}|CODE/FILE/ADMIN unterdrückt|Bot darf in Gruppen nicht autonom Code ausführen
+- Logging-Tags: `[INTENT-164]` (Parser+Router), `[EFFORT-164]` (Effort-Bucketing low/mid/high), `[HITL-POLICY-164]` (Policy-Decisions)
+
+## Sync-Pflicht nach jedem Push (P164)
+- Coda-Setup pusht zuverlässig nach Zerberus, vergisst aber `sync_repos.ps1`|Ratatoskr+Claude-Repo driften unbemerkt
+- Regel: Sync ist LETZTER Schritt jedes Patches|Patch gilt erst als abgeschlossen wenn alle 3 Repos synchron|nicht „am Session-Ende" oder „nach 5 Patches"
+- Wenn Claude Code Sync nicht ausführen kann (Umgebung): EXPLIZIT melden „⚠️ sync_repos.ps1 nicht ausgeführt — bitte manuell nachholen"|stillschweigendes Überspringen NICHT zulässig
+
 ## Rate-Limiting + Graceful Degradation (P163)
 - Per-User-Limit gegen Telegram-Spam: 10 msg/min/User|Cooldown 60s|InMemory-Singleton in [`core/rate_limiter.py`](zerberus/core/rate_limiter.py) mit Interface `RateLimiter` (Rosa-Skelett für Redis-Variante) + `InMemoryRateLimiter` (Huginn-jetzt)|`first_rejection`-Flag liefert genau EIN „Sachte, Keule"-Reply, danach still ignorieren
 - Sliding-Window pro User: nur Timestamps der letzten 60s halten|`cleanup()` entfernt Buckets nach 5min Inaktivität|Test-Reset via Modul-Singleton-Reset (`rate_limiter._rate_limiter = None`)
