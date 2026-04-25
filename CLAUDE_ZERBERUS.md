@@ -159,6 +159,7 @@ Patch-Prompts werden vom Supervisor (claude.ai Chat) immer als `.md`-Datei gener
   - Was geändert wurde (1–3 Sätze)
   - Welche Dateien neu/geändert
   - Aktuellen Teststand (X Tests grün)
+- **Der PROJEKTDOKUMENTATION.md-Eintrag ist Teil jedes Patches und wird von Claude Code mit erledigt — nicht separat vom Supervisor.** Frühere Patch-Scope-Notizen mit der Formulierung „Pflichtschritt liegt beim Supervisor" sind nicht mehr gültig.
 - **Am Ende jeder Claude-Code-Session ODER nach jedem 5. Patch:** `powershell -ExecutionPolicy Bypass -File sync_repos.ps1` ausführen. Das Script synchronisiert Ratatoskr (SUPERVISOR/CLAUDE/PROJEKTDOKUMENTATION/lessons/backlog/README) und das Claude-Repo (nur lessons.md, als `lessons/zerberus_lessons.md`) automatisch, zieht die Commit-Message aus dem letzten Zerberus-Commit und pusht nur, wenn es Änderungen gibt.
 - **Niemals** Ratatoskr oder das Claude-Repo manuell editieren — immer nur via `sync_repos.ps1` aus Zerberus kopieren. Direkte Commits dort werden beim nächsten Sync überschrieben.
 - Universelle, projektübergreifende Lessons können zusätzlich direkt in `C:\Users\chris\Python\Claude\lessons\` unter einem generischen Namen abgelegt werden (z.B. `sqlite-db.md`, `frontend-js.md`) — das Sync-Script fasst sie nicht an, weil es nur `zerberus_lessons.md` schreibt.

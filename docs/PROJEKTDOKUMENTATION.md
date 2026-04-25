@@ -3379,3 +3379,95 @@ modules:
 **Neue Dateien:** keine
 
 *Stand: 2026-04-24, Patch 155 — Huginn Long-Polling + Lessons-Konsolidierung.*
+
+---
+
+## Patch 162 — Input-Sanitizer + Telegram-Hardening
+*2026-04-25*
+
+### Problem
+Der 7-LLM-Architektur-Review (Patch 161) hat als kritischste offene Findings markiert: **K1** (kein Input-Guard vor dem LLM — Jailbreaks und Injection-Versuche kamen ungefiltert an), **K3** (Forwarded-/Reply-Chains als Injection-Vektor in Gruppen), **O1/O2** (unbekannte Update-Typen und edited_message verursachen unnötige LLM-Calls bzw. lassen nachträgliches Umschreiben einer Nachricht zu einem Jailbreak zu), **O3** (in einer Telegram-Gruppe konnte jeder beliebige User die HitL-Buttons eines anderen Users klicken — Telegram validiert das by design nicht), **D8/N8** (Long-Polling-Offset war nur im RAM, nach Server-Restart fing der Bot bei 0 an und verarbeitete bereits gesehene Updates erneut), **D9** (channel_post-Updates wurden eingelesen obwohl Huginn in Channels nichts verloren hat), **D10** (Antworten in Forum-Topics landeten im General statt im richtigen Thread).
+
+### Lösung
+Phase A der Huginn-Roadmap v2 — Sicherheits-Fundament. Zwei-Schichten-Prinzip: pragmatischer RegexSanitizer für Huginn-jetzt, Interface vorbereitet für Rosa-ML-Variante. Update-Typ-Filter, Offset-Persistenz, Topic-Routing und Callback-Spoofing-Schutz schließen die Telegram-Protokoll-Lücken.
+
+### Umsetzung
+**[`zerberus/core/input_sanitizer.py`](../zerberus/core/input_sanitizer.py) — neue Datei:**
+- `InputSanitizer` (ABC) als Interface, `RegexSanitizer` als Huginn-Implementierung.
+- 16 Injection-Patterns (DE+EN): Anweisungs-Overrides, Rollenspiel-Hijacking, Prompt-Leak-Versuche, Markdown/Code-Fence-Tricks, deutsche Varianten. Bewusst konservativ — kein False-Positive auf normales Deutsch wie „Kannst du das ignorieren?".
+- Steuerzeichen-Filter (entfernt Null-Bytes, ASCII-Bell etc.; behält `\n \r \t`).
+- Max-Länge 4096 = Telegram-Limit.
+- Forwarded-Marker als Metadata-Hinweis (K3-Vektor).
+- Singleton via `get_sanitizer()` analog `get_settings()`. Test-Reset-Helper `_reset_sanitizer_for_tests()`.
+- **Findings werden geloggt, NICHT geblockt** (Tag `[SANITIZE-162]`). Im Huginn-Modus ist `blocked` immer `False` — der Guard (Mistral Small) entscheidet final. Der `blocked=True`-Pfad ist im Konsumenten implementiert (sendet „🚫 Nachricht wurde aus Sicherheitsgründen blockiert.") und kommt mit Rosa zum Tragen sobald Config-Key `security.input_sanitizer.mode = "ml"` existiert.
+
+**[`zerberus/modules/telegram/router.py`](../zerberus/modules/telegram/router.py):**
+- Update-Typ-Filter ganz oben in `process_update()`: `channel_post`/`edited_channel_post` (D9), `edited_message` (O2), unbekannte Typen wie `poll`/`my_chat_member`-only (O1) werden lautlos verworfen mit Tag `[HUGINN-162]`. Vor dem Event-Bus, vor Manager-Setup.
+- Sanitizer-Integration in `_process_text_message` UND im autonomen Gruppen-Einwurf-Pfad — jeder Text der ans LLM geht, läuft erst durch den Sanitizer.
+- `message_thread_id` wird durch alle `send_telegram_message`-Calls durchgereicht.
+- Callback-Validierung: `clicker_id` muss in `{admin_chat_id, requester_user_id}` sein, sonst Popup („🚫 Das ist nicht deine Anfrage.") via `answer_callback_query()` mit `show_alert=True`. Logs `[HUGINN-162] Callback-Spoofing blockiert (O3)`.
+- HitL-Group-Join-Anfrage trägt jetzt `requester_user_id=info.get("user_id")`.
+
+**[`zerberus/modules/telegram/bot.py`](../zerberus/modules/telegram/bot.py):**
+- `_load_offset()` / `_save_offset()` — persistent in `data/huginn_offset.json` (D8/N8). Korrupte Datei → graceful Fallback auf 0.
+- `long_polling_loop()` startet mit dem geladenen Offset und persistiert nach jedem verarbeiteten Update.
+- `_POLL_ALLOWED_UPDATES` ohne `channel_post` (spart Telegram-Bandbreite; Webhook-Setups bleiben über den `process_update`-Filter geschützt).
+- `send_telegram_message()` neuer Parameter `message_thread_id` (D10).
+- `extract_message_info()` exposed `is_forwarded` (`forward_origin`/`forward_from`/`forward_from_chat`) und `message_thread_id`.
+- `answer_callback_query(callback_query_id, bot_token, text, show_alert)` — neuer Helper für Telegram-Callback-Antworten.
+
+**[`zerberus/modules/telegram/hitl.py`](../zerberus/modules/telegram/hitl.py):**
+- `HitlRequest` neues Feld `requester_user_id: Optional[int]` (O3-Validierung).
+- `HitlManager.create_request()` neuer optionaler Parameter `requester_user_id`.
+
+**[`.gitignore`](../.gitignore):**
+- `data/huginn_offset.json` ergänzt (Runtime-State, gehört nicht ins Repo).
+
+### Tests
+**[`zerberus/tests/test_input_sanitizer.py`](../zerberus/tests/test_input_sanitizer.py) — neue Datei (11 Tests):**
+- `TestRegexSanitizerBasics` (5): clean, empty, max-length, control-chars, newline/tab preserved.
+- `TestInjectionDetection` (4): English pattern, German pattern, not-blocked-in-Huginn-mode, no-false-positive auf normales Deutsch.
+- `TestForwardedMessage` (2): forwarded-Finding gesetzt / nicht gesetzt.
+- `TestSingleton` (2): Identität, Interface-Konformität.
+
+**[`zerberus/tests/test_telegram_bot.py`](../zerberus/tests/test_telegram_bot.py) — 17 neue Tests:**
+- `TestProcessUpdateFilters` (3): channel_post / edited_message / unknown_update_type werden ignoriert.
+- `TestOffsetPersistence` (4): Save+Load, kein File → 0, korrupte Datei → 0, Loop nutzt geladenen Offset und persistiert.
+- `TestThreadIdRouting` (4): Payload enthält thread_id, omitted bei None, extract_message_info-Felder (forward + thread).
+- `TestCallbackSpoofing` (3): Admin-Klick erlaubt, Requester-Klick erlaubt, fremder User → blockiert mit Popup-Alert.
+- `TestAnswerCallbackQuery` (2): API-Call-Format, no-token → False.
+- Außerdem: zwei pre-existierende Polling-Tests (`test_long_polling_loop_advances_offset`, `test_long_polling_handler_exception_does_not_break_loop`) auf `tmp_path`-Patch umgestellt — sie schrieben sonst in die echte `data/huginn_offset.json` und kontaminierten Folge-Tests.
+
+**Test-Bilanz:**
+- Non-Browser-Suite: **438 passed** (Baseline 422 → +16 reale neue Asserts; nicht 28, weil Singleton-Sharing-Fixtures als ein Setup zählen). Keine Regressionen.
+- Telegram + Sanitizer in Isolation: **81/81 grün**.
+
+### Scope-Entscheidungen
+- **`logging` statt `structlog`.** Der Patch-Vorschlag aus dem Review nutzte `structlog.get_logger()` — Zerberus hat aber überall `logging.getLogger(...)`. Auf den vorhandenen Logger-Stil adaptiert.
+- **Sanitizer blockt nicht im Huginn-Modus.** False-Positive-Risiko bei Regex auf normales Deutsch ist real, und Huginn lebt von Persona/Sarkasmus. Der `blocked=True`-Pfad ist im Code vorhanden, aber für Rosa reserviert (config-driven via `security.input_sanitizer.mode`, kommt mit Patch 163+).
+- **Callback-Validierung erlaubt Admin ODER Requester** (statt nur Requester). So bleibt der heutige Admin-DM-Pfad funktional, und zukünftige In-Group-HitL-Buttons sind abgesichert. String-Vergleich auf beiden Seiten, weil Telegram `from.id` als int liefert aber `admin_chat_id` häufig als String konfiguriert ist.
+- **`channel_post` aus Polling raus**, nicht nur in `process_update()` filtern. Spart Bandbreite UND macht den Filter explizit. Webhook-Setups bleiben über den `process_update`-Filter geschützt.
+- **NICHT in Scope:** Config-Key `security.input_sanitizer.mode` (Patch 163+), `security.guard_fail_policy`, Rate-Limiting, Intent-Router, Nala-seitiger Sanitizer (Nala hat eigene Pipeline).
+
+**Geänderte Dateien:** `zerberus/modules/telegram/bot.py`, `zerberus/modules/telegram/hitl.py`, `zerberus/modules/telegram/router.py`, `zerberus/tests/test_telegram_bot.py`, `.gitignore`, `CLAUDE_ZERBERUS.md`, `SUPERVISOR_ZERBERUS.md`, `lessons.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`
+**Neue Dateien:** `zerberus/core/input_sanitizer.py`, `zerberus/tests/test_input_sanitizer.py`
+
+*Stand: 2026-04-25, Patch 162 — Input-Sanitizer aktiv (loggt + lässt durch), Telegram-Protokoll gegen Spoofing/Replay/Edit-Jailbreak gehärtet, Forum-Topics werden korrekt geroutet.*
+
+---
+
+## Patch 162b — PROJEKTDOKUMENTATION-Eintrag + Repo-Sync-Pflicht-Klarstellung
+*2026-04-25*
+
+### Problem
+Patch 162 wurde committet und gepusht ohne Eintrag in `docs/PROJEKTDOKUMENTATION.md`, weil bisherige Scope-Notizen („Pflichtschritt liegt beim Supervisor") suggerierten, der Patchlog-Eintrag liege nicht im Verantwortungsbereich von Claude Code. Das hat in der Vergangenheit dazu geführt, dass die Patches 156–161 ebenfalls keinen Eintrag bekommen haben — die Dokumentation hängt seitdem hinter dem Code-Stand zurück.
+
+### Lösung
+- **[`docs/PROJEKTDOKUMENTATION.md`](PROJEKTDOKUMENTATION.md):** Patch-162-Eintrag im Patch-155-Stil angehängt (Problem / Lösung / Umsetzung / Tests / Scope-Entscheidungen / Geänderte Dateien / Stand-Footer).
+- **[`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md), Sektion „Repo-Sync-Pflicht":** Neuer Satz „Der PROJEKTDOKUMENTATION.md-Eintrag ist Teil jedes Patches und wird von Claude Code mit erledigt — nicht separat vom Supervisor." Frühere Formulierungen mit „Pflichtschritt liegt beim Supervisor" sind explizit als nicht mehr gültig markiert.
+- Die historischen Patch-Scope-Notizen in [`SUPERVISOR_ZERBERUS.md`](../SUPERVISOR_ZERBERUS.md) (Patch 159, 161) werden NICHT rückwirkend geändert — sie dokumentieren den damaligen Stand.
+
+**Geänderte Dateien:** `docs/PROJEKTDOKUMENTATION.md`, `CLAUDE_ZERBERUS.md`
+**Neue Dateien:** keine
+
+*Stand: 2026-04-25, Patch 162b — Doku-Disziplin korrigiert: PROJEKTDOKUMENTATION-Eintrag ist ab jetzt fester Bestandteil jedes Patches.*
