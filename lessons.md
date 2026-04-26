@@ -233,6 +233,15 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Retroaktiv: Code ohne Tests → Tests nachrüsten bei Gelegenheit (kein eigener Patch nötig)
 - P165-Sweep: 88 neue Tests (test_dialect_core, test_prompt_features, test_hitl_manager, test_language_detector, test_db_helpers) für vorher untestete Pure-Function-Module
 
+## HitL-Hardening (P167)
+- HitL-State im RAM = Datenverlust bei Restart|jede Reservierung muss in SQLite|`hitl_tasks`-Tabelle mit UUID4-Hex-PK ist Source-of-Truth|In-Memory-Cache nur Beschleuniger + `asyncio.Event`-Notifizierung
+- Async API + Sync-Backward-Compat-Wrapper nebeneinander: neue async `create_task`/`resolve_task`/`expire_stale_tasks`/`get_pending_tasks` schreiben in DB|alte sync `create_request`/`approve`/`reject`/`get` bleiben rein in-memory für Pre-167-Tests|`persistent=False`-Schalter im Konstruktor erspart DB-Stub für Unit-Tests|`HitlRequest = HitlTask` + `@property`-Aliase (`request_id`/`request_type`/`requester_chat_id`/`requester_user_id`) damit alter Code weiterläuft
+- Ownership-Check sitzt im Router-Callback, nicht im Manager|`is_admin = clicker == admin_chat_id`, `is_requester = clicker == task.requester_id`|`is_admin_override` an `resolve_task` durchreichen → ein einzelner WARNING-Log `[HITL-167] Admin-Override` reicht für Audit-Trail
+- Auto-Reject-Sweep als eigener `asyncio.Task`: gestartet in `startup_huginn()` (nach `_get_managers`), gestoppt in `shutdown_huginn()` (vor Polling-Cancel)|Sweep-Loop ruft `expire_stale_tasks()` und Callback `on_expired(task)` für Telegram-Hinweis|Cancel via `CancelledError` → durchreichen, sonst hängt Server-Shutdown
+- Default-Werte für HitL (`timeout_seconds=300`/`sweep_interval_seconds=30`) im Pydantic-Model `HitlConfig` ([`core/config.py`](zerberus/core/config.py)) — config.yaml gitignored, deshalb müssen Sicherheits-Defaults im Code stehen (analog `OpenRouterConfig.provider_blacklist`)|Modul liest mit `HitlConfig().timeout_seconds` als Fallback, config.yaml darf überschreiben
+- P8 wird operationalisiert durch das Routing: Callback-Handler nimmt **nur** `callback_query`-Events, nie Text-Eingaben|„Ja mach mal" als CODE-Confirm ist damit konstruktiv unmöglich, nicht nur „nicht erlaubt"
+- Test-Pattern für DB-Tasks: `tmp_db`-Fixture mit eigener SQLite (analog `test_memory_store.py`)|Stale-Tasks per `update().values(created_at=...)` in DB zurückdatieren statt Real-Time-Sleep|`_reset_telegram_singletons_for_tests()` für Router-Tests, weil HitlManager als Modul-Singleton läuft
+
 ## Log-Hygiene + Repo-Sync-Verifikation (P166)
 - Routine-Heartbeats fluten Terminal|Pacemaker-Puls/Watchdog-Healthcheck/Audio-Transkripte → DEBUG, nicht INFO|sichtbar bleibt nur Start/Stop/Problem
 - Audio-Transkript-Logs: nur Längen-Einzeiler auf INFO|voller Text auf DEBUG (für Debugging on-demand)

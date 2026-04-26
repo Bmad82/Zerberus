@@ -1,8 +1,31 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 166 (2026-04-26) – Legacy-Härtungs-Inventar + Log-Hygiene + Repo-Sync-Verifikation*
+*Letzte Aktualisierung: Patch 167 (2026-04-27) – HitL-Hardening Phase C: SQLite-Persistenz, Task-IDs, Auto-Reject-Timeout, Ownership*
 
 ## Aktueller Patch
+
+**Patch 167** — HitL-Hardening Phase C: SQLite-Persistenz, Task-IDs, Auto-Reject-Timeout, Ownership (2026-04-27)
+
+- **Phase-C-Auftakt, mittleres Risiko (HitL-Subsystem bekommt persistenten State + neue Logik).** Adressiert die Findings N2 (Persistenz), N4 (Ownership), D2 (Multi-Task-Disambiguierung), P4 (Auto-Reject-Timeout) und P8 (Natürliche Sprache als CODE/FILE/ADMIN-Confirm gefährlich) aus dem 7-LLM-Review.
+- **Block 1 — Task-ID-System + SQLite-Persistenz:** Neue DB-Tabelle `hitl_tasks` ([`zerberus/core/database.py::HitlTask`](zerberus/core/database.py)) mit UUID4-Hex-IDs (32 Zeichen), Status `pending`/`approved`/`rejected`/`expired`, `created_at`/`resolved_at`/`resolved_by`/`admin_comment`. Tabelle wird via `Base.metadata.create_all` in `init_db()` angelegt. `HitlManager` ([`zerberus/modules/telegram/hitl.py`](zerberus/modules/telegram/hitl.py)) refactored: neue async API (`create_task`, `get_task`, `resolve_task`, `get_pending_tasks`, `expire_stale_tasks`), DB ist Source-of-Truth, In-Memory-Cache als Fast-Path + `asyncio.Event`-Notifizierung. Sync-Methoden (`create_request`, `approve`, `reject`, `get`, `wait_for_decision`) bleiben als Backward-Compat-Shim für Pre-167-Tests (rein in-memory). `HitlRequest = HitlTask` mit Property-Aliases (`request_id`, `request_type`, `requester_chat_id`, `requester_user_id`).
+- **Block 2 — Task-Ownership:** Der Callback-Pfad in [`process_update`](zerberus/modules/telegram/router.py) prüft jetzt explizit per Task-ID: Klick vom Requester → erlaubt; Klick vom Admin (`admin_chat_id`) bei fremder Anfrage → erlaubt mit `[HITL-167] Admin-Override`-Log; Klick eines Dritten → blockiert via `answer_callback_query(show_alert=True)`. Unbekannte Task-ID → freundliches „❓ Anfrage unbekannt oder bereits abgelaufen.". Doppel-Klick → „ℹ️ Schon entschieden.".
+- **Block 3 — Auto-Reject-Timeout-Sweep:** Periodischer Sweep-Task `hitl_sweep_loop(manager, interval, on_expired)` markiert alle `pending`-Tasks älter als `timeout_seconds` als `expired` und sendet pro Task eine Telegram-Nachricht „⏰ Anfrage verworfen — zu langsam, Bro.". Lifecycle: gestartet in `startup_huginn()`, gestoppt in `shutdown_huginn()`. Defaults im neuen `HitlConfig`-Pydantic-Model ([`zerberus/core/config.py`](zerberus/core/config.py)) — `timeout_seconds=300`, `sweep_interval_seconds=30` — greifen auch nach frischem `git clone` ohne config.yaml-Override (config.yaml gitignored).
+- **Block 4 — Bestätigungs-Modus nach Intent:** Die statische Tabelle aus Patch 164 (`HitlPolicy.evaluate`) bleibt: CODE/FILE/ADMIN → `hitl_type="button"`, alles andere → `none`. P8 wird durch das Routing operationalisiert: Der Resolver-Pfad nimmt **nur** Inline-Button-Callbacks an, NIE Text. „Ja mach mal" als CODE-Confirm ist damit konstruktiv unmöglich.
+- **Tests:** Neue Datei [`zerberus/tests/test_hitl_hardening.py`](zerberus/tests/test_hitl_hardening.py) mit 16 Tests in 7 Klassen: Lifecycle (create/approve/reject/sweep-expire), Ownership (Requester/Admin-Override/Fremder via Router), Callback-Parsing (UUID4 + unbekannte Task-ID), Doppel-Bestätigung, Sweep-Loop-Callback, DB-Persistenz über simuliertem Restart, Intent-Policy-Matrix, Builder-Helfer. `tmp_db`-Fixture mit eigener SQLite (analog `test_memory_store.py`), `_reset_telegram_singletons_for_tests()` für Router-Tests. `test_hitl_manager.py` und `test_telegram_bot.py` an neue Feld-Namen + `persistent=False`-Schalter angepasst (UUID4-32-Zeichen-IDs, `expired` statt `timeout`). **Alle HitL/Telegram-Tests grün** (74 Tests im Telegram-Subset, 16 neue im Hardening-Subset).
+- **Logging-Tags:** Neuer Tag `[HITL-167]` für alle Manager-/Sweep-Events (Task erstellt, bestätigt, abgelehnt, abgelaufen, Admin-Override). `[HUGINN-167]` für Sweep-Lifecycle in `main.py`. `[HITL-POLICY-164]` bleibt aktiv für Policy-Decisions.
+- **Scope:** IN Scope: 5 Code-Dateien (database.py, config.py, hitl.py, router.py, main.py), 3 Test-Dateien (1 neu, 2 angepasst), Updates in CLAUDE_ZERBERUS.md, README.md, dieser Eintrag, PROJEKTDOKUMENTATION.md, lessons.md. NICHT in Scope: Datei-Output-Logik (Patch 168), Sandbox-Anbindung (Phase D), Severity-Level (LOW/MEDIUM/HIGH/CRITICAL — Rosa-Skelett), Four-Eyes-Principle (Rosa), HitL für Nala-Web (nur Huginn/Telegram).
+- **Live-Verifikation (USER):**
+  1. Huginn: CODE-Anfrage senden → Inline-Buttons mit ✅/❌.
+  2. Huginn: ✅ klicken → Task wird ausgeführt, Bestätigungsmeldung.
+  3. Huginn: ❌ klicken → „Anfrage abgelehnt".
+  4. Huginn: 5 Minuten warten ohne Klick → „⏰ Anfrage verworfen — zu langsam, Bro.".
+  5. Huginn: Fremder User klickt Button → blockiert (Popup).
+  6. Huginn: Zwei ADMIN-Anfragen gleichzeitig → eigene Buttons mit eigener Task-ID.
+  7. Huginn: Server-Neustart mit wartender Task → Task ist nach Restart noch da.
+  8. Huginn: CHAT-Anfrage → direkte Antwort ohne Buttons (Fastlane unverändert).
+- **Phase-C-Mitte:** Nächster Schritt ist Patch 168 (Datei-Output-Logik), danach kommen Sandbox-Anbindung und Severity-Level (Phase D + Rosa-Skelett).
+
+---
 
 **Patch 166** — Legacy-Härtungs-Inventar + Log-Hygiene + Repo-Sync-Verifikation (2026-04-26)
 

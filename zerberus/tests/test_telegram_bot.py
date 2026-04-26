@@ -312,16 +312,18 @@ class TestHitlManager:
 
     def test_wait_for_decision_timeout(self):
         async def go():
-            hm = HitlManager(timeout_seconds=1)
+            # Patch 167: persistent=False fuer reinen In-Memory-Pfad.
+            hm = HitlManager(timeout_seconds=1, persistent=False)
             req = hm.create_request("code_execution", 42, "chris", "details")
             status = await hm.wait_for_decision(req.request_id, timeout=0.1)
             return status
         status = asyncio.run(go())
-        assert status == "timeout"
+        # Patch 167: Status heisst 'expired' statt 'timeout'.
+        assert status == "expired"
 
     def test_wait_for_decision_approved(self):
         async def go():
-            hm = HitlManager(timeout_seconds=5)
+            hm = HitlManager(timeout_seconds=5, persistent=False)
             req = hm.create_request("code_execution", 42, "chris", "details")
             # Approve nach einem kleinen Delay
             async def approver():
@@ -356,11 +358,13 @@ class TestHitlHelpers:
         assert parse_callback_data("other:stuff") is None
 
     def test_admin_message_has_id(self):
+        # Patch 167: HitlRequest = HitlTask, neue Feld-Namen.
         from zerberus.modules.telegram.hitl import HitlRequest
         req = HitlRequest(
-            request_id="abc",
-            request_type="code_execution",
-            requester_chat_id=42,
+            id="abc",
+            requester_id=42,
+            chat_id=42,
+            intent="code_execution",
             requester_username="chris",
             details="details",
         )
@@ -371,7 +375,7 @@ class TestHitlHelpers:
     def test_decision_message_variants(self):
         from zerberus.modules.telegram.hitl import HitlRequest
         req = HitlRequest(
-            request_id="abc", request_type="x", requester_chat_id=1,
+            id="abc", requester_id=42, chat_id=1, intent="x",
             requester_username="u", details="d",
         )
         req.status = "approved"
@@ -379,13 +383,15 @@ class TestHitlHelpers:
         req.status = "rejected"
         req.admin_comment = "foo"
         assert "abgelehnt" in build_group_decision_message(req)
-        req.status = "timeout"
+        # Patch 167: 'expired' ersetzt 'timeout', alte Werte werden
+        # weiterhin akzeptiert.
+        req.status = "expired"
         assert "abgebrochen" in build_group_decision_message(req).lower()
 
     def test_group_waiting_message(self):
         from zerberus.modules.telegram.hitl import HitlRequest
         req = HitlRequest(
-            request_id="abc", request_type="x", requester_chat_id=1,
+            id="abc", requester_id=42, chat_id=1, intent="x",
             requester_username="u", details="d",
         )
         msg = build_group_waiting_message(req)
@@ -905,7 +911,10 @@ class TestCallbackSpoofing:
         async def fake_send(token, chat_id, text, **kw):
             sends.append((chat_id, text))
             return True
+        async def fake_answer(*a, **kw):
+            return True
         monkeypatch.setattr(telegram_router, "send_telegram_message", fake_send)
+        monkeypatch.setattr(telegram_router, "answer_callback_query", fake_answer)
 
         # HitL-Anfrage anlegen, dann Admin klickt approve
         settings = _FakeSettings162(admin_chat_id="42")
@@ -937,7 +946,10 @@ class TestCallbackSpoofing:
 
         async def fake_send(*a, **kw):
             return True
+        async def fake_answer(*a, **kw):
+            return True
         monkeypatch.setattr(telegram_router, "send_telegram_message", fake_send)
+        monkeypatch.setattr(telegram_router, "answer_callback_query", fake_answer)
 
         settings = _FakeSettings162(admin_chat_id="42")
         gm, hm = telegram_router._get_managers(settings)

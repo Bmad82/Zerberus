@@ -1,10 +1,12 @@
 """Patch 165 — Tests fuer ``zerberus.modules.telegram.hitl``.
 
-Deckt den HitL-Lifecycle ab (P123): Request anlegen, approve/reject,
+Deckt den HitL-Lifecycle ab (P123/167): Request anlegen, approve/reject,
 Timeout-Pfad, Callback-Daten-Parser, Inline-Keyboard-Builder.
 
 Bisher gab es nur ``test_hitl_policy.py`` (Policy-Decisions); die
 Manager-Klasse selbst war ungetestet.
+
+Patch 167 — Sync-API ist Backward-Compat-Shim. UUID4-IDs sind 32 Hex-Zeichen.
 """
 from __future__ import annotations
 
@@ -32,7 +34,8 @@ class TestHitlManagerCreate:
         a = m.create_request("code_execution", 1, "u1", "details A")
         b = m.create_request("code_execution", 2, "u2", "details B")
         assert a.request_id != b.request_id
-        assert len(a.request_id) == 12
+        # Patch 167: UUID4-Hex (32 Zeichen) statt der alten 12-Zeichen-IDs.
+        assert len(a.request_id) == 32
 
     def test_create_request_default_status_pending(self):
         m = HitlManager()
@@ -95,7 +98,7 @@ class TestHitlManagerDecisions:
 class TestHitlManagerWait:
     def test_wait_returns_approved_after_approve(self):
         async def run():
-            m = HitlManager(timeout_seconds=10)
+            m = HitlManager(timeout_seconds=10, persistent=False)
             req = m.create_request("code_execution", 1, "u1", "x")
 
             async def approver():
@@ -112,11 +115,13 @@ class TestHitlManagerWait:
 
     def test_wait_returns_timeout_after_no_decision(self):
         async def run():
-            m = HitlManager(timeout_seconds=10)
+            # persistent=False — reiner In-Memory-Modus (kein DB-Stub noetig).
+            m = HitlManager(timeout_seconds=10, persistent=False)
             req = m.create_request("code_execution", 1, "u1", "x")
             return await m.wait_for_decision(req.request_id, timeout=0.05)
 
-        assert asyncio.run(run()) == "timeout"
+        # Patch 167: Status heisst jetzt 'expired' statt 'timeout'.
+        assert asyncio.run(run()) == "expired"
 
     def test_wait_unknown_id_returns_unknown(self):
         async def run():
@@ -173,10 +178,12 @@ class TestBuildAdminKeyboard:
 
 class TestBuildAdminMessage:
     def test_admin_message_contains_metadata(self):
+        # Patch 167: HitlRequest ist Alias fuer HitlTask mit neuen Feld-Namen.
         req = HitlRequest(
-            request_id="rid42",
-            request_type="code_execution",
-            requester_chat_id=1234,
+            id="rid42",
+            requester_id=42,
+            chat_id=1234,
+            intent="code_execution",
             requester_username="chris",
             details="run rm -rf /",
         )
@@ -190,9 +197,10 @@ class TestBuildAdminMessage:
     def test_admin_message_truncates_long_details(self):
         long_details = "Z" * 5000
         req = HitlRequest(
-            request_id="rid42",
-            request_type="group_join",  # kein 'Z' im Vorwort
-            requester_chat_id=1,
+            id="rid42",
+            requester_id=42,
+            chat_id=1,
+            intent="group_join",  # kein 'Z' im Vorwort
             requester_username="u",
             details=long_details,
         )
@@ -203,9 +211,10 @@ class TestBuildAdminMessage:
 class TestBuildGroupMessages:
     def test_waiting_message_contains_request_id_and_type(self):
         req = HitlRequest(
-            request_id="rid42",
-            request_type="group_join",
-            requester_chat_id=1,
+            id="rid42",
+            requester_id=42,
+            chat_id=1,
+            intent="group_join",
             requester_username="u",
             details="x",
         )
@@ -215,9 +224,10 @@ class TestBuildGroupMessages:
 
     def test_decision_message_approved(self):
         req = HitlRequest(
-            request_id="rid42",
-            request_type="x",
-            requester_chat_id=1,
+            id="rid42",
+            requester_id=42,
+            chat_id=1,
+            intent="x",
             requester_username="u",
             details="d",
             status="approved",
@@ -226,9 +236,10 @@ class TestBuildGroupMessages:
 
     def test_decision_message_rejected_with_reason(self):
         req = HitlRequest(
-            request_id="rid42",
-            request_type="x",
-            requester_chat_id=1,
+            id="rid42",
+            requester_id=42,
+            chat_id=1,
+            intent="x",
             requester_username="u",
             details="d",
             status="rejected",
@@ -239,12 +250,15 @@ class TestBuildGroupMessages:
         assert "zu riskant" in msg
 
     def test_decision_message_timeout(self):
+        # Patch 167: 'expired' ist der neue Status; 'timeout' bleibt als
+        # Backward-Compat erkannt (Patch 123).
         req = HitlRequest(
-            request_id="rid42",
-            request_type="x",
-            requester_chat_id=1,
+            id="rid42",
+            requester_id=42,
+            chat_id=1,
+            intent="x",
             requester_username="u",
             details="d",
-            status="timeout",
+            status="expired",
         )
         assert "Keine Admin-Reaktion" in build_group_decision_message(req)

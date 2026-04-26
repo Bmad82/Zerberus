@@ -156,6 +156,17 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - Neue HitL-Pfade (Code-Exec, File-Ops): `requester_user_id=info.get("user_id")` an `create_request()`|sonst nur-Admin-Fallback (DM-only ok, In-Group-Buttons offen)
 - String-Vergleich: TG liefert `from.id` als int|`admin_chat_id` oft String|`str(...)` auf beiden Seiten
 
+## HitL-Hardening (P167)
+- DB-Tabelle `hitl_tasks` ([`core/database.py::HitlTask`](zerberus/core/database.py))|UUID4-Hex-IDs (32 Zeichen)|Status: `pending`/`approved`/`rejected`/`expired`|`Base.metadata.create_all` in `init_db()` legt Tabelle an
+- `HitlManager` ([`modules/telegram/hitl.py`](zerberus/modules/telegram/hitl.py)) async + DB-backed: `create_task` / `get_task` / `resolve_task(decision="approved"\|"rejected", is_admin_override=bool)` / `get_pending_tasks(chat_id=None)` / `expire_stale_tasks()` / `wait_for_decision`|In-Memory-Cache als Fast-Path + `asyncio.Event`-Notifizierung|`persistent=False` für Unit-Tests ohne DB
+- Backward-Compat: Sync-Methoden (`create_request`/`approve`/`reject`/`get`) laufen rein in-memory|`HitlRequest = HitlTask`|alte Feld-Namen (`request_id`/`request_type`/`requester_chat_id`/`requester_user_id`) als `@property` lesbar
+- Ownership-Layer im Router-Callback ([`router.py::process_update`](zerberus/modules/telegram/router.py)): `is_admin = clicker == admin_chat_id`, `is_requester = clicker == task.requester_id`|Klick erlaubt wenn admin OR requester|sonst spoofing-skip + Popup|Admin-Override (admin klickt für fremden requester) mit `is_admin_override=True` an `resolve_task` → `[HITL-167] Admin-Override` INFO-Log
+- Auto-Reject-Sweep `hitl_sweep_loop(manager, interval, on_expired)`|Lifecycle in [`startup_huginn`](zerberus/modules/telegram/router.py) gestartet, in `shutdown_huginn` gecancelt|Default `timeout=300s`/`sweep_interval=30s` aus `HitlConfig` ([`core/config.py`](zerberus/core/config.py))|Defaults im Pydantic-Model (config.yaml gitignored)|abgelaufene Tasks: Telegram „⏰ Anfrage verworfen — zu langsam, Bro."
+- Doppel-Bestätigung: `resolve_task` checkt `status == "pending"` vor Update → liefert `False` bei bereits aufgelöstem Task|Router antwortet „ℹ️ Schon entschieden."
+- P8-Operationalisierung: Router-Callback-Pfad nimmt nur Inline-Button-Callbacks an, NIE Text|„Ja mach mal" ist kein gültiges GO für CODE/FILE/ADMIN
+- Logging-Tags: `[HITL-167]` (alle Manager-/Sweep-Events)|`[HITL-POLICY-164]` bleibt aktiv für Policy-Decisions
+- Test-Pattern: `tmp_db`-Fixture mit eigener SQLite ([`test_hitl_hardening.py`](zerberus/tests/test_hitl_hardening.py))|Stale-Tasks per `update().values(created_at=...)` direkt zurückdatieren|`_reset_telegram_singletons_for_tests()` für Router-Tests|Backward-Compat-Tests in `test_hitl_manager.py` mit `persistent=False`
+
 ## Guard-Kontext (P158)
 - [`check_response()`](zerberus/hallucination_guard.py) akzeptiert optionalen `caller_context: str`|String beschreibt Antwortenden|im Guard-System-Prompt als `[Kontext des Antwortenden]`-Block + harter Satz „Referenzen auf diese Elemente sind KEINE Halluzinationen."
 - Huginn-Calls ([`telegram/router.py`](zerberus/modules/telegram/router.py)): Raben-Persona via `_build_huginn_guard_context(persona)` inkl. 300-Zeichen-Auszug

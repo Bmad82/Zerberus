@@ -53,6 +53,8 @@ from zerberus.modules.telegram.hitl import (
     build_admin_message,
     build_group_decision_message,
     build_group_waiting_message,
+    build_timeout_message,
+    hitl_sweep_loop,
     parse_callback_data,
 )
 
@@ -75,7 +77,34 @@ class WebhookUpdate(BaseModel):
 _telegram_app = None
 _group_manager: Optional[GroupManager] = None
 _hitl_manager: Optional[HitlManager] = None
+_hitl_sweep_task: Optional["asyncio.Task"] = None
 _bot_user_id: Optional[int] = None
+
+
+def _resolve_hitl_timeout(mod_cfg: Dict[str, Any]) -> int:
+    """Liest ``timeout_seconds`` aus der Telegram-HitL-Section.
+
+    Patch 167: neue Schluessel ``timeout_seconds`` (mit Backward-Compat
+    auf den Patch-123-Schluessel ``confirmation_timeout_seconds``). Default
+    kommt aus ``HitlConfig`` (siehe ``core/config.py``) — der Wert greift
+    auch nach frischem ``git clone`` ohne config.yaml-Override.
+    """
+    from zerberus.core.config import HitlConfig
+    defaults = HitlConfig()
+    hitl_cfg = mod_cfg.get("hitl", {}) or {}
+    return int(
+        hitl_cfg.get("timeout_seconds")
+        or hitl_cfg.get("confirmation_timeout_seconds")
+        or defaults.timeout_seconds
+    )
+
+
+def _resolve_hitl_sweep_interval(mod_cfg: Dict[str, Any]) -> int:
+    """Patch 167 — Sweep-Frequenz fuer den Auto-Reject-Loop."""
+    from zerberus.core.config import HitlConfig
+    defaults = HitlConfig()
+    hitl_cfg = mod_cfg.get("hitl", {}) or {}
+    return int(hitl_cfg.get("sweep_interval_seconds") or defaults.sweep_interval_seconds)
 
 
 def _get_managers(settings: Settings) -> tuple[GroupManager, HitlManager]:
@@ -83,16 +112,23 @@ def _get_managers(settings: Settings) -> tuple[GroupManager, HitlManager]:
     global _group_manager, _hitl_manager
     mod_cfg = settings.modules.get("telegram", {}) or {}
     behavior = mod_cfg.get("group_behavior", {}) or {}
-    hitl_cfg = mod_cfg.get("hitl", {}) or {}
     if _group_manager is None:
         _group_manager = GroupManager(
             cooldown_seconds=int(behavior.get("interjection_cooldown_seconds", 300))
         )
     if _hitl_manager is None:
         _hitl_manager = HitlManager(
-            timeout_seconds=int(hitl_cfg.get("confirmation_timeout_seconds", 300))
+            timeout_seconds=_resolve_hitl_timeout(mod_cfg),
         )
     return _group_manager, _hitl_manager
+
+
+def _reset_telegram_singletons_for_tests() -> None:
+    """Test-Helfer: setzt GroupManager und HitlManager zurueck."""
+    global _group_manager, _hitl_manager, _hitl_sweep_task
+    _group_manager = None
+    _hitl_manager = None
+    _hitl_sweep_task = None
 
 
 def init_telegram(settings: Settings):
@@ -118,10 +154,14 @@ async def startup_huginn(settings: Settings) -> Optional["asyncio.Task"]:
     mit long_polling_loop. Modus "webhook" bleibt als Fallback fuer Setups
     mit oeffentlicher HTTPS-URL.
 
+    Patch 167: zusaetzlich der HitL-Sweep-Task (Auto-Reject-Timeout). Stoppen
+    erfolgt in ``shutdown_huginn`` (siehe ``main.py``).
+
     Returns:
         Den Polling-Task bei mode="polling", sonst None.
     """
     import asyncio
+    global _hitl_sweep_task
     mod_cfg = settings.modules.get("telegram", {}) or {}
     if not mod_cfg.get("enabled", False):
         return None
@@ -130,7 +170,7 @@ async def startup_huginn(settings: Settings) -> Optional["asyncio.Task"]:
         logger.warning("    ❌ bot_token fehlt — Bot nicht gestartet")
         return None
 
-    _get_managers(settings)
+    _, hitl_mgr = _get_managers(settings)
 
     global _bot_user_id
     me = await get_me(cfg.bot_token)
@@ -139,6 +179,30 @@ async def startup_huginn(settings: Settings) -> Optional["asyncio.Task"]:
         logger.info(f"    ✅ Bot: @{me.get('username', '?')} (id={_bot_user_id})")
     else:
         logger.warning("    ⚠️ Bot-Identität nicht abrufbar (getMe fehlgeschlagen)")
+
+    # ── Patch 167 (Block 3) — HitL-Sweep-Task starten ──────────────
+    if _hitl_sweep_task is None or _hitl_sweep_task.done():
+        sweep_interval = _resolve_hitl_sweep_interval(mod_cfg)
+
+        async def _on_expired(task) -> None:
+            try:
+                await send_telegram_message(
+                    cfg.bot_token,
+                    task.chat_id,
+                    build_timeout_message(task),
+                )
+            except Exception as e:
+                logger.warning(
+                    "[HITL-167] Timeout-Hinweis konnte nicht zugestellt werden "
+                    "(task=%s): %s", task.id, e,
+                )
+
+        _hitl_sweep_task = asyncio.create_task(
+            hitl_sweep_loop(hitl_mgr, sweep_interval, _on_expired),
+            name="huginn-hitl-sweep",
+        )
+        logger.info("    ✅ HitL-Sweep aktiv (timeout=%ds, interval=%ds)",
+                    hitl_mgr.timeout, sweep_interval)
 
     mode = str(mod_cfg.get("mode", "polling")).lower()
     if mode == "webhook":
@@ -163,6 +227,18 @@ async def startup_huginn(settings: Settings) -> Optional["asyncio.Task"]:
     )
     logger.info("    ✅ Long-Polling aktiv")
     return task
+
+
+async def shutdown_huginn() -> None:
+    """Patch 167 — beim Shutdown den HitL-Sweep-Task sauber stoppen."""
+    global _hitl_sweep_task
+    if _hitl_sweep_task is not None and not _hitl_sweep_task.done():
+        _hitl_sweep_task.cancel()
+        try:
+            await _hitl_sweep_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    _hitl_sweep_task = None
 
 
 def _resolve_huginn_prompt(settings: Settings) -> str:
@@ -584,17 +660,33 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
         if not parsed:
             return {"ok": True, "kind": "callback", "skipped": "unparsed"}
 
-        req = hitl_mgr.get(parsed["request_id"])
-        if not req:
+        # Patch 167 (Block 1) — Task aus DB/Cache holen via Task-ID.
+        task = await hitl_mgr.get_task(parsed["request_id"])
+        if not task:
+            await answer_callback_query(
+                callback.get("id", ""),
+                cfg.bot_token,
+                text="❓ Anfrage unbekannt oder bereits abgelaufen.",
+                show_alert=True,
+            )
+            logger.info(
+                "[HITL-167] Callback fuer unbekannte Task-ID: %s clicker=%s",
+                parsed["request_id"], clicker_id,
+            )
             return {"ok": True, "kind": "callback", "skipped": "unknown_request"}
 
-        # Patch 162 (O3): Callback-Spoofing-Schutz. Klick darf nur vom Admin
-        # ODER dem ursprünglich Anfragenden kommen — sonst Popup + Log.
+        # Patch 167 (Block 2) — Ownership: Requester selbst ODER Admin.
+        # Patch 162 (O3) bleibt erhalten als Spoofing-Schutz; jetzt mit
+        # Task-ID-Bezug + Admin-Override-Logging.
         admin_id = cfg.admin_chat_id
-        allowed_ids = {str(admin_id)} if admin_id else set()
-        if req.requester_user_id is not None:
-            allowed_ids.add(str(req.requester_user_id))
-        if str(clicker_id) not in allowed_ids:
+        admin_id_str = str(admin_id) if admin_id else ""
+        clicker_id_str = str(clicker_id) if clicker_id is not None else ""
+        is_admin = bool(admin_id_str) and clicker_id_str == admin_id_str
+        is_requester = (
+            task.requester_id is not None
+            and clicker_id_str == str(task.requester_id)
+        )
+        if not (is_admin or is_requester):
             await answer_callback_query(
                 callback.get("id", ""),
                 cfg.bot_token,
@@ -602,22 +694,37 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
                 show_alert=True,
             )
             logger.warning(
-                "[HUGINN-162] Callback-Spoofing blockiert (O3) clicker=%s allowed=%s data=%s",
-                clicker_id, sorted(allowed_ids), parsed,
+                "[HITL-167] Callback-Spoofing blockiert (O3) "
+                "clicker=%s task=%s requester=%s admin=%s",
+                clicker_id, task.id, task.requester_id, admin_id_str or "-",
             )
             return {"ok": True, "kind": "callback", "skipped": "spoofing"}
 
-        if parsed["action"] == "hitl_approve":
-            hitl_mgr.approve(parsed["request_id"])
-        else:
-            hitl_mgr.reject(parsed["request_id"])
-        # Bestaetigungs-Message in der anfragenden Gruppe
+        decision = "approved" if parsed["action"] == "hitl_approve" else "rejected"
+        is_override = is_admin and not is_requester
+        ok = await hitl_mgr.resolve_task(
+            task.id,
+            resolver_id=int(clicker_id) if clicker_id is not None else 0,
+            decision=decision,
+            is_admin_override=is_override,
+        )
+        if not ok:
+            await answer_callback_query(
+                callback.get("id", ""),
+                cfg.bot_token,
+                text="ℹ️ Schon entschieden.",
+            )
+            return {"ok": True, "kind": "callback", "skipped": "already_resolved"}
+
+        # Frisches Task-Objekt (mit aktuellem Status) holen fuer Echo-Message.
+        task = await hitl_mgr.get_task(task.id) or task
+        await answer_callback_query(callback.get("id", ""), cfg.bot_token)
         await send_telegram_message(
             cfg.bot_token,
-            req.requester_chat_id,
-            build_group_decision_message(req),
+            task.chat_id,
+            build_group_decision_message(task),
         )
-        return {"ok": True, "kind": "callback"}
+        return {"ok": True, "kind": "callback", "decision": decision, "task_id": task.id}
 
     info = extract_message_info(data)
     if not info:
@@ -629,20 +736,24 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
         if info["chat_id"] not in allowed and cfg.admin_chat_id:
             hitl_cfg = mod_cfg.get("hitl", {}) or {}
             if hitl_cfg.get("group_join", True):
-                req = hitl_mgr.create_request(
-                    "group_join",
-                    requester_chat_id=info["chat_id"],
+                # Patch 167: persistente Tasks via async create_task.
+                req = await hitl_mgr.create_task(
+                    requester_id=info.get("user_id") or 0,
+                    chat_id=info["chat_id"],
+                    intent="group_join",
                     requester_username=info.get("chat_title", "?"),
-                    details=f"Huginn wurde eingeladen zu: {info.get('chat_title','?')} (ID: {info['chat_id']})",
-                    requester_user_id=info.get("user_id"),
+                    details=(
+                        f"Huginn wurde eingeladen zu: "
+                        f"{info.get('chat_title','?')} (ID: {info['chat_id']})"
+                    ),
                 )
                 await send_telegram_message(
                     cfg.bot_token,
                     cfg.admin_chat_id,
                     build_admin_message(req),
-                    reply_markup=build_admin_keyboard(req.request_id),
+                    reply_markup=build_admin_keyboard(req.id),
                 )
-                return {"ok": True, "hitl": req.request_id}
+                return {"ok": True, "hitl": req.id}
 
     # In Gruppen Kontext sammeln
     if info["chat_type"] in ("group", "supergroup"):

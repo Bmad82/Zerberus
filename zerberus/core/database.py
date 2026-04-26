@@ -108,6 +108,35 @@ class Memory(Base):
     is_active = Column(Integer, default=1)             # SQLite Boolean as Integer; 1=active, 0=soft-deleted
 
 
+class HitlTask(Base):
+    """Patch 167 — Persistente HitL-Tasks (Phase C, Block 1).
+
+    Loest die RAM-basierte Mechanik aus Patch 123 ab: Tasks ueberleben jetzt
+    Server-Restarts. Der Sweep-Task (Patch 167, Block 3) markiert alte
+    Pending-Tasks als ``expired``; der Callback-Handler (Block 2) prueft
+    Ownership anhand der Task-ID.
+
+    ``intent`` haelt entweder einen ``HuginnIntent`` (CODE/FILE/ADMIN) oder
+    eine System-Kategorie (``group_join``); der Router setzt das Feld passend.
+    """
+    __tablename__ = "hitl_tasks"
+
+    id = Column(String(36), primary_key=True)              # UUID4 hex (32 chars)
+    requester_id = Column(Integer, nullable=False, index=True)  # Telegram user_id
+    chat_id = Column(Integer, nullable=False, index=True)       # Telegram chat_id
+    intent = Column(String(32), nullable=False, index=True)
+    payload_json = Column(Text, nullable=True)
+    status = Column(String(16), default="pending", index=True)  # pending|approved|rejected|expired
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(Integer, nullable=True)
+    admin_comment = Column(Text, nullable=True)
+    # Optionale Anzeige-Felder (Admin-DM, Gruppen-Echo). Werden nicht fuer
+    # die Logik verwendet, nur fuer ``build_admin_message``.
+    requester_username = Column(String(100), nullable=True)
+    details = Column(Text, nullable=True)
+
+
 _engine = None
 _async_session_maker = None
 

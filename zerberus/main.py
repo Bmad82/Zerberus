@@ -226,6 +226,13 @@ async def lifespan(app: FastAPI):
     try:
         _tg_cfg = settings.modules.get("telegram", {}) or {}
         if _tg_cfg.get("enabled", False):
+            # Patch 167 — HitL-Sweep-Task sauber stoppen (vor allem anderen).
+            try:
+                from zerberus.modules.telegram.router import shutdown_huginn
+                await shutdown_huginn()
+                logger.info("[HUGINN-167] HitL-Sweep gestoppt")
+            except Exception as _hg_err:
+                logger.warning("[HUGINN-167] shutdown_huginn fehlgeschlagen: %s", _hg_err)
             # Polling-Task cancellen (falls mode=polling lief)
             if _huginn_polling_task is not None:
                 _huginn_polling_task.cancel()

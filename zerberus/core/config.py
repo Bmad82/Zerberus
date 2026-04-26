@@ -126,6 +126,21 @@ class OpenRouterConfig(BaseModel):
     provider_blacklist: List[str] = ["chutes", "targon"]
 
 
+class HitlConfig(BaseModel):
+    """Patch 167 — Defaults fuer das HitL-Subsystem (Phase C, Block 3).
+
+    ``timeout_seconds`` greift ueber den Auto-Reject-Sweep: Pending-Tasks, die
+    aelter als dieser Wert sind, werden auf ``expired`` gesetzt und der User
+    bekommt eine "⏰ zu langsam"-Nachricht.
+
+    ``sweep_interval_seconds`` ist die Frequenz, mit der der Sweep-Task laeuft.
+    Defaults sind hier (statt in config.yaml) gesetzt, weil ``config.yaml``
+    gitignored ist — sonst wuerde der Schutz nach ``git clone`` fehlen.
+    """
+    timeout_seconds: int = 300        # 5 Minuten Default
+    sweep_interval_seconds: int = 30  # Sweep-Frequenz
+
+
 class MemoryExtractionConfig(BaseModel):
     """Patch 115: Background Memory Extraction Defaults.
     config.yaml-Override unter `modules.memory.*`.

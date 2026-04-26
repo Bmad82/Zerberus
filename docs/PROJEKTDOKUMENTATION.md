@@ -3844,3 +3844,56 @@ Das Terminal zeigt im Normalbetrieb nur noch echte Events: Server-Start mit grup
 **Neue Dateien:** `zerberus/tests/test_huginn_poll_errors.py`, `scripts/verify_sync.ps1`, `docs/legacy_haertungs_inventar.md`
 
 *Stand: 2026-04-26, Patch 166 — Querschnitts-Patch Hygiene + Sync-Stabilisierung. 5 neue Tests grün, 708 passed im offline-friendly-Subset (keine Regression). Inventar bestätigt: 0 fehlende Legacy-Härtungen. Nächster Schritt: Phase-B-Mitte (Config-driven Policy-Severity, Effort-basiertes Routing).*
+
+
+## Patch 167 — HitL-Hardening (Phase C, Block 1-4) (2026-04-27)
+
+**Phase-C-Auftakt.** Adressiert die Findings N2 (Persistenz), N4 (Ownership), D2 (Multi-Task-Disambiguierung), P4 (Auto-Reject-Timeout) und P8 (Natürliche Sprache als CODE/FILE/ADMIN-Confirm gefährlich) aus dem 7-LLM-Review. Die HitL-Tasks ziehen aus dem RAM in eine SQLite-Tabelle um — sie überleben jetzt Server-Restarts, bekommen UUID4-IDs und einen periodischen Sweep, der überfällige Pending-Tasks als `expired` markiert.
+
+### Block 1 — Task-ID-System + SQLite-Persistenz
+
+Neue DB-Tabelle `hitl_tasks` (`zerberus/core/database.py`, `class HitlTask`). Felder: `id` (UUID4-Hex, 32 Zeichen), `requester_id`, `chat_id`, `intent`, `payload_json`, `status` (`pending`/`approved`/`rejected`/`expired`), `created_at`, `resolved_at`, `resolved_by`, `admin_comment`, plus optionale Anzeige-Felder (`requester_username`, `details`). Wird über `Base.metadata.create_all` mit der bestehenden DB-Init angelegt.
+
+`HitlManager` ist refaktoriert (`zerberus/modules/telegram/hitl.py`):
+
+- **Neue async API:** `create_task(...)`, `get_task(...)`, `resolve_task(...)`, `get_pending_tasks(...)`, `expire_stale_tasks()`. Alle persistieren über die neue Tabelle; der In-Memory-Cache bleibt als Fast-Path und für `asyncio.Event`-Notifizierung erhalten.
+- **Backward-Compat:** Die Patch-123-Sync-Methoden (`create_request`, `approve`, `reject`, `get`, `wait_for_decision`) laufen weiter im reinen In-Memory-Modus. `HitlRequest` ist Alias für `HitlTask`; alte Feld-Namen (`request_id`, `request_type`, `requester_chat_id`, `requester_user_id`) sind als `@property` lesbar.
+- **`persistent=False`** als Konstruktor-Schalter — Unit-Tests, die keinen DB-Stub brauchen, können den Manager weiterhin standalone instanziieren.
+
+### Block 2 — Task-Ownership
+
+Der Callback-Pfad in `zerberus/modules/telegram/router.py` (`process_update`, `callback_query`-Branch) prüft jetzt explizit per Task-ID:
+
+- Klick vom Requester → erlaubt.
+- Klick vom Admin (`admin_chat_id`) bei fremder Anfrage → erlaubt, aber als `[HITL-167] Admin-Override: {admin_id} bestätigt Task {task_id} von {requester_id}` geloggt.
+- Klick eines Dritten → blockiert via `answer_callback_query(show_alert=True)` mit „🚫 Das ist nicht deine Anfrage." (Patch-162-O3-Schutz, jetzt mit Task-ID-Bezug).
+- Unbekannte Task-ID → freundliches „❓ Anfrage unbekannt oder bereits abgelaufen.".
+- Doppel-Klick auf bereits aufgelösten Task → `resolve_task()` liefert `False`, der Bot antwortet mit „ℹ️ Schon entschieden.".
+
+### Block 3 — Auto-Reject-Timeout-Sweep
+
+Periodischer Sweep-Task (`hitl_sweep_loop` in `hitl.py`) markiert alle `pending`-Tasks älter als `timeout_seconds` als `expired` und sendet pro abgelaufenem Task eine Telegram-Nachricht („⏰ Anfrage verworfen — zu langsam, Bro."). Lifecycle: gestartet in `startup_huginn()`, gestoppt in `shutdown_huginn()` (analog zum Long-Polling-Task). Default-Werte (`timeout_seconds=300`, `sweep_interval_seconds=30`) sitzen im neuen `HitlConfig`-Pydantic-Model in `zerberus/core/config.py` — greift auch nach frischem `git clone` ohne `config.yaml`-Override (Lessons-Pattern: `config.yaml` ist gitignored). `config.yaml` darf weiterhin überschreiben.
+
+### Block 4 — Bestätigungs-Modus nach Intent
+
+Die statische Tabelle aus Patch 164 (`HitlPolicy.evaluate`) bleibt gültig: CODE/FILE/ADMIN → `hitl_type="button"`, alles andere → `none`. P8 wird durch das Callback-Routing operationalisiert: Der Resolver-Pfad nimmt **nur** Inline-Button-Callbacks an, NIE Text-Eingaben. „Ja genau, mach den Server kaputt" ist damit kein gültiges GO mehr — das Test-Modul `test_hitl_hardening.py::TestIntentPolicyMatrix` prüft die Matrix.
+
+### Tests & Doku
+
+`zerberus/tests/test_hitl_hardening.py` (neu, 16 Tests in 7 Klassen) deckt Lifecycle, Ownership, Callback-Parsing, Doppel-Bestätigung, Sweep-Loop, DB-Persistenz, Intent-Matrix und Builder-Helfer ab. `test_hitl_manager.py` und `test_telegram_bot.py` sind an die neuen Feld-Namen + den `persistent=False`-Schalter angepasst (UUID4-32-Zeichen-IDs, `expired` statt `timeout`). Die Sync-API hat keinen Persistenz-Test mehr — das ist Absicht (in-memory only).
+
+**Geänderte Dateien:** `zerberus/core/database.py`, `zerberus/core/config.py`, `zerberus/modules/telegram/hitl.py`, `zerberus/modules/telegram/router.py`, `zerberus/main.py`, `zerberus/tests/test_hitl_manager.py`, `zerberus/tests/test_telegram_bot.py`, `CLAUDE_ZERBERUS.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`, `lessons.md`
+**Neue Dateien:** `zerberus/tests/test_hitl_hardening.py`
+
+### Manuell-Checkliste (Chris)
+
+- [ ] CODE-Anfrage senden → Inline-Buttons mit ✅/❌
+- [ ] ✅ klicken → Task wird ausgeführt, Bestätigung in der Gruppe
+- [ ] ❌ klicken → „Anfrage abgelehnt"
+- [ ] 5 Minuten ohne Klick warten → „⏰ Anfrage verworfen"
+- [ ] Fremder User klickt Button → wird blockiert (Popup)
+- [ ] Zwei ADMIN-Anfragen gleichzeitig → eigene Buttons mit eigener Task-ID
+- [ ] Server-Neustart mit wartender Task → Task ist nach Restart noch da
+- [ ] CHAT-Anfrage → direkte Antwort ohne Buttons (Fastlane unverändert)
+
+*Stand: 2026-04-27, Patch 167 — Phase-C-Auftakt. 16 neue Tests grün, HitL/Telegram-Subset (74 Tests) keine Regression. Nächster Schritt: Patch 168 (Datei-Output-Logik), danach Sandbox-Anbindung (Phase D).*
