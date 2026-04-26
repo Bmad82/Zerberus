@@ -3751,3 +3751,96 @@ Der Bot wird ab jetzt vor jedem Commit konsistent durch die Test-Suite + Doku-Ch
 **Neue Dateien:** `zerberus/tests/test_dialect_core.py`, `zerberus/tests/test_prompt_features.py`, `zerberus/tests/test_hitl_manager.py`, `zerberus/tests/test_language_detector.py`, `zerberus/tests/test_db_helpers.py`, `scripts/check_docs_consistency.py`
 
 *Stand: 2026-04-25, Patch 165 — Querschnitts-Patch Qualitätssicherung. 88 neue Tests grün, 703 passed im offline-friendly-Subset (keine Regression). Doku-Checker 5/5 grün. Nächster Schritt: Phase-B-Mitte (Config-driven Policy-Severity, Effort-basiertes Routing).*
+
+---
+
+## Patch 166 — Legacy-Härtungs-Inventar + Log-Hygiene + Repo-Sync-Verifikation (2026-04-26)
+
+**Vorgezogener Querschnitts-Patch (verbessert tägliche Nutzung), niedriges Risiko.** Drei Blöcke: (A) Legacy-Inventar als Analyse, (B) Log-Levels konsistent korrigieren weil das Terminal von Routine-Heartbeats zugemüllt war, (C) `sync_repos.ps1` durch ein Verifikations-Script flankieren weil Drift bisher unbemerkt bis zu 65 Patches möglich war.
+
+### Block A — Legacy-Härtungs-Inventar (Analyse, kein Code-Change)
+
+Neue Datei [`docs/legacy_haertungs_inventar.md`](legacy_haertungs_inventar.md). 27 defensive Härtungen in [`legacy/Nala_Weiche.py`](../legacy/Nala_Weiche.py) (1090 Zeilen, einzige Datei im `legacy/`-Ordner) identifiziert: Lock-Guards, httpx-Timeouts, Try/Except-Fallbacks, Audio-Dauer-Checks, Settings-Cache-Invalidation, DB-Rollback-Pattern, Sentiment-Smoothing-Lock, Lifespan-Cleanup. Abgleich gegen `zerberus/`:
+
+- **23 übernommen** (P59 Pacemaker-Lock, P107 Whisper-Cleaner-Idempotenz, P160 Whisper-Hardening, P156 Settings-Singleton via `@invalidates_settings`, P25 SQLAlchemy-Context-Manager, …)
+- **4 obsolet** (Mtime-Cache → ersetzt durch P156-Decorator; Audio-Wave-Header-Parse → ersetzt durch P160 Bytes-Größen-Check; Audio-File-Type-Check → ebenfalls ersetzt; Wave-Header-Try/Except → desgleichen)
+- **0 fehlend**
+
+Zusätzlich liefert das aktuelle System ~9 Härtungen ÜBER die Legacy hinaus: P162 Input-Sanitizer, P163 Per-User-Rate-Limiter, P158 Guard-Kontext, P164 HitL-Policy, P109 SSE-Heartbeat, P113a DB-Dedup, P162 Update-Typ-Filter + Callback-Spoofing-Schutz + Offset-Persistenz.
+
+**Fazit:** keine Action-Items. Der `legacy/`-Ordner kann als historische Referenz erhalten bleiben — das Inventar ist der Beweis, dass beim Rewrite nichts unbemerkt verloren ging.
+
+### Block B — Log-Hygiene
+
+**B1 — Whisper-Watchdog** ([`zerberus/whisper_watchdog.py`](../zerberus/whisper_watchdog.py)): stündlicher Health-OK-Restart und „Container nach Restart gesund" auf DEBUG. Health-Check-Fehler (transient) ebenfalls auf DEBUG — der Loop entscheidet im Restart-Pfad, ob das ein echter Befund ist. „Watchdog aktiv beim Startup" und „Container-Restart erfolgreich" sind jetzt INFO statt WARNING. WARNING bleibt nur bei tatsächlich unresponsiven Containern, ERROR bei Restart-Misserfolg oder Container nach Restart noch tot.
+
+**B2 — Pacemaker** ([`zerberus/app/pacemaker.py`](../zerberus/app/pacemaker.py)): Erstpuls-Versand und reguläre Pulse von INFO auf DEBUG. „Pacemaker-Worker gestartet" / „Pacemaker wird gestartet" / „Pacemaker stoppt" bleiben INFO (Zustandsänderungen). Erstpuls-Fehler bleibt WARNING (transient OK, aber sichtbar), Pacemaker-Fehler bleibt ERROR. Im Normalbetrieb ist im Terminal kein einziger Pacemaker-Puls mehr zu sehen.
+
+**B3 — Audio-Transkript-Logs** ([`zerberus/app/routers/legacy.py`](../zerberus/app/routers/legacy.py) + [`zerberus/app/routers/nala.py`](../zerberus/app/routers/nala.py)): Statt `🎤 Transkript: '<voller raw>' -> '<voller cleaned>'` auf INFO wird jetzt nur ein Längen-Einzeiler `🎤 Audio-Transkript erfolgreich (raw=N Zeichen, clean=M Zeichen)` auf INFO geloggt. Der volle Text bleibt auf DEBUG, falls Chris für Whisper-Debugging temporär hochschaltet. Beide Audio-Endpunkte (`/v1/audio/transcriptions` + `/nala/voice`) gleich geändert.
+
+**B4 — Telegram-Poll-Fehler-Eskalation** ([`zerberus/modules/telegram/bot.py`](../zerberus/modules/telegram/bot.py)): Einzelne `getUpdates`-Exception (typisch DNS-Aussetzer hinter Tailscale wie `Errno 11001 getaddrinfo failed`) jetzt auf DEBUG statt WARNING. Modul-Counter `_consecutive_poll_errors` zählt aufeinanderfolgende Fehler; nach `_POLL_ERROR_WARN_THRESHOLD = 5` gibt es **genau eine** WARNING `[HUGINN-166] N aufeinanderfolgende Poll-Fehler — Internetverbindung pruefen`, danach wieder still. Bei Erfolg → Counter auf 0; falls vorher gewarnt wurde, kommt eine INFO `[HUGINN-166] Verbindung wiederhergestellt nach N Fehler-Versuchen`. Modul-Singleton via `_LAST_POLL_FAILED`-Flag, weil `[]` doppeldeutig ist (Long-Poll-Timeout-OK vs. Fehler-Schluck). Test-Reset-Helper `_reset_poll_error_counter_for_tests()` analog zu Rate-Limiter-/Sanitizer-Pattern.
+
+**Faustregel** (in CLAUDE_ZERBERUS.md festgeschrieben):
+- DEBUG: Routine-Heartbeats, erwartbare transiente Fehler, volle Audio-Transkripte
+- INFO: Start/Stop/Zustandsänderungen
+- WARNING: jemand sollte das sehen + ggf. handeln
+- ERROR: Action Required
+- Test: „Wenn das jeden Patch im Terminal auftaucht und niemand was unternimmt — falsches Level"
+
+### Block C — Repo-Sync-Verifikation
+
+Neues Script [`scripts/verify_sync.ps1`](../scripts/verify_sync.ps1) prüft für alle drei Repos (Zerberus, Ratatoskr, Claude):
+1. Working-Tree clean (`git status --porcelain` leer)
+2. Keine unpushed Commits (`git log origin/main..HEAD` leer)
+
+Exit-Code 0 bei vollständigem Sync, 1 sonst. **Pflicht-Schritt nach `sync_repos.ps1`.** Im Patch-Workflow (in `CLAUDE_ZERBERUS.md` festgeschrieben):
+
+```
+1. Code-Änderungen
+2. Tests grün
+3. git add + commit + push (Zerberus)
+4. sync_repos.ps1
+5. scripts/verify_sync.ps1
+6. Erst bei ✅ Exit 0 → Patch gilt als abgeschlossen
+```
+
+Sofort-Reparatur der Repos war diesmal nicht nötig: Patch 165 hatte den Sync schon gefixt; GitHub-Snapshots stehen seit P165 auf 165, lokal auch (Zerberus `4cbcd94`, Ratatoskr `789b132`, Claude `d12b180`). Das Script ist ab jetzt das Sicherheitsnetz für künftige Patches.
+
+### Tests
+
+5 neue Tests in [`zerberus/tests/test_huginn_poll_errors.py`](../zerberus/tests/test_huginn_poll_errors.py):
+
+1. **1 Fehler ergibt KEIN WARNING** — Counter steht auf 1, kein `[HUGINN-166]`-Log.
+2. **5 Fehler ergeben genau 1 WARNING mit Zähler** — exakt eine WARNING-Zeile, mit „Internetverbindung" und dem Zähler im Text.
+3. **Erfolg nach Fehlern resettet Counter** — `_consecutive_poll_errors == 0`, `_poll_error_warning_emitted is False`.
+4. **Erfolg nach Threshold-Überschreitung emittiert „Verbindung wiederhergestellt"-INFO** — genau eine Recovery-INFO-Zeile.
+5. **`getUpdates`-Exception ist DEBUG (nicht WARNING)** — direkter Aufruf von `bot_module.get_updates()` mit kaputter `httpx.AsyncClient`-Mock-Klasse, prüft `levelno == logging.DEBUG` und `_LAST_POLL_FAILED is True`.
+
+**Alle 5 grün.** Im offline-friendly Subset: **708 passed** (P165-Baseline 703 + 5 P166 = 708 exakt, **keine Regression**). Block B1-B3 wurde nicht zusätzlich getestet — Log-Level-Änderungen sind mit `caplog` testbar, aber der Mehrwert gegen das Risiko (False-Positive-Tests gegen Log-Format-Tippfehler) war zu gering; manuelle Verifikation bei Server-Restart reicht.
+
+### Logging-Tags
+Neuer Tag `[HUGINN-166]` für die Poll-Fehler-Eskalation (WARNING bei Threshold + INFO bei Recovery). Alle anderen Logs nutzen weiter die etablierten Tags `[WATCHDOG-119]` / `💓 Pacemaker` / `[HUGINN-155]`.
+
+### Scope
+
+**IN Scope:**
+- 5 Code-Dateien (Log-Level-Änderungen + Counter): `whisper_watchdog.py`, `app/pacemaker.py`, `app/routers/legacy.py`, `app/routers/nala.py`, `modules/telegram/bot.py`
+- 1 neue Test-Datei (5 Tests): `tests/test_huginn_poll_errors.py`
+- 1 neues PowerShell-Script: `scripts/verify_sync.ps1`
+- 1 neue Doku: `docs/legacy_haertungs_inventar.md`
+- Updates in CLAUDE_ZERBERUS.md (Log-Level-Faustregel + Repo-Sync-Workflow), lessons.md, README, SUPERVISOR_ZERBERUS.md, dieser Eintrag
+
+**NICHT in Scope:**
+- Implementierung fehlender Legacy-Härtungen (gibt keine — Inventar zeigt 0 Lücken)
+- Neues Logging-Framework, structured logging, Log-Rotation
+- Änderungen an Guard- oder Sanitizer-Logs (die sind gewollt auf WARNING/INFO)
+- Änderungen an der P157-Startup-Gruppierung (sauber)
+- CI/CD oder Git-Hooks (zu fragil auf Windows mit GitHub Desktop)
+
+### Erwartete Wirkung
+Das Terminal zeigt im Normalbetrieb nur noch echte Events: Server-Start mit gruppierter Sektion, Audio-Transkript-Einzeiler, Watchdog-Container-Restart als INFO, Pacemaker Start/Stop. Routine-Heartbeats sind weg. Bei Internet-Aussetzern flutet Huginn nicht mehr das Log; Chris bekommt nach 5+ Fehlern genau eine Warnung und nach Recovery eine kurze Bestätigung. Der Sync-Workflow ist verifizierbar: `verify_sync.ps1` macht aus „hoffentlich synchron" ein hartes ✅/❌. Der Legacy-Ordner ist dokumentiert; künftige Audits müssen nicht mehr durch 1090 Zeilen lesen, um zu wissen, ob beim Rewrite was vergessen wurde.
+
+**Geänderte Dateien:** `zerberus/whisper_watchdog.py`, `zerberus/app/pacemaker.py`, `zerberus/app/routers/legacy.py`, `zerberus/app/routers/nala.py`, `zerberus/modules/telegram/bot.py`, `CLAUDE_ZERBERUS.md`, `SUPERVISOR_ZERBERUS.md`, `lessons.md`, `README.md`, `docs/PROJEKTDOKUMENTATION.md`
+**Neue Dateien:** `zerberus/tests/test_huginn_poll_errors.py`, `scripts/verify_sync.ps1`, `docs/legacy_haertungs_inventar.md`
+
+*Stand: 2026-04-26, Patch 166 — Querschnitts-Patch Hygiene + Sync-Stabilisierung. 5 neue Tests grün, 708 passed im offline-friendly-Subset (keine Regression). Inventar bestätigt: 0 fehlende Legacy-Härtungen. Nächster Schritt: Phase-B-Mitte (Config-driven Policy-Severity, Effort-basiertes Routing).*

@@ -366,4 +366,4 @@ Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-25, Patch 165 (Auto-Test-Policy + Retroaktiver Test-Sweep + Doku-Konsistenz-Checker)*
+*Zerberus Pro 4.0 – Stand: 2026-04-26, Patch 166 (Legacy-Härtungs-Inventar + Log-Hygiene + Repo-Sync-Verifikation)*

@@ -64,7 +64,8 @@ async def pacemaker_worker():
         data = {"model": "whisper-1"}
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(whisper_url, files=files, data=data)
-        logger.info("💓 Pacemaker-Erstpuls gesendet (Container aufgeweckt)")
+        # P166: Erstpuls = Routine-Heartbeat → DEBUG (Start/Stop bleiben INFO).
+        logger.debug("💓 Pacemaker-Erstpuls gesendet (Container aufgeweckt)")
     except Exception as e:
         logger.warning(f"⚠️ Pacemaker-Erstpuls fehlgeschlagen (nicht kritisch): {e}")
 
@@ -81,7 +82,8 @@ async def pacemaker_worker():
             data = {"model": "whisper-1"}
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(whisper_url, files=files, data=data)
-            logger.info("💓 Pacemaker-Puls gesendet")
+            # P166: einzelne Heartbeats fluten das Terminal → DEBUG.
+            logger.debug("💓 Pacemaker-Puls gesendet")
         except Exception as e:
             logger.error(f"❌ Pacemaker-Fehler: {e}")
 

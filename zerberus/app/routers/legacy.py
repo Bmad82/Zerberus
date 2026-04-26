@@ -369,7 +369,12 @@ async def audio_transcriptions(
         else:
             cleaned_transcript = clean_transcript(raw_transcript)
 
-        logger.info(f"🎤 Transkript: '{raw_transcript}' -> '{cleaned_transcript}'")
+        # P166: Vollen Text nicht ins Terminal fluten — Einzeiler reicht.
+        logger.info(
+            f"🎤 Audio-Transkript erfolgreich (raw={len(raw_transcript)} Zeichen, "
+            f"clean={len(cleaned_transcript)} Zeichen)"
+        )
+        logger.debug(f"🎤 Transkript: '{raw_transcript}' -> '{cleaned_transcript}'")
 
         # Patch 83: Stille/leeres Transkript nach Cleaner abfangen
         if not cleaned_transcript.strip():

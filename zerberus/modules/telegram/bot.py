@@ -331,6 +331,26 @@ async def deregister_webhook(bot_token: str, timeout: float = 10.0) -> bool:
 # verworfen (D9), spart Telegram-Bandbreite und macht den Filter explizit.
 _POLL_ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member"]
 
+# Patch 166 — Polling-Fehler-Eskalation. `_LAST_POLL_FAILED` wird von
+# `get_updates()` auf True gesetzt, wenn es einen unerwarteten Fehler gefangen
+# hat (DNS, Connection-Reset, etc.). `_consecutive_poll_errors` zählt im
+# `long_polling_loop` mit; nach `_POLL_ERROR_WARN_THRESHOLD` aufeinander-
+# folgenden Fehlern gibt es genau eine WARNING ans Terminal, danach wieder
+# still. Bei Erfolg wird zurückgesetzt + ggf. „Verbindung wiederhergestellt"
+# als INFO geloggt. Test-Reset siehe `_reset_poll_error_counter_for_tests()`.
+_LAST_POLL_FAILED: bool = False
+_consecutive_poll_errors: int = 0
+_poll_error_warning_emitted: bool = False
+_POLL_ERROR_WARN_THRESHOLD: int = 5
+
+
+def _reset_poll_error_counter_for_tests() -> None:
+    """Reset-Helper für Tests; setzt alle Polling-Counter auf Initial-Stand."""
+    global _LAST_POLL_FAILED, _consecutive_poll_errors, _poll_error_warning_emitted
+    _LAST_POLL_FAILED = False
+    _consecutive_poll_errors = 0
+    _poll_error_warning_emitted = False
+
 
 def _load_offset() -> int:
     """Lädt den letzten verarbeiteten Update-Offset (Patch 162, D8)."""
@@ -411,7 +431,15 @@ async def get_updates(
         # Long-Poll ohne neue Updates → normal, nicht loggen
         return []
     except Exception as e:
-        logger.warning(f"[HUGINN-155] getUpdates Exception: {e}")
+        # P166: transienter Polling-Fehler (typisch DNS-Aussetzer hinter
+        # Tailscale) → DEBUG statt WARNING. Der Loop zählt aufeinanderfolgende
+        # Fehler und eskaliert erst nach `_POLL_ERROR_WARN_THRESHOLD` einmal
+        # auf WARNING — siehe `long_polling_loop`.
+        logger.debug(f"[HUGINN-155] getUpdates Exception: {e}")
+        # Marker für den Loop: leere Liste UND Counter-Hinweis. Wir setzen ein
+        # Modul-Flag `_LAST_POLL_FAILED`, weil `[]` ja auch der Long-Poll-OK-Pfad ist.
+        global _LAST_POLL_FAILED
+        _LAST_POLL_FAILED = True
         return []
 
 
@@ -441,9 +469,35 @@ async def long_polling_loop(
     offset = _load_offset()
     logger.info("🐦 Huginn: Long-Polling gestartet (offset=%d)", offset)
 
+    global _LAST_POLL_FAILED, _consecutive_poll_errors, _poll_error_warning_emitted
+
     while True:
         try:
+            _LAST_POLL_FAILED = False
             updates = await get_updates(bot_token, offset=offset, timeout=poll_timeout)
+
+            # P166 — Polling-Fehler-Eskalation auswerten.
+            if _LAST_POLL_FAILED:
+                _consecutive_poll_errors += 1
+                if (
+                    _consecutive_poll_errors >= _POLL_ERROR_WARN_THRESHOLD
+                    and not _poll_error_warning_emitted
+                ):
+                    logger.warning(
+                        f"[HUGINN-166] {_consecutive_poll_errors} aufeinanderfolgende "
+                        "Poll-Fehler — Internetverbindung pruefen"
+                    )
+                    _poll_error_warning_emitted = True
+            else:
+                # Erfolgreicher Poll → Counter reset.
+                if _poll_error_warning_emitted:
+                    logger.info(
+                        f"[HUGINN-166] Verbindung wiederhergestellt nach "
+                        f"{_consecutive_poll_errors} Fehler-Versuchen"
+                    )
+                _consecutive_poll_errors = 0
+                _poll_error_warning_emitted = False
+
             for update in updates:
                 try:
                     await handler(update)

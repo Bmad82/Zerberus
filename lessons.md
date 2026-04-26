@@ -233,6 +233,15 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Retroaktiv: Code ohne Tests → Tests nachrüsten bei Gelegenheit (kein eigener Patch nötig)
 - P165-Sweep: 88 neue Tests (test_dialect_core, test_prompt_features, test_hitl_manager, test_language_detector, test_db_helpers) für vorher untestete Pure-Function-Module
 
+## Log-Hygiene + Repo-Sync-Verifikation (P166)
+- Routine-Heartbeats fluten Terminal|Pacemaker-Puls/Watchdog-Healthcheck/Audio-Transkripte → DEBUG, nicht INFO|sichtbar bleibt nur Start/Stop/Problem
+- Audio-Transkript-Logs: nur Längen-Einzeiler auf INFO|voller Text auf DEBUG (für Debugging on-demand)
+- Telegram-Long-Poll-Exception (DNS/Network) → DEBUG + Modul-Counter `_consecutive_poll_errors`|nach `_POLL_ERROR_WARN_THRESHOLD` (=5) genau EINE WARNING|bei Erfolg Counter-Reset + INFO „Verbindung wiederhergestellt"|Modul-Singleton via `_LAST_POLL_FAILED`-Flag, weil `[]` doppeldeutig (Long-Poll-OK vs Fehler)
+- `_reset_poll_error_counter_for_tests()` als Test-Reset-Helper analog zu Rate-Limiter/Sanitizer-Pattern
+- `sync_repos.ps1` ohne Verifikation = Hoffnung|`scripts/verify_sync.ps1` (P166) prüft `git status` clean + `git log origin/main..HEAD` leer für alle 3 Repos|Exit-Code 1 bei Drift|Coda darf nicht weitermachen ohne ✅
+- Workflow-Reihenfolge ist hart: commit→push (Zerberus)→sync_repos.ps1→verify_sync.ps1|sync VOR commit lädt alte Commit-Message (P158-Lesson)
+- Legacy-Härtungs-Inventar [`docs/legacy_haertungs_inventar.md`](docs/legacy_haertungs_inventar.md): 27 Härtungen aus `legacy/Nala_Weiche.py` durchgangen|23 übernommen, 4 obsolet (durch P156/P160 ersetzt), 0 fehlend|+9 zusätzliche Härtungen über Legacy hinaus (P158/P162/P163/P164/P109/P113a)
+
 ## Sync-Pflicht nach jedem Push (P164)
 - Coda-Setup pusht zuverlässig nach Zerberus, vergisst aber `sync_repos.ps1`|Ratatoskr+Claude-Repo driften unbemerkt
 - Regel: Sync ist LETZTER Schritt jedes Patches|Patch gilt erst als abgeschlossen wenn alle 3 Repos synchron|nicht „am Session-Ende" oder „nach 5 Patches"

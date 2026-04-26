@@ -38,6 +38,26 @@
 - DOKU-CHECKER: `scripts/check_docs_consistency.py` (P165) prüft Patch-Nummer-Sync|Tote Links|Log-Tag-Konsistenz|Imports|Settings-Keys|nach jedem Patch laufen lassen, additiv zu pytest
 - RETROAKTIV: Code-Stellen ohne Tests gefunden → Tests nachrüsten (kein separater Patch nötig)
 
+## Log-Level-Faustregel (P166)
+- DEBUG: Routine-Heartbeats (Pacemaker-Puls|Watchdog-Healthcheck-OK|Long-Poll-Timeouts)|erwartbare transiente Fehler (DNS-Aussetzer, Long-Poll-Exception)|volle Audio-Transkripte (für Debugging)
+- INFO: Start/Stop/Zustandsänderungen (Watchdog aktiv|Pacemaker gestartet|Container-Restart erfolgreich|Audio-Transkript-Einzeiler mit Längen)
+- WARNING: jemand sollte das sehen + ggf. handeln (Whisper unresponsive|Pacemaker-Erstpuls fehlgeschlagen|≥5 aufeinanderfolgende Poll-Fehler)
+- ERROR: Action Required (Container-Restart fehlgeschlagen|Whisper nach Restart nicht erreichbar)
+- Faustregel-Test: „Wenn das jeden Patch im Terminal auftaucht und niemand was unternimmt — falsches Level"
+
+## Repo-Sync (P166)
+- Nach jedem Patch|`sync_repos.ps1` DANN [`scripts/verify_sync.ps1`](scripts/verify_sync.ps1)|beide Pflicht
+- `verify_sync.ps1` prüft|`git status` clean + `git log origin/main..HEAD` leer|für alle 3 Repos (Zerberus|Ratatoskr|Claude)
+- Bei ❌ Exit-Code 1|NICHT weitermachen|Sync-Problem erst lösen (Auth|Branch-Mismatch|Remote-Ref)
+- Patch-Workflow Pflichtschritte (P164→P166):
+  1. Code-Änderungen
+  2. Tests grün (`pytest zerberus/tests/ -v --tb=short`)
+  3. `git add` + `git commit` + `git push` (Zerberus)
+  4. `sync_repos.ps1` (Ratatoskr + Claude-Repo)
+  5. `scripts/verify_sync.ps1` ← Verifikation aller 3 Repos
+  6. Erst bei ✅ Exit 0 → Patch gilt als abgeschlossen
+- Hintergrund: bis P165 driftete Ratatoskr auf GitHub bis zu 65 Patches gegen Zerberus|`sync_repos.ps1` ohne Verifikation = Hoffnung, nicht Beweis
+
 ## Projektpfad
 ```
 C:\Users\chris\Python\Rosa\Nala_Rosa\Zerberus

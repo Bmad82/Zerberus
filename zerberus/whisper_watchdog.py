@@ -42,14 +42,17 @@ async def check_whisper_health() -> bool:
             resp = await client.get(WHISPER_HEALTH_URL)
             return resp.status_code == 200
     except Exception as e:
-        logger.warning(f"[WATCHDOG-119] Health-Check fehlgeschlagen: {e}")
+        # P166: transienter Fehler — der Caller (Loop) entscheidet, ob das
+        # ein echtes Problem ist (siehe restart_whisper_container-Pfad).
+        logger.debug(f"[WATCHDOG-119] Health-Check fehlgeschlagen: {e}")
         return False
 
 
 def restart_whisper_container() -> bool:
     """`docker restart <name>` — synchron, blockierend. True bei Erfolg."""
     try:
-        logger.warning(
+        # P166: Routine-Restart auf INFO statt WARNING — kein Problem, nur Aktion.
+        logger.info(
             f"[WATCHDOG-119] Starte Whisper-Container neu: {WHISPER_CONTAINER_NAME}"
         )
         result = subprocess.run(
@@ -59,7 +62,8 @@ def restart_whisper_container() -> bool:
             timeout=DOCKER_RESTART_TIMEOUT,
         )
         if result.returncode == 0:
-            logger.warning("[WATCHDOG-119] Container-Restart erfolgreich")
+            # P166: erfolgreicher Restart = INFO; nur Failures bleiben WARNING/ERROR.
+            logger.info("[WATCHDOG-119] Container-Restart erfolgreich")
             return True
         logger.error(
             f"[WATCHDOG-119] Restart fehlgeschlagen (rc={result.returncode}): "
@@ -88,7 +92,8 @@ async def whisper_watchdog_loop() -> None:
         logger.info("[WATCHDOG-119] Deaktiviert via settings.features.whisper_watchdog=False")
         return
 
-    logger.warning(
+    # P166: Startup-Banner = INFO (es passiert ja was Sichtbares).
+    logger.info(
         f"[WATCHDOG-119] Whisper-Watchdog aktiv. Intervall={RESTART_INTERVAL_SECONDS}s, "
         f"Container={WHISPER_CONTAINER_NAME}"
     )
@@ -100,8 +105,10 @@ async def whisper_watchdog_loop() -> None:
 
             healthy = await check_whisper_health()
             if healthy:
-                logger.warning(f"[WATCHDOG-119] {timestamp} — Geplanter stuendlicher Restart")
+                # P166: Routine-Restart bei gesundem Container → DEBUG.
+                logger.debug(f"[WATCHDOG-119] {timestamp} — Geplanter stuendlicher Restart")
             else:
+                # P166: unresponsive Container = echter Befund → WARNING bleibt.
                 logger.warning(f"[WATCHDOG-119] {timestamp} — Whisper unresponsive, sofortiger Restart")
 
             restart_whisper_container()
@@ -109,7 +116,8 @@ async def whisper_watchdog_loop() -> None:
             await asyncio.sleep(POST_RESTART_WAIT_SECONDS)
             post_health = await check_whisper_health()
             if post_health:
-                logger.warning("[WATCHDOG-119] Whisper nach Restart gesund")
+                # P166: Container ist nach Restart wieder OK — Routine, kein Alarm.
+                logger.debug("[WATCHDOG-119] Whisper nach Restart gesund")
             else:
                 logger.error("[WATCHDOG-119] Whisper NACH Restart nicht erreichbar")
         except asyncio.CancelledError:
