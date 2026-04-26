@@ -62,3 +62,6 @@ zerberus/tests/report/
 
 # Ratatoskr (separates Repo)
 Ratatoskr/
+
+# Patch 167: Claude-Code-Session-Artefakte (Lock-Files etc.) raus aus Sync-Verifikation
+.claude/
