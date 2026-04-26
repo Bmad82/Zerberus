@@ -38,6 +38,8 @@ data/huginn_offset.json
 # Backups (lokale Patch-Backups, nicht ins Repo)
 *.bak
 backup_p*/
+# Patch 166: Auto-DB-Backups (z.B. backups/bunker_memory_pre_dedup_*.db)
+backups/
 
 # Installer & Binaries
 *.exe
