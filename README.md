@@ -366,4 +366,4 @@ Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-28, Patch 171 (Docker-Sandbox-Anbindung Phase D: SandboxManager mit Härtungen, Code-Blockliste, CODE-Intent-Pipeline-Hook, Startup-Healthcheck, opt-in via config)*
+*Zerberus Pro 4.0 – Stand: 2026-04-28, Patch 172 (Guard-Stresstests Phase D: 31 Cases gegen Sanitizer + Live-Guard, Eskalations-Analyse, 5-Schichten-Policy-Architektur für Rosa, alle Lücken als Known-Limitations dokumentiert)*
