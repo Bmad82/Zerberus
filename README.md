@@ -366,4 +366,4 @@ Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-27, Patch 169 (Self-Knowledge-RAG-Doku + Bug-Sweep: Bubble-Farben, RAG-Status-Lazy-Init, Cleaner-innerHTML-Guard)*
+*Zerberus Pro 4.0 – Stand: 2026-04-27, Patch 170 (Hel-UI Kosmetik-Sweep: Provider-Blacklist-Dropdown + Chips, Dialekt-Delete-Icon-Button, Test-Reports einzeln verlinkbar)*

@@ -943,9 +943,10 @@ ADMIN_HTML = """<!DOCTYPE html>
                     <br><span style="color:#ffd700;">&#9888;&#65039; chutes und targon sind standardm&#228;&#223;ig gesperrt</span>
                     (Rate-Limiting bekannt).
                 </p>
-                <div id="providerList" style="margin-bottom:14px;"></div>
-                <div style="display:flex;gap:8px;margin-bottom:10px;">
-                    <input type="text" id="newProviderInput" placeholder="Provider-Name (z.B. deepinfra)" style="flex:1;">
+                <div id="providerList" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;"></div>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center;">
+                    <select id="newProviderSelect" class="zb-select" onchange="onProviderSelectChange()" style="flex:1;min-width:200px;"></select>
+                    <input type="text" id="newProviderInput" placeholder="Provider-Name (z.B. deepinfra)" style="flex:1;min-width:180px;display:none;">
                     <button onclick="addProvider()" style="padding:10px 18px;white-space:nowrap;">+ Hinzuf&#252;gen</button>
                 </div>
                 <button onclick="saveProviderBlacklist()">&#128190; Speichern</button>
@@ -1768,11 +1769,32 @@ ADMIN_HTML = """<!DOCTYPE html>
                 h.textContent = group;
                 h.style.margin = '0 0 10px';
                 h.style.color = '#FFD700';
+                // Patch 170 (B4): Icon-Button statt großer roter Button
                 const delGroup = document.createElement('button');
-                delGroup.textContent = '🗑 Gruppe löschen';
-                delGroup.style.cssText = 'float:right;padding:2px 8px;font-size:0.8em;background:#500;border:1px solid #a00;color:#fff;border-radius:4px;cursor:pointer;';
+                delGroup.textContent = '🗑️';
+                delGroup.title = 'Gruppe löschen';
+                delGroup.setAttribute('aria-label', `Gruppe "${group}" löschen`);
+                delGroup.style.cssText = 'float:right;width:28px;height:28px;min-width:0;min-height:0;'
+                    + 'padding:0;display:inline-flex;align-items:center;justify-content:center;'
+                    + 'background:transparent;border:1px solid #555;border-radius:4px;'
+                    + 'color:#ccc;cursor:pointer;opacity:0.5;transition:opacity 0.15s,color 0.15s,border-color 0.15s;';
+                delGroup.onmouseenter = () => {
+                    delGroup.style.opacity = '1';
+                    delGroup.style.color = 'var(--zb-danger, #FF6B6B)';
+                    delGroup.style.borderColor = 'var(--zb-danger, #FF6B6B)';
+                };
+                delGroup.onmouseleave = () => {
+                    delGroup.style.opacity = '0.5';
+                    delGroup.style.color = '#ccc';
+                    delGroup.style.borderColor = '#555';
+                };
+                delGroup.ontouchstart = () => {
+                    delGroup.style.opacity = '1';
+                    delGroup.style.color = 'var(--zb-danger, #FF6B6B)';
+                    delGroup.style.borderColor = 'var(--zb-danger, #FF6B6B)';
+                };
                 delGroup.onclick = () => {
-                    if (confirm(`Gruppe "${group}" und alle Einträge löschen?`)) {
+                    if (confirm(`Gruppe "${group}" wirklich löschen?`)) {
                         delete _dialectData[group];
                         renderDialectGroups();
                     }
@@ -2118,12 +2140,20 @@ ADMIN_HTML = """<!DOCTYPE html>
                     el.textContent = 'Keine Reports vorhanden. Bitte pytest ausführen.';
                     return;
                 }
+                // Patch 170 (B5): Einzel-Reports verlinken (full/fenrir/loki).
+                const ALLOWED = new Set(['full_report.html', 'fenrir_report.html', 'loki_report.html']);
                 const rows = reports.map(f => {
                     const dt = new Date(f.mtime * 1000).toLocaleString('de-DE');
                     const kb = (f.size / 1024).toFixed(1) + ' KB';
-                    const link = (f.name === 'full_report.html')
-                        ? '<a href="/hel/tests/report" target="_blank" style="color:#f0b429;">öffnen</a>'
-                        : '<span style="color:#888;">(nur full_report verlinkbar)</span>';
+                    let link;
+                    if (f.name === 'full_report.html') {
+                        link = '<a href="/hel/tests/report" target="_blank" style="color:#f0b429;">öffnen</a>';
+                    } else if (ALLOWED.has(f.name)) {
+                        const stem = f.name.replace(/\.html$/, '');
+                        link = '<a href="/hel/tests/report/' + stem + '" target="_blank" style="color:#f0b429;">öffnen</a>';
+                    } else {
+                        link = '<span style="color:#888;">(Teil des Gesamtreports)</span>';
+                    }
                     return '<tr><td style="padding:4px 8px;">' + f.name + '</td>' +
                            '<td style="padding:4px 8px; color:#aaa;">' + dt + '</td>' +
                            '<td style="padding:4px 8px; color:#aaa;">' + kb + '</td>' +
@@ -2677,46 +2707,98 @@ ADMIN_HTML = """<!DOCTYPE html>
             }
         }
 
-        // ========== Provider-Blacklist (Patch 63) ==========
+        // ========== Provider-Blacklist (Patch 63 / Patch 170 B3) ==========
+        // Statisches Superset bekannter OpenRouter-Provider (Stand April 2026).
+        // Pragmatik: nicht alle sind immer verfügbar, aber für eine Blacklist OK.
+        const KNOWN_PROVIDERS = [
+            'azure', 'aws bedrock', 'google cloud vertex', 'together', 'fireworks',
+            'lepton', 'avian', 'lambda', 'anyscale', 'modal', 'replicate', 'octoai',
+            'deepinfra', 'mancer', 'lynn', 'infermatic', 'sf compute', 'cloudflare',
+            'featherless', 'targon', 'chutes', 'novita', 'parasail'
+        ];
         let currentBlacklist = [];
 
         async function loadProviderBlacklist() {
             const res = await fetch('/hel/admin/provider_blacklist');
             const data = await res.json();
             currentBlacklist = data.blacklist || [];
+            buildProviderSelect();
             renderProviderList();
+        }
+
+        function buildProviderSelect() {
+            const sel = document.getElementById('newProviderSelect');
+            if (!sel) return;
+            const blacklisted = new Set(currentBlacklist.map(p => p.toLowerCase()));
+            const opts = ['<option value="">— Provider wählen —</option>'];
+            KNOWN_PROVIDERS.forEach(p => {
+                if (blacklisted.has(p)) return;
+                opts.push(`<option value="${p}">${p}</option>`);
+            });
+            opts.push('<option value="__custom__">Benutzerdefiniert…</option>');
+            sel.innerHTML = opts.join('');
+            const inp = document.getElementById('newProviderInput');
+            if (inp) { inp.style.display = 'none'; inp.value = ''; }
+        }
+
+        function onProviderSelectChange() {
+            const sel = document.getElementById('newProviderSelect');
+            const inp = document.getElementById('newProviderInput');
+            if (!sel || !inp) return;
+            inp.style.display = (sel.value === '__custom__') ? '' : 'none';
+            if (sel.value === '__custom__') inp.focus();
         }
 
         function renderProviderList() {
             const container = document.getElementById('providerList');
+            if (!container) return;
             if (currentBlacklist.length === 0) {
                 container.innerHTML = '<span style="color:#888;">Keine Provider blockiert.</span>';
                 return;
             }
-            container.innerHTML = currentBlacklist.map(p => `
-                <div style="display:flex;justify-content:space-between;align-items:center;background:#3d3d3d;padding:8px 12px;border-radius:8px;margin-bottom:6px;">
-                    <span>&#10060; ${p}</span>
-                    <button onclick="removeProvider('${p}')" style="background:#555;color:#fff;padding:4px 10px;font-size:13px;border-radius:6px;">&#10005;</button>
-                </div>
-            `).join('');
+            // Chips: kompakt, inline, wrap auf Mobile
+            container.innerHTML = currentBlacklist.map(p => {
+                const safe = String(p).replace(/"/g, '&quot;').replace(/</g, '&lt;');
+                return `<span class="provider-chip" style="display:inline-flex;align-items:center;gap:4px;`
+                     + `padding:2px 8px;max-height:32px;background:#2a2a2a;`
+                     + `border:1px solid #444;border-radius:var(--zb-radius-sm,4px);`
+                     + `font-size:0.9em;line-height:1.4;">`
+                     + `<span>${safe}</span>`
+                     + `<button onclick="removeProvider('${safe}')" `
+                     + `title="Entfernen" `
+                     + `style="background:transparent;border:0;color:#e88;cursor:pointer;`
+                     + `padding:0 2px;font-size:1em;line-height:1;min-height:0;min-width:0;">&#10005;</button>`
+                     + `</span>`;
+            }).join('');
         }
 
         function addProvider() {
-            const input = document.getElementById('newProviderInput');
-            const name = input.value.trim().toLowerCase();
-            if (!name) return;
+            const sel = document.getElementById('newProviderSelect');
+            const inp = document.getElementById('newProviderInput');
+            const status = document.getElementById('providerStatus');
+            let name = '';
+            if (sel && sel.value && sel.value !== '__custom__') {
+                name = sel.value.trim().toLowerCase();
+            } else if (sel && sel.value === '__custom__' && inp) {
+                name = inp.value.trim().toLowerCase();
+            }
+            if (!name) {
+                if (status) status.textContent = 'Bitte Provider auswählen oder eingeben.';
+                return;
+            }
             if (currentBlacklist.includes(name)) {
-                document.getElementById('providerStatus').textContent = 'Bereits in der Liste.';
+                if (status) status.textContent = 'Bereits in der Liste.';
                 return;
             }
             currentBlacklist.push(name);
+            buildProviderSelect();
             renderProviderList();
-            input.value = '';
-            document.getElementById('providerStatus').textContent = '';
+            if (status) status.textContent = '';
         }
 
         function removeProvider(name) {
             currentBlacklist = currentBlacklist.filter(p => p !== name);
+            buildProviderSelect();
             renderProviderList();
         }
 
@@ -4556,6 +4638,34 @@ async def tests_report():
         return HTMLResponse(p.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning(f"[tests/report] Lesefehler: {e}")
+        return JSONResponse({"error": f"Lesefehler: {e}"}, status_code=500)
+
+
+# Patch 170 (B5): Einzelne Reports per Name ausliefern
+_ALLOWED_REPORT_NAMES = {"full_report", "fenrir_report", "loki_report"}
+
+
+@router.get("/tests/report/{name}", response_class=HTMLResponse)
+async def tests_report_named(name: str):
+    """Einzelnen HTML-Report per Name ausliefern (z.B. fenrir_report, loki_report).
+
+    Whitelist verhindert Path-Traversal — nur bekannte Report-Namen sind erlaubt.
+    """
+    if name not in _ALLOWED_REPORT_NAMES:
+        return JSONResponse(
+            {"error": f"Unbekannter Report: {name}"},
+            status_code=404,
+        )
+    p = _REPORT_DIR / f"{name}.html"
+    if not p.exists():
+        return JSONResponse(
+            {"error": f"Kein {name}.html vorhanden. Bitte pytest ausführen."},
+            status_code=404,
+        )
+    try:
+        return HTMLResponse(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"[tests/report/{name}] Lesefehler: {e}")
         return JSONResponse({"error": f"Lesefehler: {e}"}, status_code=500)
 
 

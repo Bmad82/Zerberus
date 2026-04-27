@@ -4060,3 +4060,73 @@ Fix: auf `monkeypatch.setitem(sys.modules, "zerberus.modules.rag.router", fake_r
 - [ ] Hel: Cleaner-Tab öffnen → KEIN „host is null"-Fehler in der Browser-Konsole.
 
 *Stand: 2026-04-27, Patch 169 — Quick-Win zwischen Phase C und D. 15 neue Tests grün, breiter Sweep 797 passed (keine Regression). Nächster Schritt: Sandbox-Anbindung (Phase D), broader HitL-Button-Flow, kosmetische Hel-UI-Fixes (B3/B4/B5), GETTING_STARTED.md (F2).*
+
+---
+
+## Patch 170 — Hel-UI Kosmetik-Sweep (B3, B4, B5) (2026-04-27)
+
+**Zwischen Phase C und D — Stabilisierung.** Drei rein kosmetische Bug-Fixes aus der Review-Session nach Patch 159 abgearbeitet. Kein Backend-Logik-Impact, nur ein neuer Read-Only-Endpoint für B5.
+
+### B3 — Provider-Blacklist: Dropdown statt Freitext
+
+**Vorher:** OpenRouter-Provider mussten als Freitext eingegeben werden — der User musste Provider-Namen auswendig kennen. Bestehende Einträge (z.B. `chutes`, `targon`) wurden in überdimensionierten Boxen mit separatem Entfernen-Button dargestellt.
+
+**Jetzt:**
+- `KNOWN_PROVIDERS`-Konstante im Frontend-JS mit 23 bekannten OpenRouter-Providern (Stand April 2026: Azure, AWS Bedrock, Google Cloud Vertex, Together, Fireworks, Lepton, Avian, Lambda, AnyScale, Modal, Replicate, OctoAI, DeepInfra, Mancer, Lynn, Infermatic, SF Compute, Cloudflare, Featherless, Targon, Chutes, Novita, Parasail).
+- `<select class="zb-select">`-Dropdown mit allen verfügbaren (nicht-blacklisteten) Providern.
+- `Benutzerdefiniert…`-Option als Fallback für neue Provider, die noch nicht in der Liste sind.
+- Bestehende Einträge als kompakte Inline-Chips (max-height 32px, `border-radius: var(--zb-radius-sm)`, ✕-Button im Chip).
+- Mobile: Chips wrappen auf nächste Zeile statt horizontal zu scrollen.
+
+### B4 — Dialekte: „Gruppe löschen" weniger dominant
+
+**Vorher:** Großer roter Button mit Text „🗑 Gruppe löschen" — destruktive Aktion war visuell prominenter als der Inhalt der Gruppe.
+
+**Jetzt:**
+- 28×28px Icon-Button mit nur 🗑️ als Inhalt.
+- Default `opacity: 0.5`, transparenter Hintergrund, dezente graue Border.
+- Hover/Touch: opacity 1.0, Border und Icon färben sich auf `var(--zb-danger)` (#FF6B6B).
+- `title`-Tooltip („Gruppe löschen") + `aria-label` für Screen-Reader.
+- Confirm-Dialog bleibt (war schon in P148 vorhanden, jetzt kürzer formuliert: „Gruppe »X« wirklich löschen?").
+
+### B5 — Test-Reports einzeln verlinkbar
+
+**Vorher:** `fenrir_report.html` und `loki_report.html` zeigten in der Tabelle „(nur full_report verlinkbar)" — ohne Möglichkeit, die Einzel-Reports direkt zu öffnen.
+
+**Jetzt:**
+- Neuer Endpoint `GET /hel/tests/report/{name}` liefert HTML-Reports per Name aus.
+- **Whitelist** verhindert Path-Traversal — nur `full_report`, `fenrir_report`, `loki_report` sind erlaubt.
+- Frontend baut für alle drei bekannten Reports einen `öffnen`-Link (`/hel/tests/report/<stem>`).
+- Unbekannte HTML-Files in `tests/report/` werden mit „(Teil des Gesamtreports)" markiert (statt der kryptischen alten Meldung).
+- 404 sowohl für unbekannte Namen (Whitelist-Reject) als auch für nicht-existierende Files (z.B. wenn `pytest` noch nicht gelaufen ist).
+
+### Tests
+
+- Neue Tests: `zerberus/tests/test_patch170_hel_kosmetik.py` (18 Tests, alle grün)
+  - 5 Source-Inspection-Tests für B3 (Konstante, Dropdown, Custom-Option, Helper-Funktionen, Chip-Layout)
+  - 5 Source-Inspection-Tests für B4 (Icon-Text, 28px-Größe, Tooltip, Confirm, gedämpfte Default-Optik)
+  - 4 Source-Inspection-Tests für B5 (Endpoint, Whitelist, Frontend-Links, freundlicherer Fallback-Text)
+  - 4 funktionale Tests für den neuen `tests_report_named`-Endpoint (Whitelist-Reject, fehlende Datei, fenrir + loki erfolgreich ausgeliefert)
+- Hel-Tests insgesamt grün (test_hel_kleinigkeiten + test_patch170 = 28/28 passed).
+- Volle Suite-Lauf nicht-deterministisch (Test-Isolations-Probleme im Repo, die bereits vor P170 bestanden — verifiziert via `git stash`-Vergleich).
+
+### Manuelle Checkliste
+
+- [ ] Hel: Provider-Tab → Blacklist zeigt Dropdown mit Provider-Auswahl
+- [ ] Hel: Provider-Tab → „Benutzerdefiniert…" Option zeigt Freitext-Input
+- [ ] Hel: Provider-Tab → Bestehende Einträge als kompakte Chips mit ✕
+- [ ] Hel: Provider-Tab → Chips wrappen korrekt auf Mobile
+- [ ] Hel: Dialekte-Tab → „Gruppe löschen" ist kleines 🗑️-Icon, nicht großer roter Button
+- [ ] Hel: Dialekte-Tab → Klick auf 🗑️ → Confirm-Dialog vor dem Löschen
+- [ ] Hel: Tests-Tab → Einzelne Reports (Fenrir, Loki) sind verlinkbar oder klar als „nicht verfügbar" markiert
+
+### Scope-Grenzen
+
+- Keine Backend-Logik-Änderungen außerhalb des einen Read-Only-Endpoints für B5.
+- Keine Änderungen an der Provider-Blacklist-Logik selbst (nur UI).
+- Nutzt bestehende Design-Tokens aus `shared-design.css` (P151).
+
+*Stand: 2026-04-27, Patch 170 — Stabilisierung zwischen Phase C und D. 18 neue Tests grün, Hel-Suite vollständig grün, kein Backend-Impact. Nächster Schritt: Sandbox-Anbindung (Phase D), broader HitL-Button-Flow, GETTING_STARTED.md (F2).*
+
+---
+
