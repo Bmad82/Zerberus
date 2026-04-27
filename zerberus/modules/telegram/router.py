@@ -37,6 +37,7 @@ from zerberus.modules.telegram.bot import (
     is_bot_mentioned,
     long_polling_loop,
     register_webhook,
+    send_document,
     send_telegram_message,
     send_telegram_message_throttled,
     was_bot_added_to_group,
@@ -56,6 +57,13 @@ from zerberus.modules.telegram.hitl import (
     build_timeout_message,
     hitl_sweep_loop,
     parse_callback_data,
+)
+from zerberus.utils.file_output import (
+    build_file_caption,
+    determine_file_format,
+    is_extension_allowed,
+    should_send_as_file,
+    validate_file_size,
 )
 
 try:
@@ -368,6 +376,191 @@ _FALLBACK_LLM_UNAVAILABLE = (
 )
 
 
+# ══════════════════════════════════════════════════════════════════
+#  Patch 168 — Datei-Output-Pfad (Block 1, 3, 4)
+# ══════════════════════════════════════════════════════════════════
+
+
+_HITL_FILE_QUESTION = (
+    "🪶 *Achtung, Riesenakt.*\n"
+    "Du fragst nach einer kompletten Datei und ich schaetze den Aufwand "
+    "auf 5 (sehr komplex). Bist du sicher dass du die volle Datei willst?\n\n"
+    "Tipp: Bei kleineren Anfragen liefer ich schneller. ✅ = ja, mach. ❌ = lass."
+)
+
+
+async def _wait_for_file_hitl_decision(
+    answer: str,
+    info: Dict[str, Any],
+    cfg: HuginnConfig,
+    hitl_mgr: "HitlManager",
+) -> str:
+    """Patch 168 (Block 3): FILE + effort=5 -> User-Rueckfrage via HitL-Button.
+
+    Erstellt einen ``HitlTask`` (intent ``FILE_EFFORT5``), schickt eine
+    Rueckfrage mit dem ✅/❌-Inline-Keyboard aus P167 und blockt bis der
+    Requester (oder Admin) klickt — oder der Sweep den Task expired.
+
+    Returns:
+        ``"approved"`` | ``"rejected"`` | ``"expired"`` | ``"unknown"``
+    """
+    task = await hitl_mgr.create_task(
+        requester_id=info.get("user_id") or 0,
+        chat_id=info["chat_id"],
+        intent="FILE_EFFORT5",
+        requester_username=info.get("username", "") or "",
+        details=f"Vorschau: {(answer or '')[:300]}",
+        payload={"answer_length": len(answer or "")},
+    )
+    await send_telegram_message(
+        cfg.bot_token,
+        info["chat_id"],
+        _HITL_FILE_QUESTION,
+        reply_to_message_id=info.get("message_id"),
+        message_thread_id=info.get("message_thread_id"),
+        reply_markup=build_admin_keyboard(task.id),
+    )
+    return await hitl_mgr.wait_for_decision(task.id)
+
+
+async def _deferred_file_send_after_hitl(
+    answer: str,
+    intent_str: str,
+    info: Dict[str, Any],
+    cfg: HuginnConfig,
+    hitl_mgr: "HitlManager",
+    content_bytes: bytes,
+    filename: str,
+    mime_type: str,
+) -> None:
+    """Patch 168 (Block 3) — Background-Task fuer FILE+effort=5 HitL-Gate.
+
+    Wartet auf den ✅/❌-Button-Klick und sendet die Datei erst nach
+    Approval. Muss als ``asyncio.create_task`` gestartet werden — sonst
+    blockt der long_polling_loop sequenziell das Verarbeiten genau des
+    Click-Updates, das die Entscheidung liefern soll (Deadlock bis
+    HitL-Sweep nach 5min die Task expired).
+    """
+    decision = await _wait_for_file_hitl_decision(answer, info, cfg, hitl_mgr)
+    if decision == "approved":
+        caption = build_file_caption(intent_str, answer, filename)
+        await send_document(
+            cfg.bot_token,
+            info["chat_id"],
+            content_bytes,
+            filename,
+            caption=caption,
+            reply_to_message_id=info.get("message_id"),
+            message_thread_id=info.get("message_thread_id"),
+            mime_type=mime_type,
+        )
+        logger.info(
+            "[FILE-168] HitL approved → Datei gesendet (chat=%s file=%s)",
+            info.get("chat_id"), filename,
+        )
+        return
+    if decision == "rejected":
+        await send_telegram_message(
+            cfg.bot_token,
+            info["chat_id"],
+            "Krraa! Auch gut. Spart mir Tinte.",
+            reply_to_message_id=info.get("message_id"),
+            message_thread_id=info.get("message_thread_id"),
+        )
+        logger.info("[FILE-168] HitL rejected → Datei verworfen")
+        return
+    # expired/unknown: hitl_sweep_loop verschickt bereits den Timeout-Hinweis.
+    logger.info("[FILE-168] HitL %s → Datei verworfen", decision)
+
+
+async def _send_as_file(
+    answer: str,
+    intent_str: str,
+    effort: int,
+    info: Dict[str, Any],
+    cfg: HuginnConfig,
+    settings: Settings,
+) -> tuple[str, bool]:
+    """Datei-Versand-Pfad. Liefert ``(kind, sent_ok)``.
+
+    - Validiert MIME-Whitelist und 10-MB-Size-Limit (Block 2).
+    - Bei ``intent=FILE`` und ``effort>=5``: HitL-Rueckfrage als
+      Background-Task (Block 3); Rueckgabe ``hitl_pending``.
+    - Sonst: encodet UTF-8 und ruft ``send_document`` direkt auf.
+
+    ``kind`` ist eine kompakte String-Kategorie fuer Test/Logging
+    (``file``, ``file_blocked``, ``file_too_large``, ``hitl_pending``).
+    """
+    filename, mime_type = determine_file_format(intent_str, answer)
+    if not is_extension_allowed(filename):
+        # Sollte mit determine_file_format nicht eintreten — Belt-and-suspenders.
+        logger.error(
+            "[FILE-168] Extension blockiert (Whitelist/Blocklist): %s", filename,
+        )
+        await send_telegram_message(
+            cfg.bot_token,
+            info["chat_id"],
+            "⚠️ Datei-Generierung fehlgeschlagen (interner Fehler).",
+            reply_to_message_id=info.get("message_id"),
+            message_thread_id=info.get("message_thread_id"),
+        )
+        return "file_blocked", False
+
+    content_bytes = (answer or "").encode("utf-8")
+    if not validate_file_size(content_bytes):
+        size_mb = len(content_bytes) / (1024 * 1024)
+        logger.warning(
+            "[FILE-168] Datei zu gross (%d Bytes / %.1f MB)",
+            len(content_bytes), size_mb,
+        )
+        await send_telegram_message(
+            cfg.bot_token,
+            info["chat_id"],
+            f"⚠️ Antwort waere zu gross ({size_mb:.1f} MB, Limit 10 MB).",
+            reply_to_message_id=info.get("message_id"),
+            message_thread_id=info.get("message_thread_id"),
+        )
+        return "file_too_large", False
+
+    # Patch 168 (Block 3): effort=5 + FILE → HitL-Gate als Background-Task.
+    # Direkter await wuerde den long_polling_loop blockieren — die Click-
+    # Antwort, die das Gate aufloest, wuerde nie verarbeitet (Deadlock bis
+    # Sweep-Timeout). create_task entkoppelt den Wartepfad sauber.
+    if intent_str.upper() == "FILE" and int(effort or 0) >= 5:
+        _, hitl_mgr = _get_managers(settings)
+        asyncio.create_task(
+            _deferred_file_send_after_hitl(
+                answer=answer,
+                intent_str=intent_str,
+                info=info,
+                cfg=cfg,
+                hitl_mgr=hitl_mgr,
+                content_bytes=content_bytes,
+                filename=filename,
+                mime_type=mime_type,
+            ),
+            name=f"huginn-hitl-file-{info.get('chat_id')}",
+        )
+        return "hitl_pending", True
+
+    caption = build_file_caption(intent_str, answer, filename)
+    sent = await send_document(
+        cfg.bot_token,
+        info["chat_id"],
+        content_bytes,
+        filename,
+        caption=caption,
+        reply_to_message_id=info.get("message_id"),
+        message_thread_id=info.get("message_thread_id"),
+        mime_type=mime_type,
+    )
+    logger.info(
+        "[FILE-168] Datei gesendet: chat=%s intent=%s file=%s bytes=%d ok=%s",
+        info.get("chat_id"), intent_str, filename, len(content_bytes), sent,
+    )
+    return "file", sent
+
+
 async def _process_text_message(
     info: Dict[str, Any],
     cfg: HuginnConfig,
@@ -539,6 +732,25 @@ async def _process_text_message(
         logger.warning(
             "[HUGINN-163] Guard-Fail Policy='%s' → Antwort wird durchgelassen", fail_policy,
         )
+
+    # Patch 168 (Block 1+4): Output-Router — Text vs. Datei.
+    intent_str = parsed.intent.value
+    if should_send_as_file(intent_str, len(answer)):
+        sent_kind, sent = await _send_as_file(
+            answer=answer,
+            intent_str=intent_str,
+            effort=parsed.effort,
+            info=info,
+            cfg=cfg,
+            settings=settings,
+        )
+        return {
+            "sent": sent,
+            "kind": sent_kind,
+            "guard": guard,
+            "latency_ms": llm_result.get("latency_ms", 0),
+            "intent": intent_str,
+        }
 
     text_out = format_code_response(answer)
     sent = await send_telegram_message(

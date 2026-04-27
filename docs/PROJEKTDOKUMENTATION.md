@@ -3897,3 +3897,91 @@ Die statische Tabelle aus Patch 164 (`HitlPolicy.evaluate`) bleibt gültig: CODE
 - [ ] CHAT-Anfrage → direkte Antwort ohne Buttons (Fastlane unverändert)
 
 *Stand: 2026-04-27, Patch 167 — Phase-C-Auftakt. 16 neue Tests grün, HitL/Telegram-Subset (74 Tests) keine Regression. Nächster Schritt: Patch 168 (Datei-Output-Logik), danach Sandbox-Anbindung (Phase D).*
+
+
+## Patch 168 — Datei-Output + Aufwands-Kalibrierung (Phase C) (2026-04-27)
+
+**Phase-C-Mitte.** Adressiert die Findings K5 (Content-Review vor Datei-Versand), P5 (Telegram-Lesbarkeit ab ~2000 Zeichen), P6 (fehlende Datei-Pipeline für FILE/CODE-Intents) und D7 (MIME-Whitelist) aus dem 7-LLM-Review. Huginn kann ab diesem Patch nicht mehr nur Text liefern — FILE- und CODE-Intents gehen als richtige Datei raus, lange CHAT-Antworten als Datei-Fallback, und der `effort`-Score aus dem JSON-Header (P164) modulier zum ersten Mal aktiv den Antwort-Ton statt nur geloggt zu werden.
+
+### Block 1 — Datei-Output-Logik
+
+Neues Utility `zerberus/utils/file_output.py` kapselt die Routing- und Format-Entscheidungen:
+
+- `determine_file_format(intent, content) -> (filename, mime_type)`. CODE wird per Heuristik in Python (`def`/`import`/`class`/`from ... import`), JavaScript (`function`/`const`/`=>`/`console.log`), SQL (`SELECT`/`CREATE TABLE`/`INSERT INTO`/...) oder TXT-Default zerlegt. FILE wird zwischen Markdown (`#`-Header, Listen, Code-Fences, Bold/Italic) und Plain-Text unterschieden. CHAT-Fallback geht immer als `.md`. Bewusst keine AST-Analyse — wir raten die Endung, validieren den Inhalt nicht.
+- `should_send_as_file(intent, content_length, threshold=2000) -> bool`. FILE/CODE → immer Datei. CHAT > 2000 ZS → Datei-Fallback. SEARCH/IMAGE/ADMIN/Unknown → nie Datei. Schwelle ist 2000 statt 4096 (Telegram-Limit) wegen Lesbarkeit auf dem Handy.
+- `validate_file_size(content_bytes) -> bool`. 10-MB-Limit (Telegram erlaubt 50 MB; 10 MB ist Schutz gegen LLM-Halluzinationen vom Typ „Schreib mir den Linux-Kernel").
+- `is_extension_allowed(filename) -> bool`. Whitelist `.txt/.md/.py/.js/.ts/.sql/.json/.yaml/.yml/.csv` plus expliziter Blocklist `.exe/.sh/.bat/.cmd/.ps1/.dll/.so/.dylib/.scr/.com/.vbs/.jar/.msi`. Belt-and-suspenders: wenn ein Bug in `determine_file_format` doch eine `.exe`-Endung erzeugt, fängt diese Funktion sie ab.
+- `build_file_caption(intent, content, filename) -> str`. Vorschau-Text für die Datei-Caption. CODE: ``"📄 `huginn_code.py` — N Zeilen Python"``. FILE: „📄 Hier ist dein Dokument: ...". CHAT-Fallback: „Die Antwort war zu lang für eine Nachricht. Hier als Datei: ...". Caption auf 1024 ZS gekappt (Telegram-Limit für `sendDocument`).
+
+Die Telegram-API-Bindung dafür sitzt in `zerberus/modules/telegram/bot.py` als `send_document(bot_token, chat_id, content, filename, caption, reply_to_message_id, message_thread_id, mime_type, timeout=30.0)`. httpx-Multipart/form-data (Projektkonvention), Markdown-Caption mit Fallback ohne `parse_mode` bei Telegram-HTTP-Fehler (LLM-generierte Backticks ohne Match sind häufig). Logging-Tag `[HUGINN-168]`.
+
+### Block 2 — Content-Review vor Datei-Versand
+
+Die bestehende Guard-Pipeline (`hallucination_guard.check_response` via Mistral Small 3, P158-Persona-Kontext) läuft im `_process_text_message`-Flow unverändert auf dem geparsten Body, BEVOR der Output-Router entscheidet ob Text oder Datei rausgeht. Damit sieht der Guard exakt denselben Inhalt, der dem User in der Datei landet — ohne den JSON-Header, weil der Intent-Parser ihn ja schon abgezogen hat. Test `TestGuardOnFileContent.test_guard_runs_before_file_send` verifiziert die Aufruf-Sequenz mit gemocktem Guard-Callable + LLM und prüft, dass `_run_guard` aufgerufen wurde, bevor `send_document` feuert.
+
+Size-Limit + MIME-Check sind beide vor dem Versand: bei zu großer Datei kommt eine User-freundliche Fehlermeldung (`⚠️ Antwort waere zu gross (X.X MB, Limit 10 MB).`) statt eines stillen Drops; bei blockierter Endung ein „⚠️ Datei-Generierung fehlgeschlagen (interner Fehler)." plus `[FILE-168]`-ERROR-Log.
+
+### Block 3 — Aufwands-Kalibrierung
+
+Der `effort`-Score aus dem JSON-Header (P164) wurde bisher nur geloggt. Patch 168 hängt eine universale `EFFORT_CALIBRATION`-Sektion in den System-Prompt ein — das LLM kennt damit die Persona-Regeln für jede Effort-Stufe und moduliert seinen Ton in derselben Antwort, in der es den Score setzt:
+
+| Effort | Persona-Verhalten |
+|--------|-------------------|
+| 1-2 | Kommentarlos liefern. Kein Sarkasmus, kein Meta-Kommentar. |
+| 3 | Kurzer neutraler Kommentar zum Aufwand. |
+| 4 | Leicht genervter Kommentar im Raben-Ton. |
+| 5 | Voller Raben-Sarkasmus. Bei FILE/CODE + effort=5 fragt Huginn explizit nach Sicherheit, BEVOR die Datei generiert wird. |
+
+Implementierung in `zerberus/modules/telegram/bot.py`:
+
+- `EFFORT_CALIBRATION` ist die universale Instruktions-Sektion. `build_huginn_system_prompt(persona, effort=None)` hängt sie standardmäßig in den Prompt ein.
+- `build_effort_modifier(effort: int) -> str` liefert die Modifier-Zeile für eine konkrete Effort-Stufe. Wird primär in Tests genutzt (`effort=1` → ``""``, `effort=5` → enthält „sarkastisch") und ist Pfad für zukünftige zweistufige Flows, in denen ein bekannter Effort-Score den Prompt der zweiten Runde modulier.
+- **WICHTIG (Finding O5):** Der Modifier sitzt im Persona-Block, NICHT im Policy-Block. Der Guard prüft die Antwort weiterhin unabhängig vom Effort-Score; das LLM kann sich nicht durch hohen Effort eine Guard-Befreiung erschmuggeln.
+
+### Block 4 — Pipeline-Integration
+
+`_process_text_message` in `zerberus/modules/telegram/router.py` wurde so umgebaut, dass nach dem Guard ein neuer Output-Router den Versand übernimmt:
+
+1. LLM-Response kommt rein (mit JSON-Header) — Patch 162/164.
+2. Sanitizer-Pass — Patch 162.
+3. LLM-Call mit Retry — Patch 163.
+4. Intent-Header parsen + Body strippen — Patch 164.
+5. Guard auf Body — Patch 158/163.
+6. **NEU:** `should_send_as_file(parsed.intent.value, len(answer))` entscheidet Text vs. Datei.
+7. **NEU (Datei-Pfad):** `_send_as_file(...)` validiert Extension + Size, baut Caption, ruft `send_document`. Bei `intent=FILE` und `effort >= 5` wird stattdessen `_deferred_file_send_after_hitl` als `asyncio.create_task` gespawnt (siehe unten) und `("hitl_pending", True)` zurückgegeben — Datei kommt nach Approval.
+8. **Text-Pfad (unverändert):** `format_code_response` + `send_telegram_message`.
+
+**Deadlock-Vorbeugung beim HitL-Gate:** Ein direkter `await` auf `_wait_for_file_hitl_decision` würde den Long-Polling-Loop sequenziell blockieren — die Click-Antwort, die das Gate auflösen soll, würde nie verarbeitet, weil der Loop noch im vorherigen Handler steckt. `asyncio.create_task` entkoppelt den Wartepfad: der Handler returned schnell, die Click-Update kommt durch, der Callback-Pfad resolved den Task, das `asyncio.Event` wird gesetzt, der Background-Task entlässt `wait_for_decision` und feuert `send_document`. Bei expired übernimmt der P167-Sweep-Loop die Timeout-Nachricht.
+
+Die HitL-Rückfrage nutzt das `build_admin_keyboard(task.id)` aus P167 — derselbe Callback-Resolver, dieselbe Ownership-Prüfung (Requester selbst oder Admin darf klicken). Intent in der Task-DB ist `FILE_EFFORT5`, damit man später in den Logs filtern kann. Bei Reject schickt Huginn ein „Krraa! Auch gut. Spart mir Tinte."; bei Approve geht die Datei mit der Caption raus.
+
+### Tests & Doku
+
+`zerberus/tests/test_file_output.py` (neu) hat **45 Tests in 8 Klassen** — 17 Spec-Cases plus Robustheit-Edge-Cases:
+
+- `TestFormatDetection` (6): FILE+Markdown, CODE+Python, CODE+JavaScript, CODE+Unrecognized→.txt, CODE+SQL, FILE+Plain.
+- `TestRouting` (6): CHAT short/long, FILE/CODE always, other intents never, Threshold-Konstante 2000.
+- `TestSizeLimit` (5): Konstante 10 MB, under/over/exact/+1-Boundary.
+- `TestMimeWhitelist` (8): .py/.md/.txt allowed, .exe/.sh/.bat/.cmd/.ps1/.dll blocked, .so via Blocklist, empty filename, alle Spec-Endungen vorhanden.
+- `TestSendDocument` (4): Multipart-Format-Verify via httpx-Mock (chat_id, caption, reply_to, files-Tuple), Timeout-Handling, empty content, missing token.
+- `TestEffortCalibration` (8): effort=1 leer, effort=3 neutral, effort=5 sarkasmus+sicher, effort=4, invalid → leer, universale Sektion im Default-Prompt, expliziter Effort=5 ersetzt Sektion, expliziter Effort=1 omits.
+- `TestFileHitlGate` (2): effort=5+FILE → HitL-Rückfrage rausgeht + `send_document` NICHT direkt gefeuert; effort<5+FILE → direkter Versand.
+- `TestCaption` (5): Code-Python (Zeilenanzahl + Sprach-Kennung), Code-JavaScript, File-Markdown, Chat-Fallback erklärt „zu lang", ≤1024-ZS-Limit auch bei extremem Input.
+- `TestGuardOnFileContent` (1): End-to-End-Probe — gemockter LLM liefert FILE-Intent + Body, Guard-Mock erfasst den `assistant_msg`, Verify dass kein JSON-Header drin steht und `send_document` aufgerufen wurde.
+
+**Regression:** HitL/Telegram/Intent-Subset 188 passed, breiter Sweep 782 passed (offline-friendly Subset, P166-Baseline 708 + P167-Delta 29 + P168-Delta 45 = 782 exakt, keine Regression).
+
+**Geänderte Dateien:** `zerberus/modules/telegram/bot.py` (EFFORT_CALIBRATION + `build_effort_modifier` + `build_huginn_system_prompt`-Erweiterung + `send_document`), `zerberus/modules/telegram/router.py` (`_send_as_file` + `_wait_for_file_hitl_decision` + `_deferred_file_send_after_hitl` + Output-Router-Integration), `CLAUDE_ZERBERUS.md`, `SUPERVISOR_ZERBERUS.md`, `README.md`, `lessons.md`, `docs/PROJEKTDOKUMENTATION.md`
+**Neue Dateien:** `zerberus/utils/file_output.py`, `zerberus/tests/test_file_output.py`
+
+### Manuell-Checkliste (Chris)
+
+- [ ] Huginn: „Schreib mir einen Artikel über KI" → bekomme `huginn_antwort.md`-Datei mit Markdown-Caption.
+- [ ] Huginn: „Schreib ein Python-Script das Primzahlen findet" → bekomme `huginn_code.py`-Datei.
+- [ ] Huginn: Kurze Chat-Frage → normale Text-Antwort (KEINE Datei).
+- [ ] Huginn: Sehr lange Chat-Antwort provozieren → Datei als Fallback + Vorschau-Text „Die Antwort war zu lang ...".
+- [ ] Huginn: FILE-Anfrage mit effort=5 → Rückfrage „🪶 Achtung, Riesenakt. ✅/❌"; nach ✅ Datei, nach ❌ „Krraa! Auch gut.", nach 5 min Sweep-Timeout.
+- [ ] Huginn: Datei-Caption zeigt Dateinamen + Zeilenanzahl + Sprach-Kennung.
+- [ ] Logs prüfen: `[FILE-168]` und `[HUGINN-168]` tauchen bei Datei-Versand auf, `[GUARD-120]` läuft auf dem Datei-Content vor Versand.
+
+*Stand: 2026-04-27, Patch 168 — Phase-C-Mitte. 45 neue Tests grün, breiter Sweep 782 passed (keine Regression). Nächster Schritt: Sandbox-Anbindung (Phase D), danach broader HitL-Button-Flow für CODE/ADMIN-Intents.*

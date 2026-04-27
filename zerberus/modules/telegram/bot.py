@@ -102,16 +102,80 @@ kein Markdown-Fence drumherum.
 """
 
 
-def build_huginn_system_prompt(persona: str) -> str:
-    """Patch 164: Persona + Intent-Instruction in einem System-Prompt.
+# Patch 168: Universale Aufwands-Kalibrierung. Wird in den System-Prompt
+# eingehaengt; das LLM bekommt damit *vor* der Antwort die Anweisung, wie
+# es seine eigene Aufwandsschaetzung (effort=1..5 im JSON-Header) im
+# Persona-Ton spiegeln soll. Bewusst Persona-Block, NICHT Policy — der
+# Guard prueft die Antwort weiterhin unabhaengig vom Effort-Score (Finding
+# O5 aus dem 7-LLM-Review).
+EFFORT_CALIBRATION = """
+Aufwands-Kalibrierung (basierend auf dem ``effort``-Wert, den du selbst im
+JSON-Header setzt):
+- effort 1-2 (trivial/einfach): Liefer kommentarlos. Kein Sarkasmus, kein
+  Meta-Kommentar zur Aufgabe.
+- effort 3 (mittel): Kurzer neutraler Kommentar zur Aufgabe ist erlaubt.
+- effort 4 (komplex): Leicht genervter Kommentar in deinem Raben-Ton
+  ("Das ist jetzt nicht dein Ernst, oder?").
+- effort 5 (sehr komplex): Voller Raben-Sarkasmus. Bei FILE/CODE-Aufgaben
+  mit effort=5 fragst du den User explizit, ob er sich sicher ist, BEVOR
+  du die Datei generierst.
+"""
+
+
+def build_effort_modifier(effort: Optional[int]) -> str:
+    """Patch 168: Liefert die Persona-Modifier-Zeile fuer einen Effort-Wert.
+
+    Wird in Tests einzeln geprueft (test_file_output: ``effort=1`` → "",
+    ``effort=5`` → enthaelt "sarkastisch"). Im Live-Betrieb wird die
+    universale ``EFFORT_CALIBRATION``-Sektion in den Prompt geschickt;
+    diese Helfer-Funktion ist primaer fuer Test-Coverage und falls in
+    Zukunft ein zweiter Modus (z. B. eingelesener Effort-Score) gewuenscht
+    ist.
+    """
+    if effort is None:
+        return ""
+    try:
+        eff = int(effort)
+    except (TypeError, ValueError):
+        return ""
+    if eff <= 2:
+        return ""
+    if eff == 3:
+        return "Kommentiere den Aufwand kurz und neutral."
+    if eff == 4:
+        return "Kommentiere den Aufwand leicht genervt im Raben-Ton."
+    return (
+        "Kommentiere den Aufwand sarkastisch im Raben-Ton. "
+        "Frage den User, ob er sich sicher ist."
+    )
+
+
+def build_huginn_system_prompt(
+    persona: str,
+    effort: Optional[int] = None,
+) -> str:
+    """Patch 164/168: Persona + Effort-Kalibrierung + Intent-Instruction.
 
     ``persona`` darf leer sein (User hat Persona explizit deaktiviert) — dann
-    bekommt das LLM nur die Intent-Instruction. Diese ist Pflicht, damit der
-    Intent-Router parsen kann.
+    bekommt das LLM nur Effort-Block + Intent-Instruction. Letztere ist
+    Pflicht, damit der Intent-Router parsen kann.
+
+    ``effort`` ist optional. None (Default, Live-Betrieb) → universale
+    EFFORT_CALIBRATION wird mitgeschickt; das LLM modulier den Ton selbst.
+    Wird ein konkreter Wert uebergeben, kommt nur die passende Modifier-
+    Zeile in den Prompt — Pfad fuer kuenftige zweistufige Flows / Tests.
     """
-    if not persona:
-        return INTENT_INSTRUCTION.lstrip()
-    return persona.rstrip() + "\n" + INTENT_INSTRUCTION
+    parts: list[str] = []
+    if persona:
+        parts.append(persona.rstrip())
+    if effort is None:
+        parts.append(EFFORT_CALIBRATION.strip())
+    else:
+        modifier = build_effort_modifier(effort)
+        if modifier:
+            parts.append(modifier)
+    parts.append(INTENT_INSTRUCTION.lstrip())
+    return "\n".join(parts)
 
 
 @dataclass
@@ -625,3 +689,86 @@ def format_code_response(content: str) -> str:
     if len(content) > 4000:
         content = content[:3900] + "\n\n…[gekuerzt]"
     return content
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Patch 168 — Datei-Versand via sendDocument
+# ══════════════════════════════════════════════════════════════════
+#
+# Telegram-Bot-API akzeptiert Datei-Uploads als ``multipart/form-data``
+# auf dem ``sendDocument``-Endpunkt. ``httpx`` baut das automatisch wenn
+# wir das Content-Tuple uebergeben (filename, bytes, mime_type).
+# Caption-Limit ist 1024 Zeichen (siehe utils.file_output).
+
+
+async def send_document(
+    bot_token: str,
+    chat_id: int | str,
+    content: bytes,
+    filename: str,
+    caption: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None,
+    message_thread_id: Optional[int] = None,
+    mime_type: Optional[str] = None,
+    timeout: float = 30.0,
+) -> bool:
+    """Sendet eine Datei via Telegram Bot API ``sendDocument``.
+
+    Patch 168 (Block 1): ersetzt das bisherige Verhalten, dass Huginn nur
+    Text rausgeben konnte. Nutzt ``multipart/form-data`` direkt ueber
+    httpx, damit wir keine extra Lib brauchen (Projektkonvention: httpx
+    fuer alle ausgehenden HTTP-Calls).
+
+    - ``content`` muss bereits Bytes sein (UTF-8-Encode passiert beim
+      Caller, damit der Encoding-Pfad explizit bleibt).
+    - ``caption`` wird auf 1024 Zeichen vom Telegram-Server geclampt; wir
+      kuerzen defensiv auch hier.
+    - Timeout 30s, weil Datei-Upload je nach Verbindung dauern kann.
+    """
+    if not bot_token:
+        logger.warning("[HUGINN-168] Kein bot_token — send_document uebersprungen")
+        return False
+    if not content:
+        logger.warning("[HUGINN-168] Leerer content — send_document uebersprungen")
+        return False
+
+    url = TELEGRAM_API_URL.format(token=bot_token, method="sendDocument")
+    files = {
+        "document": (filename, content, mime_type or "application/octet-stream"),
+    }
+    data: Dict[str, Any] = {"chat_id": str(chat_id)}
+    if caption:
+        data["caption"] = caption[:1024]
+        # Markdown im Caption hilft beim Hervorheben des Dateinamens
+        data["parse_mode"] = "Markdown"
+    if reply_to_message_id:
+        data["reply_to_message_id"] = str(reply_to_message_id)
+    if message_thread_id is not None:
+        data["message_thread_id"] = str(message_thread_id)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, data=data, files=files)
+        if resp.status_code != 200:
+            # Caption-Markdown-Fehler sind haeufig (LLM-generierte
+            # Backticks ohne Match) → Retry ohne parse_mode.
+            if data.get("parse_mode"):
+                data.pop("parse_mode", None)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(url, data=data, files=files)
+            if resp.status_code != 200:
+                logger.warning(
+                    "[HUGINN-168] sendDocument HTTP %d: %s",
+                    resp.status_code, resp.text[:200],
+                )
+                return False
+        return True
+    except httpx.TimeoutException:
+        logger.warning(
+            "[HUGINN-168] sendDocument Timeout (%.0fs) chat=%s file=%s",
+            timeout, chat_id, filename,
+        )
+        return False
+    except Exception as e:
+        logger.warning("[HUGINN-168] sendDocument Exception: %s", e)
+        return False

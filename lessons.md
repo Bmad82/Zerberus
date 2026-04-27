@@ -144,6 +144,18 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Patch-Prompts IMMER vollen Dateinamen
 - Hintergrund: P100 — Claude Code verwechselte projektspezifische mit globaler
 
+## HitL-Gate aus dem Long-Polling-Loop (P168)
+- Direkt-`await` auf `wait_for_decision` im Telegram-Handler = Deadlock|Long-Polling-Loop awaited Updates SEQUENZIELL|der Click der das Gate auflöst kommt erst durch wenn der vorherige Handler returned|aber der vorherige Handler wartet auf den Click → Hängt bis Sweep-Timeout (5 min)
+- Lösung: HitL-Wait + Folge-Aktion (z. B. `send_document`) als `asyncio.create_task` spawnen|Handler returned schnell, Long-Polling kann Click verarbeiten, Background-Task wird via `asyncio.Event` entlassen
+- Pattern in [`router.py::_send_as_file`](zerberus/modules/telegram/router.py): bei effort=5+FILE → `create_task(_deferred_file_send_after_hitl(...))` statt direkt `await`
+- Faustregel: Jeder `wait_for_decision`/`Event.wait` aus einem Long-Polling-Handler MUSS in einem separaten Task laufen|gleiches Prinzip wie der Sweep-Loop selbst (P167) — der hat das Pattern schon vorgemacht
+
+## Telegram sendDocument (P168)
+- httpx-Multipart/form-data baut sich automatisch wenn man `files={"document": (filename, bytes, mime)}` + `data={...}` an `client.post(...)` gibt|kein zusätzlicher Encoder nötig
+- Caption-Limit ist 1024 ZS (nicht 4096 wie bei sendMessage)|Markdown-Caption mit Backticks → bei Match-Fehler HTTP-Fehler|Fallback ohne `parse_mode` analog zu sendMessage-Pattern
+- Telegram-Limit für sendDocument: 50 MB|für unsere LLM-Outputs sind 10 MB sinnvoll (Schutz gegen LLM-Halluzinationen wie „schreib mir den Linux-Kernel")
+- Datei-Endungs-Sicherheit: Whitelist + explizite Blocklist (Belt-and-suspenders)|nicht nur „erlaubt-was-bekannt-ist" — falls ein Bug im Format-Detector eine ``.exe``-Endung produziert, fängt die Blocklist sie
+
 ## Telegram-Bot hinter Tailscale (P155)
 - Webhooks brauchen öffentliche HTTPS-URL|Tailscale MagicDNS (`*.tail*.ts.net`) löst nur intern|Self-Signed-Certs helfen nicht (DNS-Lookup scheitert vorher)
 - Lösung Long-Polling: `getUpdates` (Long-Poll 30s-Timeout) statt warten|funktioniert hinter jeder Firewall/VPN/Tailnet

@@ -156,6 +156,21 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - Neue HitL-Pfade (Code-Exec, File-Ops): `requester_user_id=info.get("user_id")` an `create_request()`|sonst nur-Admin-Fallback (DM-only ok, In-Group-Buttons offen)
 - String-Vergleich: TG liefert `from.id` als int|`admin_chat_id` oft String|`str(...)` auf beiden Seiten
 
+## Datei-Output + Effort-Kalibrierung (P168)
+- Output-Router in [`_process_text_message`](zerberus/modules/telegram/router.py) nach Guard|`should_send_as_file(intent, len)` aus [`utils/file_output.py`](zerberus/utils/file_output.py): FILE/CODE → immer Datei|CHAT >2000 ZS → Datei-Fallback|sonst Text
+- `determine_file_format(intent, content) -> (filename, mime)`: CODE+Python (`def`/`import`/`class`) → `huginn_code.py`|CODE+JS (`function`/`const`/`=>`/`console.log`) → `.js`|CODE+SQL (`SELECT`/`CREATE TABLE`) → `.sql`|CODE-default → `.txt`|FILE+Markdown (`#`/Listen/Fences) → `huginn_antwort.md`|FILE-plain → `.txt`|CHAT-fallback → `.md`|kein AST-Parsing, nur Regex-Heuristik
+- MIME-Whitelist `.txt/.md/.py/.js/.ts/.sql/.json/.yaml/.yml/.csv`|Blocklist `.exe/.sh/.bat/.cmd/.ps1/.dll/.so/.dylib/.scr/.com/.vbs/.jar/.msi`|`is_extension_allowed(filename)` Belt-and-suspenders gegen Bug in `determine_file_format`
+- 10-MB-Limit (`MAX_FILE_SIZE_BYTES`)|über Limit → User-Fehlermeldung „⚠️ Antwort waere zu gross (X.X MB)"|kein silent drop
+- `send_document(bot_token, chat_id, content, filename, caption, reply_to, thread_id, mime_type, timeout=30s)` in [`telegram/bot.py`](zerberus/modules/telegram/bot.py)|httpx-multipart/form-data|Markdown-Caption mit Fallback ohne `parse_mode` bei HTTP-Fehler|Logging-Tag `[HUGINN-168]`
+- `build_file_caption(intent, content, filename)` ≤1024 ZS (Telegram-Limit)|CODE: ``"📄 `huginn_code.py` — N Zeilen Python"``|FILE: „📄 Hier ist dein Dokument: ..."|CHAT-Fallback: „Die Antwort war zu lang ..."|Zeilenanzahl via `len(content.splitlines())`
+- `EFFORT_CALIBRATION` universal in [`bot.py`](zerberus/modules/telegram/bot.py)|wird in `build_huginn_system_prompt(persona, effort=None)` an Persona angehängt|LLM moduliert Ton selbst basierend auf eigenem `effort`-Score (P164)|effort 1-2 → kommentarlos|3 → kurz neutral|4 → leicht genervt|5 → sarkastisch + „bist du sicher?"
+- `build_effort_modifier(effort)` Helfer für Tests + zukünftige zweistufige Flows|None/invalid → ``""``
+- WICHTIG (O5): Effort-Modifier NUR Persona-Block, NICHT Policy-Block|Guard läuft unabhängig vom Effort-Score
+- FILE+effort=5 → HitL-Gate: `_send_as_file` spawnt `_deferred_file_send_after_hitl` als `asyncio.create_task` (NICHT direkt awaiten — sonst Long-Polling-Deadlock auf Click-Update)|Frage „🪶 Achtung, Riesenakt. ✅/❌"|nutzt P167 `build_admin_keyboard(task.id)`|Intent in DB: `FILE_EFFORT5`|Approve → send_document|Reject → „Krraa! Auch gut."|Expired → P167-Sweep schickt Timeout
+- Guard-Sequenz unverändert: läuft auf gepartem Body (ohne JSON-Header) BEVOR Output-Router entscheidet|Datei-Inhalt = Guard-Inhalt
+- Logging-Tags: `[FILE-168]` (Routing/Validation/HitL-Decision)|`[HUGINN-168]` (sendDocument-API)
+- Test-Pattern: `httpx.AsyncClient`-Mock für sendDocument|`monkeypatch.setattr(router_mod, "send_document", ...)` + `_reset_telegram_singletons_for_tests()` für Pipeline-Tests
+
 ## HitL-Hardening (P167)
 - DB-Tabelle `hitl_tasks` ([`core/database.py::HitlTask`](zerberus/core/database.py))|UUID4-Hex-IDs (32 Zeichen)|Status: `pending`/`approved`/`rejected`/`expired`|`Base.metadata.create_all` in `init_db()` legt Tabelle an
 - `HitlManager` ([`modules/telegram/hitl.py`](zerberus/modules/telegram/hitl.py)) async + DB-backed: `create_task` / `get_task` / `resolve_task(decision="approved"\|"rejected", is_admin_override=bool)` / `get_pending_tasks(chat_id=None)` / `expire_stale_tasks()` / `wait_for_decision`|In-Memory-Cache als Fast-Path + `asyncio.Event`-Notifizierung|`persistent=False` für Unit-Tests ohne DB

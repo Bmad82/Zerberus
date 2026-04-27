@@ -366,4 +366,4 @@ Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-27, Patch 167 (HitL-Hardening Phase C: SQLite-Persistenz, Task-IDs, Auto-Reject-Timeout, Ownership)*
+*Zerberus Pro 4.0 – Stand: 2026-04-27, Patch 168 (Datei-Output Phase C: send_document, MIME-Whitelist, Aufwands-Kalibrierung, FILE+effort=5-HitL-Gate)*
