@@ -141,6 +141,30 @@ class HitlConfig(BaseModel):
     sweep_interval_seconds: int = 30  # Sweep-Frequenz
 
 
+class SandboxConfig(BaseModel):
+    """Patch 171 — Defaults fuer die Docker-Sandbox (Phase D, Block 1).
+
+    Die Sandbox ist OPTIONAL und standardmaessig DEAKTIVIERT — muss
+    bewusst via ``modules.sandbox.enabled: true`` aktiviert werden, weil
+    sie Code-Execution ermoeglicht. Ohne Docker auf dem Host bleibt der
+    Pfad sowieso inaktiv (Startup-Healthcheck in main.py).
+
+    Defaults sind hier (statt nur in config.yaml) gesetzt, weil
+    ``config.yaml`` gitignored ist — sonst wuerden die Werte nach
+    ``git clone`` fehlen.
+    """
+    enabled: bool = False
+    timeout_seconds: int = 30
+    max_output_chars: int = 10000
+    memory_limit: str = "256m"
+    cpu_limit: float = 0.5
+    pids_limit: int = 64
+    tmpfs_size: str = "64m"
+    python_image: str = "python:3.12-slim"
+    node_image: str = "node:20-slim"
+    allowed_languages: List[str] = ["python", "javascript"]
+
+
 class MemoryExtractionConfig(BaseModel):
     """Patch 115: Background Memory Extraction Defaults.
     config.yaml-Override unter `modules.memory.*`.

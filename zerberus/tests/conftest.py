@@ -35,6 +35,14 @@ def _load_env_file():
 _load_env_file()
 
 
+def pytest_configure(config):
+    """Patch 171 — registriert den ``docker`` Marker fuer Sandbox-Live-Tests."""
+    config.addinivalue_line(
+        "markers",
+        "docker: Tests, die einen erreichbaren Docker-Daemon brauchen (Sandbox).",
+    )
+
+
 BASE_URL = "https://127.0.0.1:5000"
 
 LOKI_CREDS = {"username": "loki", "password": "lokitest123"}

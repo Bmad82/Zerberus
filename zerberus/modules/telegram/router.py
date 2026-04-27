@@ -558,7 +558,91 @@ async def _send_as_file(
         "[FILE-168] Datei gesendet: chat=%s intent=%s file=%s bytes=%d ok=%s",
         info.get("chat_id"), intent_str, filename, len(content_bytes), sent,
     )
+
+    # Patch 171 (Block 2): Bei CODE-Intent zusaetzlich in Docker-Sandbox
+    # ausfuehren. Datei kommt zuerst raus (Output-Reihenfolge), dann das
+    # Execution-Result als Reply auf die Datei. Sandbox liefert ``None``
+    # wenn deaktiviert/Docker fehlt — dann ueberspringen wir den Schritt
+    # geraeuschlos (Datei wurde ja schon gesendet, P168-Fallback aktiv).
+    if sent and intent_str.upper() == "CODE":
+        try:
+            await _maybe_execute_in_sandbox(answer, filename, info, cfg)
+        except Exception as e:
+            logger.warning("[SANDBOX-171] Pipeline-Hook Fehler: %s", e)
+
     return "file", sent
+
+
+async def _maybe_execute_in_sandbox(
+    answer: str,
+    filename: str,
+    info: Dict[str, Any],
+    cfg: HuginnConfig,
+) -> None:
+    """Patch 171 — CODE-Intent durch die Sandbox jagen, Result als Reply.
+
+    No-op wenn Sandbox deaktiviert ist oder kein executable Block gefunden
+    wird. Fehler werden geloggt, aber niemals zum User durchgereicht — der
+    Datei-Versand (P168) bleibt der primaere Output-Pfad.
+    """
+    from zerberus.modules.sandbox.manager import get_sandbox_manager
+    from zerberus.utils.code_extractor import first_executable_block
+
+    sandbox = get_sandbox_manager()
+    if not sandbox.config.enabled:
+        logger.info("[SANDBOX-171] Sandbox nicht verfügbar, sende nur als Datei")
+        return
+
+    fallback_lang = "python" if filename.endswith(".py") else (
+        "javascript" if filename.endswith(".js") else None
+    )
+    block = first_executable_block(
+        answer,
+        sandbox.config.allowed_languages,
+        fallback_language=fallback_lang,
+    )
+    if block is None:
+        logger.info("[SANDBOX-171] Kein executable Block in CODE-Antwort")
+        return
+
+    result = await sandbox.execute(block.code, block.language)
+    if result is None:
+        return
+
+    text_out = format_sandbox_result(result, filename, block.language)
+    await send_telegram_message(
+        cfg.bot_token,
+        info["chat_id"],
+        text_out,
+        reply_to_message_id=info.get("message_id"),
+        message_thread_id=info.get("message_thread_id"),
+    )
+
+
+def format_sandbox_result(result, filename: str, language: str) -> str:
+    """Formatiert ein ``SandboxResult`` als Telegram-Nachricht.
+
+    Liegt hier (nicht in manager.py), weil das Format Pipeline-spezifisch
+    ist — der Manager soll ein reines Daten-Modul bleiben.
+    """
+    if result.error:
+        return f"⚠️ Sandbox: {result.error}"
+
+    parts = [f"▶️ Ausgeführt in {result.execution_time_ms}ms"]
+    if result.exit_code != 0:
+        parts.append(f"⚠️ Exit Code {result.exit_code}")
+    if result.stdout:
+        parts.append("")
+        parts.append("stdout:")
+        parts.append(f"```\n{result.stdout}\n```")
+    if result.stderr:
+        parts.append("")
+        parts.append("stderr:")
+        parts.append(f"```\n{result.stderr}\n```")
+    if result.truncated:
+        parts.append("")
+        parts.append("_Output wurde gekürzt._")
+    return "\n".join(parts)
 
 
 async def _process_text_message(

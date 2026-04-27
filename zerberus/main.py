@@ -92,6 +92,33 @@ async def lifespan(app: FastAPI):
     else:
         _log_item("Docker", "fail", "nicht erreichbar – Sandbox deaktiviert")
 
+    # Patch 171 (Block 4): Sandbox-Healthcheck. Der "Docker"-Check oben
+    # prueft nur den Daemon — hier zusaetzlich Image-Inspect und Config.
+    # Sandbox bleibt OPTIONAL: jeder Fehler ist WARNING, kein Error.
+    try:
+        from zerberus.modules.sandbox.manager import get_sandbox_manager, reset_sandbox_manager
+        reset_sandbox_manager()
+        _sandbox_status = get_sandbox_manager().healthcheck()
+        if not _sandbox_status["ok"]:
+            _reason = _sandbox_status["reason"]
+            if _reason == "disabled":
+                _log_item("Sandbox", "skip", "deaktiviert (modules.sandbox.enabled=false)")
+            elif _reason == "docker_unavailable":
+                _log_item("Sandbox", "skip", "Docker nicht erreichbar")
+            elif _reason == "image_missing":
+                _missing = [img for img, ok in _sandbox_status["images"].items() if not ok]
+                _log_item(
+                    "Sandbox", "fail",
+                    f"Image fehlt: {', '.join(_missing)} – bitte 'docker pull' ausführen",
+                )
+            else:
+                _log_item("Sandbox", "fail", _reason)
+        else:
+            _imgs = ", ".join(_sandbox_status["images"].keys())
+            _log_item("Sandbox", "ok", f"bereit ({_imgs})")
+    except Exception as _sb_err:
+        _log_item("Sandbox", "fail", str(_sb_err)[:100])
+
     _whisper_url = settings.legacy.urls.whisper_url if settings.legacy else ""
     if _whisper_url:
         try:

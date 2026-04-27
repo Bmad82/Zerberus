@@ -4130,3 +4130,105 @@ Fix: auf `monkeypatch.setitem(sys.modules, "zerberus.modules.rag.router", fake_r
 
 ---
 
+## Patch 171 — Docker-Sandbox-Anbindung (Phase D, Block 1) (2026-04-28)
+
+**Phase-D-Auftakt.** LLM-generierter Code aus dem CODE-Intent (P164) kann jetzt in einer ephemeren Docker-Sandbox tatsächlich ausgeführt werden — Output landet als Reply auf die Code-Datei in Telegram. Sandbox ist OPTIONAL (Config-Default `enabled: false`) und harmlos wenn Docker fehlt: dann läuft der bisherige P168-Datei-Pfad weiter, einfach ohne Execution-Result.
+
+### Block 1 — Sandbox-Manager + Config
+
+**`zerberus/core/config.py` — `SandboxConfig`-Defaults**
+- `enabled: false` (bewusste Opt-In-Aktivierung)
+- `timeout_seconds: 30`, `max_output_chars: 10000`
+- `memory_limit: "256m"`, `cpu_limit: 0.5`, `pids_limit: 64`, `tmpfs_size: "64m"`
+- `python_image: "python:3.12-slim"`, `node_image: "node:20-slim"`
+- `allowed_languages: ["python", "javascript"]`
+
+Defaults landen direkt im Pydantic-Model statt nur in `config.yaml`, weil letztere gitignored ist (gleicher Ansatz wie HitlConfig P167).
+
+**`zerberus/utils/code_extractor.py` — neues Utility**
+- `extract_code_blocks(text, fallback_language=None)` extrahiert alle Fenced-Code-Blöcke aus Markdown-Text.
+- Sprach-Aliase: `py` → `python`, `js`/`node`/`nodejs` → `javascript`.
+- `first_executable_block(text, allowed_languages, fallback_language)` filtert auf die erste ausführbare Sprache — der Caller bekommt direkt den Block, der in die Sandbox kann.
+- Defensiv: Whitespace im Code wird **nicht** gestrippt (Python-Indent muss erhalten bleiben), nur ein einzelnes trailing Newline vor der schließenden Fence.
+
+**`zerberus/modules/sandbox/manager.py` — `SandboxManager`**
+- `docker run --rm` mit allen Härtungen aus dem Spec: `--network none`, `--read-only`, `--tmpfs /tmp`, `--memory`, `--cpus`, `--pids-limit`, `--security-opt no-new-privileges`. Kein Volume-Mount.
+- Container-Name `zerberus-sandbox-<uuid>` für gezielten `rm -f`-Cleanup bei Timeout.
+- Bei Timeout: `docker rm -f` synchron aus async-Pfad, dann SandboxResult mit `exit_code=-1` und `error="Timeout nach Ns"`.
+- Bei Subprocess-Fehler: Cleanup garantiert (try/except + force-remove).
+- `cleanup()` killt alle laufenden Sandbox-Container (Shutdown-Hook + Tests).
+- Singleton via `get_sandbox_manager()` mit lazy Init und `reset_sandbox_manager()` für Tests.
+
+### Block 2 — Pipeline-Integration
+
+`zerberus/modules/telegram/router.py::_send_as_file`:
+- Nach erfolgreichem Datei-Versand bei `intent_str == "CODE"` → `_maybe_execute_in_sandbox()` aufrufen.
+- Datei kommt **zuerst** raus (Output-Reihenfolge), dann Execution-Result als Reply.
+- Sandbox liefert `None` wenn deaktiviert → Reply wird übersprungen, Datei-Versand bleibt unberührt.
+- Code-Extraktion via `first_executable_block`; wenn der LLM keinen Fenced-Block produziert, fällt der Extractor auf den ganzen Antworttext zurück (Sprache aus dem Dateinamen `.py`/`.js`).
+- `format_sandbox_result()` baut die Telegram-Nachricht: `▶️ Ausgeführt in Nms`, optional `⚠️ Exit Code N`, stdout/stderr in Code-Fences, `_Output wurde gekürzt._` bei Truncation.
+
+### Block 3 — Sicherheits-Checks
+
+**Vor der Execution (in `manager.execute`):**
+1. Sandbox enabled?
+2. Sprache in `allowed_languages`?
+3. Code-Blockliste (Python: `import os/subprocess/socket`, `eval`, `exec`, `__import__`, file-write; JS: `child_process`, `fs`, `net`, `http(s)`, `eval`, `Function`).
+
+Die Blockliste ist **Belt+Suspenders** — der primäre Schutz sind die Docker-Limits. Treffer → kein Execute, `error` enthält das Pattern, der User bekommt nur die Datei (zum Selbst-Ausführen).
+
+**Nach der Execution:**
+- Container wird IMMER entfernt (auch bei Crash).
+- Log-Format: `[SANDBOX-171] Executed {language} ({lines} lines) in {ms}ms, exit={code}`.
+
+### Block 4 — Docker-Healthcheck
+
+`zerberus/main.py` (lifespan):
+- Existing `_DOCKER_OK`-Check (P52) läuft weiter (für andere Pfade).
+- **NEU:** `SandboxManager.healthcheck()` wird zusätzlich aufgerufen und liefert `{ok, reason, docker, images}`. Bedingungen:
+  - `disabled` → Log-Item `Sandbox: skip (deaktiviert ...)`
+  - `docker_unavailable` → `Sandbox: skip (Docker nicht erreichbar)`
+  - `image_missing` → `Sandbox: fail (Image fehlt: X – bitte 'docker pull' ausführen)`
+  - sonst → `Sandbox: ok (bereit (python:3.12-slim, node:20-slim))`
+
+Sandbox bleibt **optional** — jeder Fehler ist `WARNING`/`SKIP`, niemals fatal.
+
+### Tests
+
+Neue Test-Datei `zerberus/tests/test_sandbox.py` (24 Tests, davon 3 Docker-Live mit `@pytest.mark.docker` + `skipif`):
+
+- **15 spec-mandatorische Cases** (1–15) plus 6 zusätzliche Sanity-Tests (Pattern-Compile-Check, kein Fallback, mehr-Sprachen-Filterung, JS-Blocklist-Edge, Format-Variants).
+- **Mock-basierte Tests** für Output-Truncation und Timeout — nutzen `unittest.mock.patch` auf `asyncio.create_subprocess_exec` und `asyncio.wait_for`, damit kein echter Docker-Daemon nötig ist.
+- **Live-Tests** (16–18) skippen automatisch wenn Docker nicht erreichbar ODER wenn `python:3.12-slim` nicht gepullt ist. Marker `docker` ist in `conftest.py` registriert.
+
+**Lauf-Ergebnis:**
+- Isoliert: **21 passed, 3 skipped** in 2.3s (alle 3 Docker-Tests übersprungen mangels Image — funktional korrektes Verhalten).
+- Subset (sandbox + telegram + hel + hitl + huginn): **205 passed, 3 skipped** — keine Regression auf den Schwesterklassen.
+- Volle Suite hat dasselbe nicht-deterministische "Event loop is closed"-Verhalten wie schon bei P170 dokumentiert (Test-Isolations-Problem im Repo, kein P171-Effekt — alle P171-Tests sind isoliert grün).
+
+### Manuelle Checkliste (Chris)
+
+- [ ] `docker pull python:3.12-slim` (einmalig, ggf. auch `node:20-slim`)
+- [ ] `modules.sandbox.enabled: true` in `config.yaml` setzen
+- [ ] Server starten → Boot-Banner zeigt `Sandbox: ok (bereit ...)`
+- [ ] Huginn: „Schreib ein Python-Script das die ersten 10 Primzahlen ausgibt und führe es aus" → Code als Datei + Execution-Result als Reply
+- [ ] Huginn: Code mit `import os` → Datei kommt, aber kein Execution-Result (nur Log-Eintrag „Blocked pattern")
+- [ ] Server OHNE Docker starten → Boot-Banner zeigt `Sandbox: skip`, Code-Intents werden weiterhin als Datei beantwortet (P168-Pfad)
+
+### Scope-Grenzen (NICHT in diesem Patch)
+
+- Kein gVisor (Docker-Containerd reicht für Phase D).
+- Kein Multi-File-Support, kein persistenter Filesystem-State zwischen Runs.
+- Kein Bild-Output (matplotlib etc. bräuchten Datei-Upload).
+- Keine Web-UI in Nala — nur Huginn/Telegram.
+- Keine automatische Image-Installation (User muss `docker pull` selbst ausführen).
+- HitL-Button-Flow für CODE-Intents folgt mit P172+ (Phase D, Block 2). Aktuell läuft die Sandbox automatisch nach LLM-Response, ohne explizite Admin-Bestätigung — die Härtung dafür ist der nächste Patch.
+
+### Abhängigkeit
+
+⚠️ Docker auf dem Host ist optional. Ohne Docker bleibt die Sandbox geräuschlos deaktiviert; Zerberus funktioniert unverändert.
+
+*Stand: 2026-04-28, Patch 171 — Phase-D-Auftakt. 24 neue Tests (21 Unit grün + 3 Docker-Live skip-on-no-docker), Subset 205 passed (keine Regression), Sandbox-Pipeline isoliert mit Docker-Limits + Code-Blockliste. Nächster Schritt: HitL-Button-Flow für CODE-Intents (P172, Phase D Block 2) und Stresstests.*
+
+---
+

@@ -366,4 +366,4 @@ Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-27, Patch 170 (Hel-UI Kosmetik-Sweep: Provider-Blacklist-Dropdown + Chips, Dialekt-Delete-Icon-Button, Test-Reports einzeln verlinkbar)*
+*Zerberus Pro 4.0 – Stand: 2026-04-28, Patch 171 (Docker-Sandbox-Anbindung Phase D: SandboxManager mit Härtungen, Code-Blockliste, CODE-Intent-Pipeline-Hook, Startup-Healthcheck, opt-in via config)*

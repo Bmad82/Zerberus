@@ -180,6 +180,20 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - Logging-Tags: `[FILE-168]` (Routing/Validation/HitL-Decision)|`[HUGINN-168]` (sendDocument-API)
 - Test-Pattern: `httpx.AsyncClient`-Mock für sendDocument|`monkeypatch.setattr(router_mod, "send_document", ...)` + `_reset_telegram_singletons_for_tests()` für Pipeline-Tests
 
+## Docker-Sandbox (P171, Phase D)
+- Opt-In via `modules.sandbox.enabled: true` ([`SandboxConfig`](zerberus/core/config.py))|Defaults im Pydantic-Model (config.yaml gitignored)|`enabled=False` per Default — `execute()` liefert dann `None`, Caller fällt auf P168-Datei-Pfad zurück
+- [`SandboxManager`](zerberus/modules/sandbox/manager.py) baut `docker run --rm --network none --read-only --tmpfs /tmp:size=64m,exec --memory 256m --cpus 0.5 --pids-limit 64 --security-opt no-new-privileges` mit eindeutigem Container-Namen `zerberus-sandbox-<uuid>`|kein Volume-Mount|Cleanup IMMER (auch bei Crash/Timeout via `docker rm -f`)
+- Code-Blockliste (Belt+Suspenders, **NICHT** primärer Schutz — der ist Docker): Python `import os/subprocess/socket`, `__import__`, `eval`, `exec`, `open(... 'w')`|JS `child_process`/`fs`/`net`/`http(s)`/`eval`/`Function`|Treffer → `error="Blocked pattern: ..."`, kein Execute, User bekommt nur die Datei
+- Output-Limits: `max_output_chars=10000` (Default), Truncation setzt `truncated=True` + `\n…[truncated]`-Suffix|`SandboxResult{stdout, stderr, exit_code, execution_time_ms, truncated, error}`
+- Timeout: Default 30s, bei Überschreitung `exit_code=-1` + `error="Timeout nach Ns"` + force-rm des Containers
+- Code-Extraktion via [`utils/code_extractor.py`](zerberus/utils/code_extractor.py): `extract_code_blocks()` (Fenced ```lang Blöcke aus Markdown) + `first_executable_block(text, allowed_languages, fallback_language)`|Sprach-Aliase `py`→`python`, `js`/`node`/`nodejs`→`javascript`|Whitespace bleibt erhalten (Python-Indent), nur 1 trailing Newline weg
+- Pipeline-Hook in [`telegram/router.py::_send_as_file`](zerberus/modules/telegram/router.py): nach erfolgreichem CODE-File-Versand → `_maybe_execute_in_sandbox()` → Result als Reply via `format_sandbox_result()`|Datei kommt ZUERST raus, Result als Reply auf Datei|`format_sandbox_result(result, filename, language)` baut `▶️ Ausgeführt in Nms` + optional `⚠️ Exit Code N` + stdout/stderr in Code-Fences
+- Startup-Healthcheck in [`main.py`](zerberus/main.py) lifespan: `SandboxManager.healthcheck()` → `{ok, reason, docker, images}`|Boot-Banner `Sandbox: ok|skip|fail (...)`|Sandbox bleibt OPTIONAL — jeder Fehler ist WARNING, niemals fatal
+- Singleton via `get_sandbox_manager()` (lazy, liest aktuelle `Settings`)|`reset_sandbox_manager()` für Tests
+- Logging-Tag: `[SANDBOX-171]` (alle Execute-/Timeout-/Block-Events)
+- Test-Pattern: Mock-basierte Unit-Tests via `unittest.mock.patch` auf `asyncio.create_subprocess_exec`/`asyncio.wait_for` ([`test_sandbox.py`](zerberus/tests/test_sandbox.py))|Live-Tests mit `@pytest.mark.docker` + `skipif(not _DOCKER_AVAILABLE)`|Marker in [`conftest.py::pytest_configure`](zerberus/tests/conftest.py) registriert
+- HitL-Button-Flow für CODE-Intents folgt mit P172+ — aktuell P171 läuft die Sandbox automatisch nach LLM-Response, ohne Admin-Bestätigung. Härtung dafür ist nächster Patch.
+
 ## HitL-Hardening (P167)
 - DB-Tabelle `hitl_tasks` ([`core/database.py::HitlTask`](zerberus/core/database.py))|UUID4-Hex-IDs (32 Zeichen)|Status: `pending`/`approved`/`rejected`/`expired`|`Base.metadata.create_all` in `init_db()` legt Tabelle an
 - `HitlManager` ([`modules/telegram/hitl.py`](zerberus/modules/telegram/hitl.py)) async + DB-backed: `create_task` / `get_task` / `resolve_task(decision="approved"\|"rejected", is_admin_override=bool)` / `get_pending_tasks(chat_id=None)` / `expire_stale_tasks()` / `wait_for_decision`|In-Memory-Cache als Fast-Path + `asyncio.Event`-Notifizierung|`persistent=False` für Unit-Tests ohne DB
