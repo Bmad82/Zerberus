@@ -3985,3 +3985,78 @@ Die HitL-Rückfrage nutzt das `build_admin_keyboard(task.id)` aus P167 — derse
 - [ ] Logs prüfen: `[FILE-168]` und `[HUGINN-168]` tauchen bei Datei-Versand auf, `[GUARD-120]` läuft auf dem Datei-Content vor Versand.
 
 *Stand: 2026-04-27, Patch 168 — Phase-C-Mitte. 45 neue Tests grün, breiter Sweep 782 passed (keine Regression). Nächster Schritt: Sandbox-Anbindung (Phase D), danach broader HitL-Button-Flow für CODE/ADMIN-Intents.*
+
+
+## Patch 169 — Self-Knowledge-RAG-Doku + Bug-Sweep (2026-04-27)
+
+**Quick-Win zwischen Phase C und D, niedriges Risiko.** Adressiert das Finding F1 (fehlendes Self-Knowledge-RAG-Doku) plus drei UI-Bugs (B1, B2, B6) aus der Review-Session. Hintergrund: Huginn und Nala halluzinierten konstant bei Fragen über das eigene System — typische Fehler waren „FIDO" als angebliche Komponente, „Zerberus = Kerberos-Authentifizierungsprotokoll" und „Rosa = Red Hat OpenShift on AWS". Parallel waren drei UI-Bugs offen die die tägliche Nutzung beeinträchtigt haben.
+
+### Block A — `huginn_kennt_zerberus.md`
+
+Neues Markdown-Dokument [`docs/RAG Testdokumente/huginn_kennt_zerberus.md`](docs/RAG%20Testdokumente/huginn_kennt_zerberus.md). Beschreibt das Zerberus-Ökosystem in natürlicher Sprache so, dass Huginn und Nala fundiert über sich selbst Auskunft geben können. Inhalt: Was ist Zerberus (FastAPI-Plattform, KEIN Authentifizierungs-Protokoll), die zwei Frontends (Nala = User-Web-UI, Hel = Admin-Dashboard), Huginn als Telegram-Bot mit Raben-Persona, Kern-Komponenten (Guard via Mistral Small 3, RAG mit FAISS+Cross-Encoder-Reranker, Pacemaker für Whisper-Container, BERT-Sentiment um 4:30, Memory Extraction), Rosa als geplante Security-Architektur (KEIN Red-Hat-OpenShift-Produkt), das mythologische Naming-Schema (Huginn/Muninn als Odins Raben, Hel als Unterwelts-Göttin, Heimdall, Loki, Fenrir, Vidar, Ratatoskr), die Rollen (Chris als Architekt, Coda als Code-Implementer, Claude Supervisor für Roadmap, Jojo als zweite Nutzerin), und die expliziten Negationen (kein Cloud-Service, kein Kerberos, kein OpenShift, kein FIDO, kein LDAP/OAuth/SSO).
+
+Bewusst keine Code-Blöcke, keine Dateipfade, keine Config-Keys — das Dokument ist als RAG-Corpus formuliert, nicht als Implementation-Reference. Negationen sind explizit eingebaut, weil RAG-Retrieval bei Frage „Was ist FIDO?" zwar das Dokument zieht, aber das LLM nur dann zuverlässig „existiert nicht" antwortet, wenn der Negativ-Satz im Chunk steht.
+
+Das Dokument wird NICHT automatisch indiziert. Chris lädt es manuell über Hel als `reference`-Kategorie hoch (300 Wörter / 60 Overlap / min 50 Wörter) und prüft die Chunks vor Aufnahme in den FAISS-Index. Das ist Absicht — der Quality-Gate liegt beim Menschen, nicht bei einem Auto-Importer.
+
+### Block B1 — Bubble-Farben Default + Frontend-Fallback
+
+Symptom: Nach Login (besonders nach längerer Inaktivität, Cache-Clear, oder beim Wechsel zwischen Profilen) fielen User- und Bot-Bubbles auf `#000000` zurück. Die `BLACK_VALUES`-Defensive aus Patch 153 griff zwar beim direkten LocalStorage-Lesepfad, aber nicht beim Favoriten-Loader: Wenn ein „last active favorite" eine alte JSON mit `bubble.userBg = "#000000"` enthielt, wurde der Wert VOR dem Guard direkt in die CSS-Variable geschrieben.
+
+Fix in zwei Layern:
+
+- **Backend** (`zerberus/app/routers/nala.py`, `login`): Profile-`theme_color` wird vor der Auslieferung gegen die schwarzen Sentinel-Werte (`#000000`/`#000`/`rgb(0,0,0)`) geprüft und auf `#ec407a` zurückgesetzt. Damit kann ein einmal korrupt gespeichertes Profil das Frontend nicht mehr neu vergiften. Logging-Tag `[SETTINGS-169]` als DEBUG.
+- **Frontend** (`zerberus/app/routers/nala.py`, Boot-IIFE für `nala_theme_fav_*`): Der Favoriten-Loader bekommt eine `_cleanFav`-Funktion, die `userBg`/`llmBg` auf die schwarzen Sentinels prüft und im Trefferfall (a) den Wert nicht in die CSS-Variable schreibt, (b) per `delete fav.bubble.userBg/llmBg` aus dem Favoriten entfernt und (c) den bereinigten Favoriten persistent zurückschreibt. Damit kommt der Bug auch nach Reload nicht wieder.
+
+Es bleibt absichtlich beim Filter-Pattern (NICHT-rendern bei schwarz) statt einer aktiven Reset-zu-Default-Logik — die CSS-Defaults (`rgba(236, 64, 122, 0.88)` für User, `rgba(26, 47, 78, 0.85)` für LLM) übernehmen sauber, sobald die CSS-Variable nicht überschrieben ist.
+
+### Block B2 — RAG-Status Lazy-Init
+
+Symptom: Hel-RAG-Tab zeigte direkt nach Server-Start „0 Dokument(e), 0 Chunk(s) gesamt", obwohl die FAISS-Dateien auf Disk lagen. Nach dem Hochladen eines neuen Dokuments erschienen plötzlich die alten Chunks dazu — als wäre der Index erst dann „aufgewacht".
+
+Root Cause: Die globalen `_index` und `_metadata` in `zerberus/modules/rag/router.py` werden erst von `_init_sync` (über `_ensure_init`) aus den On-Disk-Dateien rehydriert. `_ensure_init` lief bisher nur, wenn jemand `search`, `index_document` oder `_reset` aufrief. Die reinen Read-Endpoints `GET /admin/rag/status` und `GET /admin/rag/documents` lasen die Globals direkt — ohne Init — und sahen entsprechend `_index = None` und `_metadata = []` bis zum ersten Schreibvorgang.
+
+Fix in [`zerberus/app/routers/hel.py`](zerberus/app/routers/hel.py): beide Endpoints rufen jetzt `await _ensure_init(settings)` auf, BEVOR sie die Globals lesen. Der Re-Import nach dem Init holt die frisch befüllten Werte aus dem Modul-Namespace. Bei `modules.rag.enabled=false` wird `_ensure_init` übersprungen — kein versehentliches Aufwecken eines deaktivierten Subsystems. Logging-Tag `[RAG-169]` als INFO bei jedem Tab-Load: `Index-Status: 142 Chunks, 138 aktive, 14 Quellen`.
+
+### Block B6 — Cleaner-Tab innerHTML-Crash
+
+Symptom: Beim Öffnen des Hel-Cleaner-Tabs Browser-Konsolen-Fehler „Laden fehlgeschlagen: can't access property 'innerHTML', host is null". Stack-Trace zeigte auf `renderCleanerList` und `loadCleaner` in `hel.py`-JS.
+
+Root Cause: Patch 149 hatte den manuellen Whisper-Cleaner-Editor aus dem UI entfernt — die Pflege läuft jetzt server-seitig über `whisper_cleaner.json`. Das DOM-Element `<div id="cleanerList">` wurde mit entfernt, aber die JS-Funktion `loadCleaner()` blieb im Page-Boot-Block (Zeile 2777) und rief `renderCleanerList()` auf, die wiederum `document.getElementById('cleanerList').innerHTML = ...` machte. Ergebnis: `host` war `null`, die Property-Zuweisung crashte mit der oben genannten Browser-Meldung.
+
+Fix in [`zerberus/app/routers/hel.py`](zerberus/app/routers/hel.py): drei Null-Guards.
+
+- `renderCleanerList()`: `if (!host) return;` direkt nach `getElementById('cleanerList')`.
+- `loadCleaner()`: früher Return wenn das DOM-Element fehlt — `if (!document.getElementById('cleanerList')) return;` ganz oben in der Funktion. Spart auch den unnötigen Fetch.
+- `loadCleaner()` Catch-Block: `cleanerStatus`-Element wird in einer lokalen Variable gehalten und nur beschrieben, wenn es existiert.
+
+Kein Backend-Test nötig (reiner Frontend-Fix).
+
+### Test-Isolation-Bonus
+
+Während der P169-Tests fiel auf, dass `test_memory_extractor.py` an drei Stellen `sys.modules["zerberus.modules.rag.router"] = fake_router` direkt setzte, ohne den Eintrag am Ende zu restoren. Die nachfolgenden Tests fanden dann ein `SimpleNamespace` statt eines echten Modules in `sys.modules` und brachen mit „cannot import name '_ensure_init' from '<unknown module name>'", sobald sie `from zerberus.modules.rag.router import ...` machten.
+
+Fix: auf `monkeypatch.setitem(sys.modules, "zerberus.modules.rag.router", fake_router)` umgestellt. Pytest restored den Original-Eintrag jetzt automatisch nach jedem Test. Bug existierte schon lange (vor P168), war aber durch alphabetische Test-Reihenfolge maskiert: `test_patch169_bugsweep.py` läuft alphabetisch nach `test_memory_extractor.py` und ist der erste Test, der den `_ensure_init`-Import nach den Memory-Tests braucht.
+
+### Tests & Doku
+
+`zerberus/tests/test_patch169_bugsweep.py` (neu) hat **15 Tests in 5 Klassen** — `TestSelfKnowledgeDoc` (6 Tests: Datei-Existenz, Negationen für Kerberos/FIDO/OpenShift, Komponenten-Coverage, mythologische Namen, kein Code-Block in der Doku), `TestB1ThemeColorDefault` (2: Inline-Replikation der Default-Logik + Source-Marker-Check `[SETTINGS-169]` im Login-Code), `TestB1FavoriteBlackFilter` (2: `FAV_BLACK`-Konstante + `_cleanFav`-Symbol + Write-Back-Pattern), `TestB2RagStatusLazyInit` (3: `_ensure_init`-Aufruf in `rag_status` + `rag_documents` mit gemockten Modul-Globals + RAG-disabled-Pfad), `TestB6CleanerInnerHtmlGuard` (2: Null-Guard in `renderCleanerList` + `loadCleaner` per Source-String-Match — Frontend-Logik ist sonst Playwright-Scope).
+
+**Regression:** breiter Sweep 797 passed (offline-friendly Subset, P168-Baseline 782 + 15 neue P169 = 797 exakt, keine Regression). Doku-Konsistenz-Check 5/5 grün.
+
+**Geänderte Dateien:** `zerberus/app/routers/nala.py` (Backend-Default + Frontend-Favoriten-Filter), `zerberus/app/routers/hel.py` (RAG-Endpoints Lazy-Init + Cleaner Null-Guards), `zerberus/tests/test_memory_extractor.py` (Test-Isolation-Fix), `CLAUDE_ZERBERUS.md`, `SUPERVISOR_ZERBERUS.md`, `README.md`, `lessons.md`, `docs/PROJEKTDOKUMENTATION.md`
+**Neue Dateien:** `docs/RAG Testdokumente/huginn_kennt_zerberus.md`, `zerberus/tests/test_patch169_bugsweep.py`
+
+### Manuell-Checkliste (Chris)
+
+- [ ] Nala: frisch einloggen (Cache-löschen oder Inkognito) → Bubble-Farben sind NICHT schwarz.
+- [ ] Nala: korruptes Favoriten-Set laden (falls noch eins existiert) → wird beim Boot bereinigt, persistent gefixt.
+- [ ] Hel: `huginn_kennt_zerberus.md` als `reference`-Kategorie hochladen → Chunks-Vorschau prüfen.
+- [ ] Nala nach Upload: „Was ist Zerberus?" → KEIN Kerberos-Authentifizierungsprotokoll in der Antwort.
+- [ ] Nala nach Upload: „Was ist Rosa?" → KEINE Red-Hat-OpenShift-Antwort.
+- [ ] Nala nach Upload: „Was ist FIDO?" → Negation à la „existiert nicht in diesem System".
+- [ ] Huginn nach Upload: „Wer hat dich gebaut?" → erwähnt Chris, Coda, Zerberus.
+- [ ] Hel: RAG-Tab direkt nach Server-Restart öffnen → korrekte Zahlen (NICHT „0 Dokumente").
+- [ ] Hel: Cleaner-Tab öffnen → KEIN „host is null"-Fehler in der Browser-Konsole.
+
+*Stand: 2026-04-27, Patch 169 — Quick-Win zwischen Phase C und D. 15 neue Tests grün, breiter Sweep 797 passed (keine Regression). Nächster Schritt: Sandbox-Anbindung (Phase D), broader HitL-Button-Flow, kosmetische Hel-UI-Fixes (B3/B4/B5), GETTING_STARTED.md (F2).*

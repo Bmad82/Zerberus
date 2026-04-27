@@ -135,6 +135,10 @@ def check_claudemd_referenced_files_exist() -> CheckResult:
         rel = target.split("#", 1)[0].strip()
         if not rel:
             continue
+        # Patch 169: URL-encoded Spaces (%20) zu echten Leerzeichen aufloesen,
+        # damit Pfade wie "docs/RAG Testdokumente/..." korrekt gefunden werden.
+        from urllib.parse import unquote
+        rel = unquote(rel)
         full = (ROOT / rel).resolve()
         seen += 1
         if not full.exists():

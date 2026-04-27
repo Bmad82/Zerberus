@@ -144,6 +144,19 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - Patch-Prompts IMMER vollen Dateinamen
 - Hintergrund: P100 — Claude Code verwechselte projektspezifische mit globaler
 
+## sys.modules-Test-Isolation (P169)
+- `sys.modules["..."] = X` direkt setzen ist eine Falle|der Eintrag bleibt nach dem Test gesetzt, nachfolgende Tests sehen das Fake-Objekt statt des echten Moduls
+- Symptom: `ImportError: cannot import name 'X' from '<unknown module name>'`|tritt auf wenn ein anderes Test-Modul ein `from <pkg.module> import X` macht und das Modul ein SimpleNamespace o. ä. ist
+- Lösung: IMMER `monkeypatch.setitem(sys.modules, "<pkg.module>", fake)` — pytest restored den Original-Eintrag automatisch
+- Maskierung: solche Bugs werden oft durch alphabetische Test-Reihenfolge versteckt, fallen erst auf wenn ein neuer Test alphabetisch NACH dem polluierenden Test einen Re-Import macht
+- Pattern aus P169: `test_memory_extractor.py` setzte `sys.modules["zerberus.modules.rag.router"] = SimpleNamespace(...)`|`test_patch169_bugsweep` brach beim Import von `_ensure_init`|3-Zeilen-Fix mit `monkeypatch.setitem`
+
+## RAG-Status Lazy-Init (P169)
+- FAISS-Globals (`_index`, `_metadata`) werden in `zerberus/modules/rag/router.py` lazy ueber `_init_sync` rehydriert — getriggert nur durch Search/Index/Reset
+- Reine Read-Endpoints (`GET /admin/rag/status`, `GET /admin/rag/documents`) liefen ohne `_ensure_init`-Aufruf|Folge: Hel-RAG-Tab zeigte „0 Dokumente" bis zum ersten Schreibvorgang, danach erschien plötzlich der ganze Bestand
+- Faustregel: Jeder Endpoint, der RAG-Modul-Globals liest, MUSS `await _ensure_init(settings)` davor aufrufen — auch wenn er „nur" anzeigt
+- Skip wenn `modules.rag.enabled=false`|sonst läufst du Gefahr, ein deaktiviertes Subsystem aus Versehen zu initialisieren
+
 ## HitL-Gate aus dem Long-Polling-Loop (P168)
 - Direkt-`await` auf `wait_for_decision` im Telegram-Handler = Deadlock|Long-Polling-Loop awaited Updates SEQUENZIELL|der Click der das Gate auflöst kommt erst durch wenn der vorherige Handler returned|aber der vorherige Handler wartet auf den Click → Hängt bis Sweep-Timeout (5 min)
 - Lösung: HitL-Wait + Folge-Aktion (z. B. `send_document`) als `asyncio.create_task` spawnen|Handler returned schnell, Long-Polling kann Click verarbeiten, Background-Task wird via `asyncio.Event` entlassen

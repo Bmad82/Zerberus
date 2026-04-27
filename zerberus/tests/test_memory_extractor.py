@@ -84,7 +84,11 @@ def test_is_duplicate_no_index(monkeypatch):
     fake_router = types.SimpleNamespace(_index=None)
     monkeypatch.setitem(mem.__dict__, "_is_duplicate_test", True)
     import sys
-    sys.modules["zerberus.modules.rag.router"] = fake_router
+    # Patch 169 (Test-Isolation): via monkeypatch.setitem statt direkter
+    # Zuweisung — sonst bleibt SimpleNamespace nach Test in sys.modules und
+    # spaetere Tests (z. B. test_patch169_bugsweep) brechen mit
+    # "cannot import name '_ensure_init' from '<unknown module name>'".
+    monkeypatch.setitem(sys.modules, "zerberus.modules.rag.router", fake_router)
     vec = np.zeros((1, 384), dtype="float32")
     assert mem._is_duplicate(vec, 0.9) is False
 
@@ -99,7 +103,11 @@ def test_is_duplicate_below_threshold(monkeypatch):
             return np.array([[1.0]]), np.array([[0]])
 
     fake_router = types.SimpleNamespace(_index=FakeIndex())
-    sys.modules["zerberus.modules.rag.router"] = fake_router
+    # Patch 169 (Test-Isolation): via monkeypatch.setitem statt direkter
+    # Zuweisung — sonst bleibt SimpleNamespace nach Test in sys.modules und
+    # spaetere Tests (z. B. test_patch169_bugsweep) brechen mit
+    # "cannot import name '_ensure_init' from '<unknown module name>'".
+    monkeypatch.setitem(sys.modules, "zerberus.modules.rag.router", fake_router)
     vec = np.zeros((1, 384), dtype="float32")
     assert mem._is_duplicate(vec, 0.9) is False
 
@@ -114,7 +122,11 @@ def test_is_duplicate_above_threshold(monkeypatch):
             return np.array([[0.2]]), np.array([[0]])
 
     fake_router = types.SimpleNamespace(_index=FakeIndex())
-    sys.modules["zerberus.modules.rag.router"] = fake_router
+    # Patch 169 (Test-Isolation): via monkeypatch.setitem statt direkter
+    # Zuweisung — sonst bleibt SimpleNamespace nach Test in sys.modules und
+    # spaetere Tests (z. B. test_patch169_bugsweep) brechen mit
+    # "cannot import name '_ensure_init' from '<unknown module name>'".
+    monkeypatch.setitem(sys.modules, "zerberus.modules.rag.router", fake_router)
     vec = np.zeros((1, 384), dtype="float32")
     assert mem._is_duplicate(vec, 0.9) is True
 

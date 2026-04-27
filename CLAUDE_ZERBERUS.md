@@ -156,6 +156,15 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - Neue HitL-Pfade (Code-Exec, File-Ops): `requester_user_id=info.get("user_id")` an `create_request()`|sonst nur-Admin-Fallback (DM-only ok, In-Group-Buttons offen)
 - String-Vergleich: TG liefert `from.id` als int|`admin_chat_id` oft String|`str(...)` auf beiden Seiten
 
+## Self-Knowledge-RAG + Bug-Sweep (P169)
+- Self-Knowledge-RAG-Doku [`docs/RAG Testdokumente/huginn_kennt_zerberus.md`](docs/RAG%20Testdokumente/huginn_kennt_zerberus.md)|natuerliche Sprache, kein Code-Block, keine Pfade|explizite Negationen fuer Kerberos-Protokoll/FIDO/Red-Hat-OpenShift|kategoriiert als `reference` (300/60/50)|Chris laedt manuell ueber Hel hoch, kein Auto-Import
+- B1 Bubble-Farben (zwei Layer): Backend `nala.py::login` filtert schwarze `theme_color` aus Profilen → `#ec407a` Default + `[SETTINGS-169]` DEBUG|Frontend Boot-IIFE: `_cleanFav(v)` filtert FAV_BLACK (`#000000`/`#000`/`rgb(0,0,0)`/`rgba(0,0,0,1)`) im Favoriten-Loader BEVOR CSS-Var gesetzt wird|korrupten Favoriten persistent reparieren via `delete fav.bubble.userBg/llmBg` + `localStorage.setItem`
+- B2 RAG-Status Lazy-Init: `GET /admin/rag/status` und `GET /admin/rag/documents` rufen `await _ensure_init(settings)` BEVOR `_index`/`_metadata` gelesen werden|sonst zeigt Hel „0 Dokumente" bis erstem Schreibvorgang|skip wenn `modules.rag.enabled=false`|Logging `[RAG-169] Index-Status: N Chunks, M aktive, K Quellen`
+- B6 Cleaner-Null-Guards: `renderCleanerList()` mit `if (!host) return;` + `loadCleaner()` mit `if (!document.getElementById('cleanerList')) return;` als Frueh-Return + Catch-Block schreibt nur wenn `cleanerStatus` existiert|Hintergrund: P149 entfernte cleanerList-DOM, JS-Funktion blieb im Page-Boot
+- Test-Isolation: `sys.modules["..."] = X` nie direkt — IMMER `monkeypatch.setitem(sys.modules, "...", X)`|sonst bleibt der Eintrag nach Test gesetzt und faengt nachfolgende Tests mit `cannot import name '...' from '<unknown module name>'`
+- Logging-Tags: `[SETTINGS-169]` (Backend-Default-Defensive in nala.py)|`[RAG-169]` (Lazy-Init + Tab-Load-Status-Log in hel.py)
+- Test-Pattern: Frontend-Bugfixes via Source-String-Match testen (Patch-Marker + Symbol-Names)|Backend-Bugfixes via `monkeypatch.setattr(rag_mod, "_ensure_init", fake)` + Modul-Globals direkt befuellen lassen
+
 ## Datei-Output + Effort-Kalibrierung (P168)
 - Output-Router in [`_process_text_message`](zerberus/modules/telegram/router.py) nach Guard|`should_send_as_file(intent, len)` aus [`utils/file_output.py`](zerberus/utils/file_output.py): FILE/CODE → immer Datei|CHAT >2000 ZS → Datei-Fallback|sonst Text
 - `determine_file_format(intent, content) -> (filename, mime)`: CODE+Python (`def`/`import`/`class`) → `huginn_code.py`|CODE+JS (`function`/`const`/`=>`/`console.log`) → `.js`|CODE+SQL (`SELECT`/`CREATE TABLE`) → `.sql`|CODE-default → `.txt`|FILE+Markdown (`#`/Listen/Fences) → `huginn_antwort.md`|FILE-plain → `.txt`|CHAT-fallback → `.md`|kein AST-Parsing, nur Regex-Heuristik

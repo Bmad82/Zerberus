@@ -1542,6 +1542,12 @@ ADMIN_HTML = """<!DOCTYPE html>
 
         function renderCleanerList() {
             const host = document.getElementById('cleanerList');
+            // Patch 169 (B6): cleanerList-DOM-Element wurde mit Patch 149
+            // entfernt (Cleaner-Pflege laeuft jetzt server-seitig ueber
+            // whisper_cleaner.json). Falls renderCleanerList trotzdem
+            // gerufen wird (z. B. aus loadCleaner beim Boot), ohne Guard
+            // crashen wir mit "can't access property innerHTML, host is null".
+            if (!host) return;
             const parts = _cleanerEntries.map((e, idx) => {
                 if (e.kind === 'comment') {
                     return `
@@ -1642,6 +1648,9 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
 
         async function loadCleaner() {
+            // Patch 169 (B6): Wenn das cleanerList-DOM-Element nicht existiert
+            // (Patch-149-Aufraeumung), ist nichts zu rendern — kein Fetch noetig.
+            if (!document.getElementById('cleanerList')) return;
             try {
                 const res = await fetch('/hel/admin/whisper_cleaner');
                 const data = await res.json();
@@ -1658,8 +1667,12 @@ ADMIN_HTML = """<!DOCTYPE html>
                 });
                 renderCleanerList();
             } catch (err) {
-                document.getElementById('cleanerStatus').innerHTML =
-                    '<span style="color:#ff6b6b;">Laden fehlgeschlagen: ' + _escapeHtml(err.message) + '</span>';
+                // Patch 169 (B6): cleanerStatus kann auch fehlen — Null-Guard.
+                const statusEl = document.getElementById('cleanerStatus');
+                if (statusEl) {
+                    statusEl.innerHTML =
+                        '<span style="color:#ff6b6b;">Laden fehlgeschlagen: ' + _escapeHtml(err.message) + '</span>';
+                }
             }
         }
 
@@ -3894,8 +3907,23 @@ async def rag_status():
 
     Patch 108: Zusätzlich `sources_meta` mit (source, category) pro Chunk.
     `sources` bleibt aus Backward-Compat erhalten (nur Dateinamen).
+
+    Patch 169 (B2): Lazy-Init des RAG-Moduls hier explizit ansteuern. Vorher
+    konnten ``_index`` und ``_metadata`` als ``None``/``[]`` gelesen werden,
+    weil die globalen Variablen erst beim ersten Search/Upload aus den
+    On-Disk-Dateien rehydriert wurden. Folge: Hel zeigte „0 Dokumente" bis
+    zum ersten Schreibvorgang, danach plötzlich der vollständige Bestand.
     """
-    from zerberus.modules.rag.router import _index, _metadata
+    from zerberus.modules.rag.router import _ensure_init, _index, _metadata
+    settings = get_settings()
+    rag_cfg = settings.modules.get("rag", {}) or {}
+    if rag_cfg.get("enabled", False):
+        try:
+            await _ensure_init(settings)
+        except Exception as e:
+            logger.warning("[RAG-169] Lazy-Init fehlgeschlagen: %s", e)
+    # Re-Import nach Init: die Modul-Globals wurden ggf. gerade befuellt.
+    from zerberus.modules.rag.router import _index, _metadata  # noqa: F811
     total = _index.ntotal if _index is not None else 0
     # Patch 116: Soft-deleted Chunks aus der Listen-Ansicht ausblenden.
     visible = [m for m in _metadata if m.get("deleted") is not True]
@@ -3907,6 +3935,10 @@ async def rag_status():
         }
         for m in visible
     ]
+    logger.info(
+        "[RAG-169] Index-Status: %d Chunks, %d aktive, %d Quellen",
+        total, len(visible), len({s for s in sources}),
+    )
     return {
         "total_chunks": total,
         "active_chunks": len(visible),
@@ -3980,7 +4012,19 @@ async def rag_reindex():
 
 @router.get("/admin/rag/documents")
 async def rag_documents():
-    """Gibt Dokumente gruppiert nach `source` zurück — ein Eintrag pro Datei."""
+    """Gibt Dokumente gruppiert nach `source` zurück — ein Eintrag pro Datei.
+
+    Patch 169 (B2): wie ``rag_status`` mit explizitem Lazy-Init, damit der
+    Hel-RAG-Tab auch direkt nach Server-Start korrekte Zahlen zeigt.
+    """
+    from zerberus.modules.rag.router import _ensure_init
+    settings = get_settings()
+    rag_cfg = settings.modules.get("rag", {}) or {}
+    if rag_cfg.get("enabled", False):
+        try:
+            await _ensure_init(settings)
+        except Exception as e:
+            logger.warning("[RAG-169] Lazy-Init fehlgeschlagen: %s", e)
     from zerberus.modules.rag.router import _index, _metadata
     total_chunks = _index.ntotal if _index is not None else 0
     grouped: dict[str, dict] = {}

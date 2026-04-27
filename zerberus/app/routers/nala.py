@@ -1254,10 +1254,36 @@ NALA_HTML = """<!DOCTYPE html>
                             if (t.accent)    r.setProperty('--color-accent', t.accent);
                         }
                         if (fav && fav.v === 2 && fav.bubble) {
-                            if (fav.bubble.userBg)   r.setProperty('--bubble-user-bg',   fav.bubble.userBg);
+                            // Patch 169 (B1): Favoriten-Daten aus Pre-P153-Sessions
+                            // koennen #000000 als BG enthalten (cssToHex-HSL-Bug, jetzt
+                            // gefixed). Beim Login/Boot wuerden diese Werte direkt in
+                            // die CSS-Vars geschrieben und der LocalStorage-Guard unten
+                            // greift nicht — also hier auch filtern. Anti-Invariante:
+                            // BG-Bubbles werden NIE absichtlich auf #000000 gesetzt.
+                            var FAV_BLACK = ['#000000', '#000', 'rgb(0, 0, 0)', 'rgba(0,0,0,1)'];
+                            function _cleanFav(v) {
+                                if (!v) return null;
+                                if (FAV_BLACK.indexOf(String(v).trim().toLowerCase()) !== -1) {
+                                    try { console.debug('[SETTINGS-169] Bubble-BG aus Favorit war schwarz, verwende Default'); } catch(_) {}
+                                    return null;
+                                }
+                                return v;
+                            }
+                            var ub = _cleanFav(fav.bubble.userBg);
+                            var lb = _cleanFav(fav.bubble.llmBg);
+                            if (ub) r.setProperty('--bubble-user-bg', ub);
                             if (fav.bubble.userText) r.setProperty('--bubble-user-text', fav.bubble.userText);
-                            if (fav.bubble.llmBg)    r.setProperty('--bubble-llm-bg',    fav.bubble.llmBg);
-                            if (fav.bubble.llmText)  r.setProperty('--bubble-llm-text',  fav.bubble.llmText);
+                            if (lb) r.setProperty('--bubble-llm-bg', lb);
+                            if (fav.bubble.llmText)  r.setProperty('--bubble-llm-text', fav.bubble.llmText);
+                            // Korrupten Favoriten persistent reparieren, sodass der
+                            // naechste Save() ihn nicht wieder einsammelt.
+                            if (ub === null || lb === null) {
+                                try {
+                                    if (ub === null) delete fav.bubble.userBg;
+                                    if (lb === null) delete fav.bubble.llmBg;
+                                    localStorage.setItem('nala_theme_fav_' + lastFav, JSON.stringify(fav));
+                                } catch(_) {}
+                            }
                         }
                         if (fav && fav.v === 2 && fav.fontSize) {
                             r.setProperty('--font-size-base', fav.fontSize);
@@ -3745,10 +3771,21 @@ async def profile_login(req: ProfileLoginRequest, settings: Settings = Depends(g
     }
     token = _jwt.encode(jwt_payload, settings.auth.token_secret, algorithm="HS256")
 
+    # Patch 169 (B1): Theme-Color-Default haerten. Wenn ein Profil aus alten
+    # Sessions noch '#000000' / leerstring / null trägt, fällt das Frontend
+    # bei `--color-accent` auf Schwarz, was wiederum den Bubble-Picker auf
+    # Schwarz setzt. Defensive: hier filtern + Standard zurueckgeben.
+    raw_theme = profile.get("theme_color")
+    theme_color = str(raw_theme).strip() if raw_theme else ""
+    if not theme_color or theme_color.lower() in ("#000000", "#000", "rgb(0,0,0)"):
+        if raw_theme:
+            logger.debug("[SETTINGS-169] Profil %s hatte schwarze theme_color, verwende Default", key)
+        theme_color = "#ec407a"
+
     return {
         "success": True,
         "display_name": profile.get("display_name", key),
-        "theme_color": profile.get("theme_color", "#ec407a"),
+        "theme_color": theme_color,
         "system_prompt": system_prompt,
         "token": token,
         # Patch 47: Permission Layer
