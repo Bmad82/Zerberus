@@ -4398,7 +4398,6 @@ Zwei neue Dateien — **nur Interfaces, keine Implementierung, kein Refactor bes
 
 ---
 
-
 ## Patch 174 — Telegram-Adapter + Pipeline-Skelett (Phase E, Block 1+2) (2026-04-28)
 
 **Zweiter Patch in Phase E.** Die Message-Bus-Interfaces aus P173 werden in dieser Runde mit ihrer ersten konkreten Implementierung versehen: ein Telegram-Adapter und eine transport-agnostische Pipeline. Der bestehende `_process_text_message`/`process_update`-Pfad bleibt vollständig unverändert — `handle_telegram_update()` ist ein paralleler Phase-E-Entry-Point, der echte Cutover folgt in P175. Bewusst konservativ geschnitten, weil 5 bestehende Test-Dateien `_process_text_message`/`process_update` heavy monkey-patchen.
@@ -4490,3 +4489,132 @@ async def handle_telegram_update(raw_update, settings):
 *Stand: 2026-04-28, Patch 174 — Phase E Mitte. Erste konkrete Implementierungen der P173-Interfaces: `core/pipeline.py::process_message` (linearer DI-basierter Text-Pfad) + `adapters/telegram_adapter.py::TelegramAdapter`. `handle_telegram_update()` als parallel verfügbarer Entry-Point. 41 neue Tests + 0 Regressionen. P175 bringt den eigentlichen Cutover (`process_update` → `handle_telegram_update`) und beginnt die Migration der komplexen Pfade (Group-Kontext, Callbacks, Vision, HitL-Background).*
 
 ---
+
+## Patch 175 — NalaAdapter + Policy-Engine + Phase-E-Abschluss (2026-04-28)
+
+**Letzter Patch in Phase E.** Nach P173 (Interfaces) und P174 (Telegram-Adapter + Pipeline) bekommt Phase E ihren Abschluss: Nala-Adapter, Policy-Engine, Rosa-Placeholder, Trust-Boundary-Diagramm. Der Cutover des Telegram-Routers, der ursprünglich für diesen Patch geplant war, wandert in Phase F — die Begründung steht weiter unten.
+
+### Block 2 — `core/policy_engine.py`
+
+Abstraktes `PolicyEngine`-Interface plus pragmatische `HuginnPolicy`-Fassade:
+
+```python
+class PolicyEngine(ABC):
+    async def evaluate(
+        self,
+        message: IncomingMessage,
+        parsed_intent: Optional[ParsedResponse] = None,
+    ) -> PolicyDecision: ...
+```
+
+`PolicyDecision` trägt `verdict ∈ {ALLOW, DENY, ESCALATE}`, `reason` (Slug), `requires_hitl`, `severity ∈ {low, medium, high, critical}`, `sanitizer_findings`, `retry_after`.
+
+**`HuginnPolicy`** wrappt die existierenden Module zu einer einzigen Entscheidung:
+1. **Rate-Limit zuerst** (`InMemoryRateLimiter.check`) — billigster Check, kommt vor allem anderen. Bei DENY wird der Sanitizer NICHT mehr aufgerufen.
+2. **Sanitizer** (`RegexSanitizer.sanitize`) — `blocked=True` → `verdict=DENY, reason="sanitizer_blocked"`. Findings ohne `blocked` werden nur durchgereicht (nicht eskaliert — sonst rotten WARNUNG-Patterns in einer zu strengen Pre-Check-Schicht; das war die Lehre aus `docs/guard_policy_limits.md`).
+3. **HitL-Check** (`HitlPolicy.evaluate`) — **nur wenn `parsed_intent` mitgegeben**. Ohne Intent kein HitL-Check (sonst würde der Pre-Pass evaluieren bevor ein Intent existiert). `needs_hitl=True` → `verdict=ESCALATE, requires_hitl=True`.
+4. Sonst → `verdict=ALLOW`.
+
+**Severity-Mapping per Trust-Level** (defense-in-depth, nicht trust-blind):
+- `PUBLIC` hebt eine Stufe (max bis `high` — `critical` ist Audit-Trail-Reserved für Rosa).
+- `AUTHENTICATED` bleibt auf der Basis.
+- `ADMIN` senkt eine Stufe (mind. `low`). Ein Admin-Block bleibt sichtbar (mind. `medium`), aber kein Panik-Severity.
+
+**Trust-blinde Checks bleiben:** auch ein Admin soll einen kaputten Loop nicht 1000x/Sekunde durchjagen können — der Rate-Limit-Check feuert für jeden user_id gleich.
+
+### Block 1 — `adapters/nala_adapter.py`
+
+`NalaAdapter(TransportAdapter)` für den Web-Frontend-Pfad:
+
+- **`translate_incoming(raw_data: dict)`** — erwartet das Format das Nala-Endpoints aus `request.state` (post-JWT-Middleware) ohnehin schon zusammenbauen: `text`, `profile_name`, `permission_level`, `session_id`, optional `audio: {data, filename, mime_type}` und `metadata: {...}`. **Trust-Mapping:** `permission_level=admin` → `ADMIN`, sonst mit `profile_name` → `AUTHENTICATED`, ohne `profile_name` → `PUBLIC`. Audio-Bytes werden direkt als `Attachment` (`Channel.NALA`-Whisper-Pfad) gepackt — anders als beim TelegramAdapter, wo Photo-Bytes lazy bleiben (Telegram hat keine Inline-Bytes im Update; Nala-Endpoints haben sie schon).
+- **`translate_outgoing(message)`** — liefert ein generisches dict mit `kind ∈ {text, file}` + `text`/`file`/`file_name`/`mime_type`/`reply_to`/`metadata`. Der Caller (legacy.py / nala.py) übersetzt das in `ChatCompletionResponse` oder SSE-Event.
+- **`send`** raised `NotImplementedError` mit klarem Hinweis auf SSE/EventBus. Nala antwortet nicht über Push — das ist by design.
+
+**Wichtig: Nala-Pipeline bleibt unverändert.** Der Adapter ist ein Overlay, kein Ersatz. SSE-Streaming, RAG, Memory, Sentiment, Audio-Pipeline, Query-Expansion — alles bleibt in `legacy.py`/`nala.py`/`orchestrator.py`. Wer den Adapter benutzt: in einem Nala-Endpoint `NalaAdapter().translate_incoming({"text": ..., "profile_name": request.state.profile_name, ...})` rufen, das `IncomingMessage` an die Pipeline (P174) weitergeben, das `OutgoingMessage` mit `translate_outgoing` zurück in eine Nala-Response übersetzen.
+
+### Block 3 — `adapters/rosa_adapter.py` + `docs/trust_boundary_diagram.md`
+
+**`RosaAdapter`** ist ein Stub: alle drei Methoden (`send`, `translate_incoming`, `translate_outgoing`) raisen `NotImplementedError` mit Hinweis auf das Trust-Boundary-Diagramm. Die Klasse ist instanziierbar (alle abstrakten `TransportAdapter`-Methoden überschrieben) — damit ist der Vertrag formal eingehalten. Der Sinn: das `zerberus/adapters/`-Verzeichnis ist mit P175 komplett (Telegram, Nala, Rosa) — Phase F fügt nur Code hinzu, keine neuen Dateien.
+
+**`docs/trust_boundary_diagram.md`** ist ein ASCII-Architektur-Diagramm:
+
+```
+Telegram │ Nala │ Rosa(Stub)
+   │       │       │
+   ▼       ▼       ▼
+┌─────────────────────┐
+│   Policy Engine     │  Rate-Limit → Sanitizer → HitL
+│   (HuginnPolicy)    │  deterministisch, fail-fast
+└──────────┬──────────┘
+           ▼
+┌─────────────────────┐
+│      Pipeline       │  Sanitize → LLM → Guard → Output
+│   (transport-       │  (P174)
+│    agnostisch)      │
+└──────────┬──────────┘
+           ▼
+┌─────────────────────┐
+│       Guard         │  Mistral via OpenRouter
+│    (semantisch)     │  fail-open
+└──────────┬──────────┘
+           ▼
+┌─────────────────────┐
+│      Sandbox        │  Docker --network none
+│    (Optional)       │  CODE-Intent only
+└─────────────────────┘
+```
+
+Zusätzlich enthält das Dokument: Trust-Stufen-Tabelle, Severity-Mapping-Erklärung, Daten-Flüsse (EXTERNAL / NEVER LEAVES / INTRA-SERVER), und ein Patch-Mapping (welcher Patch hat welche Schicht gebaut).
+
+### Was NICHT in diesem Patch ist (und warum)
+
+Die ursprüngliche P175-Spec wollte zusätzlich den **Cutover** `process_update` → `handle_telegram_update` und den Refactor von `legacy.py`/`orchestrator.py` mit Pipeline-Aufruf. Beides ist bewusst NICHT in P175:
+
+- **Cutover wandert in Phase F.** `_process_text_message`/`process_update` werden aktiv von ~15 Tests in 5 Test-Dateien als Modul-Attribute monkey-patched (`telegram_router.send_telegram_message`, `call_llm`, `_run_guard`, `_process_text_message`). Ein Cutover ohne diese Tests anzufassen ist nicht sicher möglich; mit ihnen anzufassen sprengt den Phase-E-Scope. Die Trennung ist sauberer: Phase E = Skelett komplett, Phase F = Cutover und Migration.
+- **NalaAdapter ist Overlay, kein Ersatz für `legacy.py`.** Die Nala-Pipeline hat eigene Komplexität (RAG/Memory/Sentiment/Query-Expansion/SSE) die nicht über `core/pipeline.py::process_message` läuft. Der Adapter macht den Pipeline-Aufruf möglich, aber Nala-Endpoints rufen ihn noch nicht — sie können in Phase F einzelne Schritte (Guard, Intent) auf die Pipeline umstellen, während RAG/Memory/SSE Nala-spezifisch bleiben.
+- **Audit-Trail erwähnt, nicht implementiert.** Im Trust-Boundary-Diagramm beschrieben (`PolicyDecision.severity ∈ {high, critical}` → `audit.log`-Eintrag). Implementierung kommt mit RosaPolicy.
+- **Kein Admin-Rollen-System.** Single `admin_chat_id` (Telegram) / `permission_level=admin` (Nala) bleibt.
+
+### Tests
+
+- **`test_nala_adapter.py`** (neu) — 14 Cases: JWT-User → AUTHENTICATED, admin-JWT → ADMIN, guest-JWT → AUTHENTICATED, kein profile_name → PUBLIC, Audio-Attachment, session_id/permission_level/extra_metadata in metadata, leerer Input → `None`, unbekanntes permission_level → AUTHENTICATED (konservativ); translate_outgoing text/file/metadata; send raised `NotImplementedError` mit SSE-Hinweis. **14 passed**.
+- **`test_policy_engine.py`** (neu) — 17 Cases: ABC-Schutz (1), HuginnPolicy ALLOW (3), DENY (3 — sanitizer_blocked, rate_limited, Reihenfolge-Check), ESCALATE (3 — CODE+needs_hitl, CHAT-kein-HitL, ohne parsed_intent), Severity-Mapping (5 — PUBLIC/ADMIN/AUTHENTICATED × Block/Allow), PolicyDecision-Defaults (2 — leere Findings-Liste, String-Enum). **17 passed**.
+- **`test_rosa_adapter.py`** (neu) — 6 Cases: TransportAdapter-Subclass, instanziierbar, alle 3 Methoden raisen `NotImplementedError` mit Hinweis auf das Diagramm. **6 passed**.
+- **Bestehende Tests:** Alle P162/P163/P164/P167/P168/P171/P172/P173/P174 + Telegram/HitL/Rate-Limiter/Hallucination-Guard/Pipeline/Adapter bleiben grün. Sweep über 17 Test-Dateien (`test_input_sanitizer test_guard_stress test_message_bus test_pipeline test_telegram_adapter test_nala_adapter test_policy_engine test_rosa_adapter test_telegram_bot test_hitl_hardening test_hitl_manager test_hitl_policy test_rate_limiter test_file_output test_hallucination_guard test_intent test_intent_parser`) → **365 passed + 4 xfailed** in 9s.
+
+### Phase-E-Abschluss
+
+| Datei                                                    | Status              | Patch |
+|----------------------------------------------------------|---------------------|-------|
+| [`core/message_bus.py`](../zerberus/core/message_bus.py) | ✅ Implementiert    | P173  |
+| [`core/transport.py`](../zerberus/core/transport.py)     | ✅ Implementiert    | P173  |
+| [`core/pipeline.py`](../zerberus/core/pipeline.py)       | ✅ Implementiert    | P174  |
+| [`core/policy_engine.py`](../zerberus/core/policy_engine.py) | ✅ Implementiert    | P175  |
+| [`adapters/telegram_adapter.py`](../zerberus/adapters/telegram_adapter.py) | ✅ Implementiert    | P174  |
+| [`adapters/nala_adapter.py`](../zerberus/adapters/nala_adapter.py) | ✅ Implementiert    | P175  |
+| [`adapters/rosa_adapter.py`](../zerberus/adapters/rosa_adapter.py) | ⬜ Stub (Phase F)   | P175  |
+| [`core/input_sanitizer.py`](../zerberus/core/input_sanitizer.py) | ✅ Bereits vorhanden | P162/P173 |
+| [`docs/trust_boundary_diagram.md`](trust_boundary_diagram.md) | ✅ Neu              | P175  |
+| [`docs/guard_escalation_analysis.md`](guard_escalation_analysis.md) | ✅ Bereits vorhanden | P172  |
+| [`docs/guard_policy_limits.md`](guard_policy_limits.md)  | ✅ Bereits vorhanden | P172  |
+
+**Phase E ist damit abgeschlossen.** Phase F bringt den Cutover und die schrittweise Migration der Nala-Pipeline; danach Rosa/Heimdall.
+
+### Manuelle Checkliste (Chris)
+
+- [ ] `pytest zerberus/tests/test_nala_adapter.py zerberus/tests/test_policy_engine.py zerberus/tests/test_rosa_adapter.py -v` → 37 passed
+- [ ] `docs/trust_boundary_diagram.md` lesen → ASCII-Diagramm rendert lesbar in der IDE
+- [ ] Server starten → Huginn + Nala laufen wie vorher (Adapter sind Overlay, nichts ist umgestellt)
+- [ ] `python -c "from zerberus.adapters.nala_adapter import NalaAdapter; from zerberus.core.policy_engine import HuginnPolicy"` → Imports OK
+
+### Scope-Grenzen (NICHT in diesem Patch)
+
+- Kein Cutover `process_update` → `handle_telegram_update` (Phase F).
+- Kein vollständiger Nala-Refactor (Adapter ist Overlay).
+- Kein SSE-Streaming über Message-Bus (SSE bleibt Nala-spezifisch).
+- Keine RosaPolicy (nur Interface + HuginnPolicy-Fassade).
+- Keine Audit-Trail-Implementierung (nur im Diagramm dokumentiert).
+- Kein Admin-Rollen-System (single admin_chat_id / Admin-JWT bleibt).
+
+*Stand: 2026-04-28, Patch 175 — **Phase E abgeschlossen.** NalaAdapter + Policy-Engine-Fassade + RosaAdapter-Stub + Trust-Boundary-Diagramm. Alle Skelett-Dateien angelegt, alle drei Transport-Kanäle als Adapter-Klassen vorhanden, deterministische Pre-LLM-Schicht (HuginnPolicy) aggregiert die existierenden Module. 37 neue Tests + 0 Regressionen. Phase F übernimmt den Cutover und die Migration; Rosa/Heimdall (der LETZTE SCHRITT) baut auf diesem Skelett auf.*
+
