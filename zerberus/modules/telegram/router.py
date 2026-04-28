@@ -1183,6 +1183,108 @@ async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, 
     return {"ok": True, "skipped": "unknown_chat_type"}
 
 
+async def handle_telegram_update(
+    raw_update: Dict[str, Any],
+    settings: Settings,
+) -> Dict[str, Any]:
+    """Patch 174 — Phase-E-Entry-Point: Adapter + Pipeline.
+
+    Verarbeitet ein Telegram-Update ueber den neuen Phase-E-Stack:
+        TelegramAdapter.translate_incoming → core.pipeline.process_message
+        → TelegramAdapter.send
+
+    Deckt aktuell NUR den linearen DM-Text-Pfad ab (Sanitize → LLM →
+    Guard → Output-Routing). HitL-Buttons, Gruppen-Kontext, autonome
+    Einwuerfe, Callbacks und Vision bleiben bis P175 im legacy
+    ``process_update`` / ``_process_text_message``.
+
+    Wird in P174 noch NICHT von ``process_update`` aufgerufen — der
+    legacy-Pfad bleibt der primaere. Diese Funktion existiert hier als
+    parallel verfuegbarer Entry-Point fuer neue Caller (Tests, Phase-E-
+    Integration in P175). Damit kann die Adapter-+-Pipeline-Kombination
+    real benutzt werden, ohne die bestehenden Tests zu gefaehrden.
+
+    Returns:
+        ``{ok: True, sent: bool, reason: str, intent: str | None}``
+        oder ``{ok: True, skipped: str}`` wenn das Update kein
+        verarbeitbares Text-Update ist.
+    """
+    from zerberus.adapters.telegram_adapter import TelegramAdapter
+    from zerberus.core.pipeline import PipelineDeps, process_message
+    from zerberus.utils.file_output import determine_file_format, should_send_as_file
+
+    mod_cfg = settings.modules.get("telegram", {}) or {}
+    if not mod_cfg.get("enabled", False):
+        return {"ok": False, "reason": "disabled"}
+
+    cfg = HuginnConfig.from_dict(mod_cfg)
+    adapter = TelegramAdapter.from_settings(settings)
+    incoming = adapter.translate_incoming(raw_update)
+    if incoming is None:
+        return {"ok": True, "skipped": "no_message"}
+
+    # Phase-E-Pipeline ist text-only — Photo-Updates fallen in P174 noch
+    # nicht in diesen Pfad (legacy ``_process_text_message`` bleibt
+    # zustaendig). Wer ``handle_telegram_update`` direkt aufruft kriegt
+    # bei Foto-Only-Updates ein "skipped" zurueck.
+    if not (incoming.text or "").strip():
+        return {"ok": True, "skipped": "no_text"}
+
+    persona = _resolve_huginn_prompt(settings)
+    effective_system_prompt = build_huginn_system_prompt(persona)
+    guard_context = _build_huginn_guard_context(persona)
+
+    async def _llm(user_message: str, system_prompt: str) -> Dict[str, Any]:
+        return await _call_llm_with_retry(
+            user_message=user_message,
+            model=cfg.model,
+            system_prompt=system_prompt,
+        )
+
+    async def _guard(
+        user_msg: str, assistant_msg: str, caller_context: str
+    ) -> Dict[str, Any]:
+        return await _run_guard(user_msg, assistant_msg, caller_context=caller_context)
+
+    deps = PipelineDeps(
+        sanitizer=get_sanitizer(),
+        llm_caller=_llm,
+        guard_caller=_guard,
+        system_prompt=effective_system_prompt,
+        guard_context=guard_context,
+        guard_fail_policy=_resolve_guard_fail_policy(settings),
+        should_send_as_file=should_send_as_file,
+        determine_file_format=determine_file_format,
+        format_text=format_code_response,
+        llm_unavailable_text=_FALLBACK_LLM_UNAVAILABLE,
+    )
+
+    result = await process_message(incoming, deps)
+    if result.message is None:
+        return {"ok": True, "skipped": result.reason, "intent": result.intent}
+
+    # Adapter-Send braucht chat_id/thread_id im metadata + reply_to-Default.
+    out = result.message
+    out.metadata.setdefault("chat_id", incoming.metadata.get("chat_id"))
+    out.metadata.setdefault("thread_id", incoming.metadata.get("thread_id"))
+    if out.reply_to is None and incoming.metadata.get("message_id") is not None:
+        out.reply_to = str(incoming.metadata["message_id"])
+
+    sent = await adapter.send(out)
+    logger.info(
+        "[ADAPTER-174] handle_telegram_update sent=%s reason=%s intent=%s effort=%s",
+        sent, result.reason, result.intent, result.effort,
+    )
+    return {
+        "ok": True,
+        "sent": sent,
+        "reason": result.reason,
+        "intent": result.intent,
+        "effort": result.effort,
+        "guard_verdict": result.guard_verdict,
+    }
+
+
 @router.post("/webhook")
 async def telegram_webhook(request: Request, settings: Settings = Depends(get_settings)):
     """Empfaengt Telegram-Updates und routet sie durch den Huginn-Flow.

@@ -366,4 +366,4 @@ Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-28, Patch 173 (Phase E Block 1: Sanitizer-Quick-Fix — Detection-Rate 5/16 → 12/16, NFKC-Unicode-Normalisierung, 7 neue Patterns aus den P172-xfail-Empfehlungen; Block 2: Transport-agnostische Message-Bus-Interfaces (IncomingMessage/OutgoingMessage/Channel/TrustLevel/TransportAdapter) als Grundlage für die Telegram/Nala/Rosa-Adapter ab P174)*
+*Zerberus Pro 4.0 – Stand: 2026-04-28, Patch 174 (Phase E Block 1+2: Telegram-Adapter + Pipeline-Skelett — `core/pipeline.py::process_message` als transport-agnostische DI-Funktion (Sanitize → LLM → Guard → Output-Routing) + `adapters/telegram_adapter.py::TelegramAdapter` als erste TransportAdapter-Implementierung. `handle_telegram_update()` als neuer Phase-E-Entry-Point in router.py — der legacy `process_update`/`_process_text_message`-Pfad bleibt der primäre, der Cutover folgt in P175. 41 neue Tests, alle bestehenden Telegram/HitL/Sanitizer/Guard-Tests bleiben grün)*

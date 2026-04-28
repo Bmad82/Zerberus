@@ -4395,3 +4395,98 @@ Zwei neue Dateien — **nur Interfaces, keine Implementierung, kein Refactor bes
 - Keine ML-Lösung für T06/T07/T08/T16 (semantischer LLM-Guard ist Schicht 4).
 
 *Stand: 2026-04-28, Patch 173 — Phase-E-Start. Sanitizer-Detection 5/16 → 12/16 (75%) durch 7 neue Patterns + NFKC-Normalisierung; Message-Bus-Interfaces (`message_bus.py`, `transport.py`) als Grundlage für die Telegram/Nala/Rosa-Adapter ab P174. 14 neue Tests, 7 P172-xfails aufgelöst, kein Refactor bestehender Code.*
+
+---
+
+
+## Patch 174 — Telegram-Adapter + Pipeline-Skelett (Phase E, Block 1+2) (2026-04-28)
+
+**Zweiter Patch in Phase E.** Die Message-Bus-Interfaces aus P173 werden in dieser Runde mit ihrer ersten konkreten Implementierung versehen: ein Telegram-Adapter und eine transport-agnostische Pipeline. Der bestehende `_process_text_message`/`process_update`-Pfad bleibt vollständig unverändert — `handle_telegram_update()` ist ein paralleler Phase-E-Entry-Point, der echte Cutover folgt in P175. Bewusst konservativ geschnitten, weil 5 bestehende Test-Dateien `_process_text_message`/`process_update` heavy monkey-patchen.
+
+### Block 2 — `core/pipeline.py::process_message`
+
+Die lineare Text-Verarbeitung aus `_process_text_message` wird als transport-agnostische Funktion extrahiert:
+
+```python
+async def process_message(incoming: IncomingMessage, deps: PipelineDeps) -> PipelineResult:
+    # 1. Sanitize → Findings + ggf. Block-Antwort
+    # 2. LLM-Call (mit Retry beim Caller, NICHT in der Pipeline)
+    # 3. Intent-Header parsen (P164)
+    # 4. Guard-Check (optional, mit Fail-Policy)
+    # 5. Output-Routing (Text vs. Datei via should_send_as_file)
+```
+
+**`PipelineDeps` als reine Dataclass** mit DI-Feldern: `sanitizer`, `llm_caller`, `guard_caller` (optional), `system_prompt`, `guard_context`, `guard_fail_policy`, `should_send_as_file`, `determine_file_format`, `format_text`, plus konfigurierbare Antwort-Texte (`llm_unavailable_text`, `sanitizer_blocked_text`, `guard_block_text`). Damit hat die Pipeline NULL harte Telegram-/HTTP-/OpenRouter-Imports — der Telegram-Adapter injiziert die echten Implementierungen, Tests injizieren Mocks.
+
+**`PipelineResult`** trägt die `OutgoingMessage` (oder `None`), das `reason` (`ok`/`sanitizer_blocked`/`llm_unavailable`/`guard_block`/`empty_input`/`empty_llm`), und Diagnostik (`intent`, `effort`, `needs_hitl`, `guard_verdict`, `sanitizer_findings`, `llm_latency_ms`).
+
+**Bewusst NICHT in der Pipeline** (bleibt im legacy `_process_text_message` bis P175):
+- HitL-Inline-Button-Flow (file_effort_5 — spawnt asyncio.create_task)
+- Gruppen-Kontext / autonome Einwürfe (group_handler-Logik)
+- Callback-Queries (HitL-Approval-Buttons)
+- Vision (Bild-URLs via `get_file_url`)
+- Admin-DM-Spiegelungen (HitL-Hinweis, Guard-WARNUNG)
+- Sandbox-Execution-Hook (P171)
+
+### Block 1 — `adapters/telegram_adapter.py::TelegramAdapter`
+
+Erste konkrete `TransportAdapter`-Implementierung (Interface aus P173):
+
+- **`translate_incoming(raw_update) -> IncomingMessage | None`** — nutzt das bestehende `extract_message_info` aus `bot.py`, mappt Trust-Level: `private + admin_chat_id` → `ADMIN`, `private` → `AUTHENTICATED`, `group/supergroup` → `PUBLIC` (auch wenn der Admin in einer Gruppe schreibt — konservatives Mapping). `metadata` enthält `chat_id`, `chat_type`, `message_id`, `thread_id`, `is_forwarded`, `reply_to_message_id`, `username`, `photo_file_ids`, `new_chat_members`. **Photo-Bytes werden NICHT vorgeladen** — nur die file_ids in metadata, das Resolven via `get_file_url` bleibt im Vision-Pfad bis P175.
+- **`translate_outgoing(message) -> dict`** — baut die kwargs für `send_telegram_message` bzw. `send_document` (mit `method`-Discriminator). `chat_id`/`thread_id` kommen aus `OutgoingMessage.metadata` (transport-agnostisch).
+- **`async send(message) -> bool`** — delegiert an die bestehenden `send_telegram_message` / `send_document` aus `modules/telegram/bot.py`. Loggt mit Tag `[ADAPTER-174]`.
+- **`from_settings(settings)`** — Convenience-Factory liest `modules.telegram.bot_token` + `admin_chat_id`.
+
+### Block 3 — `handle_telegram_update()` in `router.py`
+
+Neuer Phase-E-Entry-Point der Adapter + Pipeline zusammenführt:
+
+```python
+async def handle_telegram_update(raw_update, settings):
+    adapter = TelegramAdapter.from_settings(settings)
+    incoming = adapter.translate_incoming(raw_update)
+    deps = PipelineDeps(
+        sanitizer=get_sanitizer(),
+        llm_caller=lambda **kw: _call_llm_with_retry(model=cfg.model, **kw),
+        guard_caller=_run_guard,
+        system_prompt=build_huginn_system_prompt(persona),
+        guard_context=_build_huginn_guard_context(persona),
+        guard_fail_policy=_resolve_guard_fail_policy(settings),
+        should_send_as_file=should_send_as_file,
+        determine_file_format=determine_file_format,
+        format_text=format_code_response,
+        llm_unavailable_text=_FALLBACK_LLM_UNAVAILABLE,
+    )
+    result = await process_message(incoming, deps)
+    # Adapter-Send braucht chat_id/thread_id im metadata + reply_to-Default
+    await adapter.send(result.message)
+```
+
+**WICHTIG: `process_update()` ist NICHT auf `handle_telegram_update()` umgestellt.** Der legacy-Pfad bleibt der primäre — `handle_telegram_update` ist parallel verfügbar für neue Caller (Tests, Phase-E-Integration in P175). Damit ist die Adapter-+-Pipeline-Kombination real benutzbar, ohne die 1000+ Zeilen `test_telegram_bot.py` / `test_hitl_hardening.py` / `test_rate_limiter.py` zu gefährden, die `_process_text_message`/`process_update`/`send_telegram_message` als Modul-Attribute monkey-patchen.
+
+### Tests
+
+- **`test_pipeline.py`** (neu) — 17 Cases: Happy-Path (Text-In/Text-Out, Intent-Header, format_text), Sanitizer (blocked, metadata, cleaned-text), LLM (unavailable, leer, empty input), Guard (OK/WARNUNG/ERROR×Policy/optional), Output-Routing (Text/File/Intent-Pass-Through). Alle DI-basiert, keine Telegram-/HTTP-Imports. **17 passed**.
+- **`test_telegram_adapter.py`** (neu) — 24 Cases: `translate_incoming` (private/admin/group/supergroup, thread_id, forwarded, reply_to, photo_file_ids, caption-als-Text, username, kein-message), `translate_outgoing` (text/file/keyboard/reply_to-Konvertierung), `send` (text→send_telegram_message, file→send_document, ohne chat_id/text → False), `from_settings`. **24 passed**.
+- **Bestehende Tests**: Alle P162/P163/P164/P167/P168/P171/P172/P173 + Telegram/HitL/Rate-Limiter/Hallucination-Guard bleiben unverändert grün. Sweep `pytest test_telegram_bot test_hitl_hardening test_hitl_manager test_hitl_policy test_rate_limiter test_file_output test_hallucination_guard test_input_sanitizer test_message_bus test_pipeline test_telegram_adapter test_guard_stress` → **306 passed + 4 xfailed** in 9s.
+
+### Manuelle Checkliste (Chris)
+
+- [ ] `pytest zerberus/tests/test_pipeline.py -v` → 17 passed
+- [ ] `pytest zerberus/tests/test_telegram_adapter.py -v` → 24 passed
+- [ ] `pytest zerberus/tests/test_telegram_bot.py zerberus/tests/test_hitl_hardening.py zerberus/tests/test_rate_limiter.py -v` → alle bestehenden Telegram-Tests grün
+- [ ] Server starten → Huginn läuft wie vorher (Long-Polling, Guard, Intent, HitL); im Code-Pfad steht das neue `handle_telegram_update` bereit, wird aber noch nicht im Hot Path benutzt
+- [ ] Optional: `python -c "from zerberus.adapters.telegram_adapter import TelegramAdapter"` → Import OK
+
+### Scope-Grenzen (NICHT in diesem Patch)
+
+- **Kein Cutover** von `process_update` → `handle_telegram_update`. Das ist P175.
+- Kein Refactor von `_process_text_message`. Bleibt unverändert.
+- Kein Nala-Adapter (P175+).
+- Kein Rosa-Adapter (P176/P177).
+- Pipeline behandelt KEINE HitL-Background-Tasks, KEIN Group-Routing, KEINE Callback-Queries, KEINE Vision. Diese Pfade bleiben legacy bis P175.
+- Pipeline ist eine async-Funktion, KEINE Klasse — Klasse kommt erst wenn nötig.
+
+*Stand: 2026-04-28, Patch 174 — Phase E Mitte. Erste konkrete Implementierungen der P173-Interfaces: `core/pipeline.py::process_message` (linearer DI-basierter Text-Pfad) + `adapters/telegram_adapter.py::TelegramAdapter`. `handle_telegram_update()` als parallel verfügbarer Entry-Point. 41 neue Tests + 0 Regressionen. P175 bringt den eigentlichen Cutover (`process_update` → `handle_telegram_update`) und beginnt die Migration der komplexen Pfade (Group-Kontext, Callbacks, Vision, HitL-Background).*
+
+---
