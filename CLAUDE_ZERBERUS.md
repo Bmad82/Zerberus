@@ -38,6 +38,15 @@
 - DOKU-CHECKER: `scripts/check_docs_consistency.py` (P165) prüft Patch-Nummer-Sync|Tote Links|Log-Tag-Konsistenz|Imports|Settings-Keys|nach jedem Patch laufen lassen, additiv zu pytest
 - RETROAKTIV: Code-Stellen ohne Tests gefunden → Tests nachrüsten (kein separater Patch nötig)
 
+## Pipeline-Cutover-Feature-Flag (P177)
+- `modules.pipeline.use_message_bus: false` (Default)|`true` → `process_update` delegiert an `handle_telegram_update` (Adapter+Pipeline)|false → `_legacy_process_update` (Pre-P177-Body unveraendert)
+- Live-Switch: Flag wird pro Call gelesen, kein Settings-Cache|uvicorn `--reload` greift sofort, kein Server-Neustart noetig|Test-Pattern in [`test_cutover.py`](zerberus/tests/test_cutover.py): zwei aufeinanderfolgende Calls mit unterschiedlichem Flag treffen unterschiedliche Pfade
+- Komplexe Pfade an Legacy delegieren|`handle_telegram_update` hat 5 Early-Returns: `channel_post`/`edited_channel_post`, `edited_message`, `callback_query`, Photo-`message`, Gruppen-`chat.type ∈ {group, supergroup}` → alle `await _legacy_process_update(...)`|nur DM-Text laeuft durch Pipeline
+- Legacy bleibt|`_legacy_process_update` ist KEIN Dead-Code|HitL-Callbacks, Vision, Gruppenbeitritt-HitL, autonomer Einwurf bleiben Telegram-spezifisch
+- Default: AUS|Chris testet manuell durch config-Switch|nach Live-Verifikation kann Default in spaeterem Patch auf `true` gedreht werden
+- Kein Nala-Cutover|nur Telegram|Nala-SSE-Pipeline ist zu anders (RAG/Memory/Sentiment/Streaming)
+- Caller-Pfad: Webhook-Endpoint + Long-Polling-Loop rufen weiterhin `process_update` (nicht `handle_telegram_update` direkt)|process_update ist die Stable-API, handle_telegram_update ist Implementierungs-Detail
+
 ## Coda-Autonomie (P176)
 - Coda übernimmt ALLES was er kann|`docker pull`, `pip install`, `curl`, Testdaten, Sync|Chris nur für physisch Unmögliches
 - Vor Patch-Abschluss prüft Coda|Server startet sauber? Alle Images da? Dependencies aktuell?|Nicht hoffen — verifizieren

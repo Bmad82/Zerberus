@@ -165,6 +165,20 @@ class SandboxConfig(BaseModel):
     allowed_languages: List[str] = ["python", "javascript"]
 
 
+class PipelineConfig(BaseModel):
+    """Patch 177 — Pipeline-Cutover-Feature-Flag.
+
+    Wenn ``use_message_bus=True``, delegiert ``process_update`` an
+    ``handle_telegram_update`` (Phase-E-Stack: Adapter + Pipeline).
+    Default ``False`` heisst: Legacy-Pfad (``_legacy_process_update``)
+    bleibt aktiv. Chris kann live umschalten via config.yaml + Reload.
+
+    Defaults hier statt in config.yaml, weil ``config.yaml`` gitignored
+    ist — sonst fehlen die Werte nach ``git clone``.
+    """
+    use_message_bus: bool = False
+
+
 class MemoryExtractionConfig(BaseModel):
     """Patch 115: Background Memory Extraction Defaults.
     config.yaml-Override unter `modules.memory.*`.

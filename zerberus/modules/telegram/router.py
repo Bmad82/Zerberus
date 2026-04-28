@@ -871,11 +871,32 @@ async def _process_text_message(
 
 
 async def process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, Any]:
-    """Verarbeitet EIN Telegram-Update durch den Huginn-Flow.
+    """Patch 177 — Cutover-Weiche.
+
+    Liest ``modules.pipeline.use_message_bus`` aus dem Settings-Dict (Default
+    ``False``). Bei ``True`` delegiert an :func:`handle_telegram_update`
+    (Phase-E-Stack: Adapter + Pipeline). Bei ``False`` (Default) laeuft
+    weiterhin der vor P177 etablierte Code, jetzt umbenannt in
+    :func:`_legacy_process_update`.
+
+    Das Feature-Flag wird pro Aufruf gelesen — Hot-Reload via uvicorn
+    ``--reload`` greift sofort, kein Server-Neustart noetig.
+    """
+    pipeline_cfg = (settings.modules.get("pipeline", {}) or {}) if settings else {}
+    if pipeline_cfg.get("use_message_bus", False):
+        return await handle_telegram_update(data, settings)
+    return await _legacy_process_update(data, settings)
+
+
+async def _legacy_process_update(data: Dict[str, Any], settings: Settings) -> Dict[str, Any]:
+    """Verarbeitet EIN Telegram-Update durch den Huginn-Flow (Pre-P177-Pfad).
 
     Gemeinsamer Handler fuer Webhook (POST /webhook) und Long-Polling
     (bot.long_polling_loop). Patch 155: aus telegram_webhook extrahiert,
-    damit der selbe Code beide Transport-Modi bedient.
+    damit der selbe Code beide Transport-Modi bedient. Patch 177: aus
+    ``process_update`` ausgegliedert; Body unveraendert. ``process_update``
+    delegiert an diese Funktion wenn ``modules.pipeline.use_message_bus``
+    falsch ist (Default).
     """
     mod_cfg = settings.modules.get("telegram", {}) or {}
     if not mod_cfg.get("enabled", False):
@@ -1198,11 +1219,12 @@ async def handle_telegram_update(
     Einwuerfe, Callbacks und Vision bleiben bis P175 im legacy
     ``process_update`` / ``_process_text_message``.
 
-    Wird in P174 noch NICHT von ``process_update`` aufgerufen — der
-    legacy-Pfad bleibt der primaere. Diese Funktion existiert hier als
-    parallel verfuegbarer Entry-Point fuer neue Caller (Tests, Phase-E-
-    Integration in P175). Damit kann die Adapter-+-Pipeline-Kombination
-    real benutzt werden, ohne die bestehenden Tests zu gefaehrden.
+    Patch 177 (Cutover): wird jetzt von ``process_update`` aufgerufen
+    wenn ``modules.pipeline.use_message_bus=True``. Komplexe Pfade
+    (Callbacks, Photos, Gruppen-Kontext, Update-Filter) delegieren an
+    :func:`_legacy_process_update`, weil sie Telegram-spezifisch und/oder
+    nicht durch die transport-agnostische ``core.pipeline`` modellierbar
+    sind. Nur der lineare DM-Text-Pfad laeuft durch Adapter + Pipeline.
 
     Returns:
         ``{ok: True, sent: bool, reason: str, intent: str | None}``
@@ -1217,18 +1239,47 @@ async def handle_telegram_update(
     if not mod_cfg.get("enabled", False):
         return {"ok": False, "reason": "disabled"}
 
+    # Patch 177: Update-Filter (P162-konsistent) + komplexe Pfade an
+    # Legacy delegieren. Die Pipeline behandelt nur den linearen
+    # DM-Text-Pfad — alles andere bleibt im pre-P177-Code, der die
+    # Telegram-Spezifika (Callback-Resolve, Photo→Vision, Group-Kontext,
+    # autonomer Einwurf, Gruppenbeitritt-HitL) bereits abbildet.
+    if "channel_post" in raw_update or "edited_channel_post" in raw_update:
+        return await _legacy_process_update(raw_update, settings)
+    if "edited_message" in raw_update:
+        return await _legacy_process_update(raw_update, settings)
+    if "callback_query" in raw_update:
+        return await _legacy_process_update(raw_update, settings)
+
+    message = raw_update.get("message") or {}
+    if not isinstance(message, dict) or not message:
+        return await _legacy_process_update(raw_update, settings)
+
+    # Photo-/Vision-Pfad: legacy bleibt zustaendig (Vision ist im
+    # ``_process_text_message`` ueber ``info["photo_file_ids"]`` verkabelt).
+    if message.get("photo"):
+        return await _legacy_process_update(raw_update, settings)
+
+    # Gruppen-Pfad (group/supergroup): autonomer Einwurf, Gruppenbeitritt-
+    # HitL und Kontext-Sammlung sind Telegram-spezifisch und nicht
+    # transport-agnostisch — bleiben in legacy bis Phase F sie als
+    # Pipeline-Stage modelliert.
+    chat_type = (message.get("chat", {}) or {}).get("type")
+    if chat_type in ("group", "supergroup"):
+        return await _legacy_process_update(raw_update, settings)
+
     cfg = HuginnConfig.from_dict(mod_cfg)
     adapter = TelegramAdapter.from_settings(settings)
     incoming = adapter.translate_incoming(raw_update)
     if incoming is None:
         return {"ok": True, "skipped": "no_message"}
 
-    # Phase-E-Pipeline ist text-only — Photo-Updates fallen in P174 noch
-    # nicht in diesen Pfad (legacy ``_process_text_message`` bleibt
-    # zustaendig). Wer ``handle_telegram_update`` direkt aufruft kriegt
-    # bei Foto-Only-Updates ein "skipped" zurueck.
+    # Phase-E-Pipeline ist text-only — Foto-Only-Updates wurden bereits
+    # oben an Legacy delegiert. Wer trotzdem ohne Text hier ankommt
+    # (z.B. Sticker, Voice-Note ohne Text) faellt zurueck auf Legacy,
+    # damit kein Update lautlos verloren geht.
     if not (incoming.text or "").strip():
-        return {"ok": True, "skipped": "no_text"}
+        return await _legacy_process_update(raw_update, settings)
 
     persona = _resolve_huginn_prompt(settings)
     effective_system_prompt = build_huginn_system_prompt(persona)

@@ -1,8 +1,30 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 176 (2026-04-28) – Coda-Autonomie + Docker-Pull + Test-Isolation-Fix (E2E-Marker, pytest.ini, sauberer Default-Run)*
+*Letzte Aktualisierung: Patch 177 (2026-04-28) – Pipeline-Cutover (Feature-Flag `modules.pipeline.use_message_bus`, Legacy-Pfad als Default-Fallback)*
 
 ## Aktueller Patch
+
+**Patch 177** — Pipeline-Cutover (Feature-Flag) (2026-04-28)
+
+- **Erster aktiver Schritt nach Phase E, hohes Risiko, mit Feature-Flag entschärft.** Phase E (P173-P175) hat das Skelett gebaut: Message-Bus, Pipeline, Telegram-Adapter, Nala-Adapter, Policy-Engine. Bisher rief aber `process_update()` weiterhin den Legacy-Pfad — `handle_telegram_update()` existierte parallel, ohne Caller. P177 macht den Cutover, aber per Feature-Flag mit Default `false`, damit Chris jederzeit live umschalten kann ohne Server-Restart.
+- **Block 1 — `PipelineConfig` in [`core/config.py`](zerberus/core/config.py):** Neues Pydantic-Model `PipelineConfig(use_message_bus: bool = False)`. Default-Defensive konsistent mit `SandboxConfig`/`HitlConfig` (config.yaml ist gitignored — Defaults im Code-Modell, nicht in der Beispiel-Config). Lese-Pfad: `settings.modules.get("pipeline", {}).get("use_message_bus", False)` direkt im Router, kein gecachter Wert.
+- **Block 2 — Cutover-Weiche in [`telegram/router.py`](zerberus/modules/telegram/router.py):** Der bisherige `process_update`-Body wurde 1:1 in `_legacy_process_update` ausgegliedert (Backward-Compat: alle Module-Level-Monkey-Patches in den Tests funktionieren weiter, weil `_legacy_process_update` dieselben Funktionen aufruft wie vorher `process_update`). Das neue `process_update` ist eine 6-Zeilen-Weiche: liest das Flag, ruft `handle_telegram_update` (true) oder `_legacy_process_update` (false) auf. Webhook-Endpoint und Long-Polling-Loop rufen unverändert `process_update` — kein Caller-Refactor nötig.
+- **Block 3 — `handle_telegram_update` produktionsfähig:** Die P174-Funktion deckte nur den linearen DM-Text-Pfad ab. P177 ergänzt 5 Early-Return-Delegations: `channel_post`/`edited_channel_post`, `edited_message`, `callback_query`, Photo-`message` (Vision-Pfad), Gruppen-Chats (`chat.type ∈ {group, supergroup}`) → alle delegieren `await _legacy_process_update(...)`. Begründung: HitL-Callback-Resolve, Photo→Vision, autonomer Einwurf, Gruppenbeitritt-HitL sind Telegram-spezifisch und nicht transport-agnostisch — die `core.pipeline` ist DI-only und text-only. Phase F kann diese Pfade einzeln durch Pipeline-Stages ersetzen, aber nicht in einem Patch.
+- **Tests:** Neue Datei [`zerberus/tests/test_cutover.py`](zerberus/tests/test_cutover.py) mit **11 Tests in 3 Klassen** — `TestFeatureFlagSwitch` (4: Default-false, explizit-false, true → Pipeline, Live-Switch ohne Cache), `TestHandleTelegramUpdateDelegates` (6: Callback/Channel-Post/Edited-Message/Photo/Group → Legacy + Disabled-Module → frueher Return), `TestHandleTelegramUpdateTextPath` (1: DM-Text → Pipeline mit gemocktem LLM/Guard/Adapter.send). **Alle 11 grün.** Regression: **965 passed, 114 deselected, 0 failed in 52s** (P176-Baseline 954 + 11 neu = 965 exakt, keine Regression).
+- **Logging-Tags:** keine neuen Runtime-Tags. P177 ist ein Architektur-Cutover ohne neuen Code-Pfad — `[ADAPTER-174]` bleibt für `handle_telegram_update`-Aufrufe, `[HUGINN-162/163/164]` für die Legacy-Funktion.
+- **Scope:** IN Scope: 1 neue Pydantic-Klasse (`PipelineConfig`), 1 Router-Refactor (`process_update` → `_legacy_process_update` rename + neue Weiche, plus 5 Delegations-Pfade in `handle_telegram_update`), 1 neue Test-Datei, Doku-Updates. NICHT in Scope: Default auf `true` drehen (Chris entscheidet wann), Nala-Cutover (SSE-Streaming bleibt eigenständig), Löschung des Legacy-Pfads (bleibt als Fallback bis Phase F alle Spezialfälle abdeckt), Pipeline-Stage für HitL-Callbacks/Vision/Group-Kontext (Phase F).
+- **Live-Verifikation (USER):**
+  1. Default-Pfad: `pytest zerberus/tests/test_cutover.py -v` → 11 passed.
+  2. Server starten ohne Config-Änderung → Huginn antwortet wie vorher (Legacy-Pfad).
+  3. `config.yaml` ergänzen: `modules.pipeline.use_message_bus: true` (uvicorn `--reload` greift).
+  4. DM an Huginn → Antwort kommt wie vorher (jetzt via Pipeline).
+  5. CODE-Anfrage in DM → HitL-Buttons + Datei-Output funktionieren (Datei-Output läuft in der Pipeline; HitL-Callback delegiert wieder an Legacy beim Click).
+  6. Bild an Huginn → Vision-Antwort (delegiert an Legacy, weil Photo-Pfad).
+  7. In Gruppe → autonomer Einwurf wie vorher (delegiert an Legacy).
+  8. `config.yaml` zurück auf `use_message_bus: false` → sofort Legacy-Pfad aktiv.
+- **Phase-F-Vorbereitung:** Default auf `true` drehen wenn Chris die Live-Verifikation durchgespielt hat. Danach inkrementell Pipeline-Stages für die delegierten Pfade bauen: HitL-Callback-Resolution als CallbackPipeline, Vision-Pre-Stage in der Text-Pipeline, GroupContextPipeline für autonomen Einwurf. Erst wenn alle Pfade durch die Pipeline laufen, kann `_legacy_process_update` gelöscht werden — vorher rotted nichts, der Fallback ist billig.
+
+---
 
 **Patch 176** — Coda-Autonomie + Docker-Pull + Test-Isolation-Fix (2026-04-28)
 

@@ -4668,3 +4668,86 @@ Neue Sektion in [`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md): „Coda-Autonomie
 
 *Stand: 2026-04-28, Patch 176 — Stabilisierungs-Patch zwischen Phase E und Phase F. Sandbox erstmals operationsfähig (Images vorhanden), Default-Test-Run sauber (0 Failures), Coda-Autonomie als Doku-Anker für künftige Patches kodifiziert.*
 
+---
+
+## Patch 177 — Pipeline-Cutover (Feature-Flag) (2026-04-28)
+
+**Erster aktiver Schritt nach Phase E.** Das Skelett aus P173-P175 (Message-Bus, Pipeline, Telegram-Adapter, Nala-Adapter, Policy-Engine) wird endlich vom Router angesteuert — aber per Feature-Flag mit Default `false`, damit nichts kippt.
+
+### Block 1 — `PipelineConfig`
+
+Neues Pydantic-Model in [`core/config.py`](../zerberus/core/config.py):
+
+```python
+class PipelineConfig(BaseModel):
+    use_message_bus: bool = False
+```
+
+Defaults im Code-Modell (config.yaml ist gitignored — Konvention konsistent mit `SandboxConfig`/`HitlConfig`). Der Wert wird pro Aufruf gelesen, nicht gecacht: `settings.modules.get("pipeline", {}).get("use_message_bus", False)`. Damit greift uvicorn `--reload` sofort, ohne Server-Neustart.
+
+### Block 2 — Cutover-Weiche in `process_update`
+
+Der bisherige `process_update`-Body wurde 1:1 in `_legacy_process_update` ausgegliedert. Das ist kritisch für die Backward-Compat: alle bestehenden Tests in `test_telegram_bot.py`, `test_hitl_hardening.py`, `test_rate_limiter.py`, `test_file_output.py` patchen Modul-Attribute (`send_telegram_message`, `call_llm`, `_run_guard`, `_process_text_message`) — `_legacy_process_update` ruft dieselben Funktionen auf, die Tests laufen unverändert grün.
+
+Das neue `process_update` ist eine 6-Zeilen-Weiche:
+
+```python
+async def process_update(data, settings):
+    pipeline_cfg = settings.modules.get("pipeline", {}) or {}
+    if pipeline_cfg.get("use_message_bus", False):
+        return await handle_telegram_update(data, settings)
+    return await _legacy_process_update(data, settings)
+```
+
+Webhook-Endpoint und Long-Polling-Loop rufen unverändert `process_update` — kein Caller-Refactor nötig.
+
+### Block 3 — `handle_telegram_update` produktionsfähig
+
+Die P174-Funktion deckte nur den linearen DM-Text-Pfad ab. P177 ergänzt 5 Early-Return-Delegations an Legacy:
+
+| Update-Typ                                         | Pfad                                                |
+|----------------------------------------------------|------------------------------------------------------|
+| `channel_post` / `edited_channel_post`             | → `_legacy_process_update` (filtert + ignoriert)     |
+| `edited_message`                                   | → `_legacy_process_update` (filtert + ignoriert)     |
+| `callback_query` (HitL-Button-Klick)               | → `_legacy_process_update` (Task-Resolve via DB)     |
+| `message.photo` (Vision-Anfrage)                   | → `_legacy_process_update` (Vision-Pipeline legacy)  |
+| `message.chat.type ∈ {group, supergroup}`          | → `_legacy_process_update` (autonomer Einwurf, HitL) |
+| **`message` mit Text in `chat.type == private`**   | **→ Adapter + Pipeline (neu)**                       |
+
+Begründung der Delegation: HitL-Callback-Resolve, Photo→Vision, autonomer Einwurf, Gruppenbeitritt-HitL sind Telegram-spezifisch und nicht transport-agnostisch — die `core.pipeline` ist DI-only und text-only. Phase F kann diese Pfade einzeln durch Pipeline-Stages ersetzen, aber nicht in einem Patch.
+
+### Tests
+
+Neue Datei [`test_cutover.py`](../zerberus/tests/test_cutover.py) mit **11 Tests in 3 Klassen**:
+
+- **`TestFeatureFlagSwitch`** (4): Default-false, explizit-false, true → Pipeline, Live-Switch ohne Cache (drei aufeinanderfolgende Calls mit unterschiedlichem Flag treffen unterschiedliche Pfade).
+- **`TestHandleTelegramUpdateDelegates`** (6): Callback / Channel-Post / Edited-Message / Photo / Group → Legacy + Disabled-Module → früher Return ohne Legacy-Aufruf.
+- **`TestHandleTelegramUpdateTextPath`** (1): DM-Text → Pipeline läuft (gemocktes LLM, Guard, Adapter.send), Legacy wird NICHT aufgerufen.
+
+Alle 11 grün. **Regression: 965 passed, 114 deselected, 4 xfailed, 0 failed in 52s** (P176-Baseline 954 + 11 neue P177 = 965 exakt, keine Regression).
+
+### Dateien
+
+- **Neu:** [`zerberus/tests/test_cutover.py`](../zerberus/tests/test_cutover.py)
+- **Geändert:** [`zerberus/core/config.py`](../zerberus/core/config.py) (PipelineConfig), [`zerberus/modules/telegram/router.py`](../zerberus/modules/telegram/router.py) (Weiche + Delegations), [`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md), [`SUPERVISOR_ZERBERUS.md`](../SUPERVISOR_ZERBERUS.md), [`README.md`](../README.md), [`lessons.md`](../lessons.md), `docs/PROJEKTDOKUMENTATION.md` (dieser Eintrag)
+
+### Manuelle Checkliste (Chris)
+
+- [ ] Default-Pfad: `pytest zerberus/tests/test_cutover.py -v` → 11 passed.
+- [ ] Server starten ohne Config-Änderung → Huginn antwortet wie vorher (Legacy aktiv).
+- [ ] `config.yaml` ergänzen: `modules.pipeline.use_message_bus: true` (mit uvicorn `--reload` greift sofort).
+- [ ] DM an Huginn → Antwort wie vorher (jetzt via Pipeline).
+- [ ] CODE-Anfrage in DM → HitL-Buttons + Datei-Output funktionieren.
+- [ ] Bild an Huginn → Vision-Antwort (delegiert an Legacy, weil Photo-Pfad).
+- [ ] In Gruppe → autonomer Einwurf wie vorher (delegiert an Legacy).
+- [ ] `use_message_bus: false` → sofort Legacy-Pfad aktiv.
+
+### Scope-Grenzen (NICHT in diesem Patch)
+
+- Kein Default auf `true` — Chris entscheidet wann umgeschaltet wird.
+- Kein Nala-Cutover — nur Telegram. Nala-SSE-Pipeline ist zu anders (RAG/Memory/Sentiment/Streaming) und bleibt eigenständig.
+- Keine Löschung des Legacy-Pfads — bleibt als Fallback bis Phase F alle Spezialfälle (HitL-Callbacks, Vision, Group-Kontext) als Pipeline-Stages abbildet.
+- Keine neue Funktionalität — reiner Architektur-Cutover, identisches Verhalten.
+
+*Stand: 2026-04-28, Patch 177 — Pipeline-Cutover als Feature-Flag aktiviert. `process_update` ist Stable-API, `_legacy_process_update` und `handle_telegram_update` sind beide Implementierungen, Default ist Legacy. Phase F übernimmt die schrittweise Migration der delegierten Pfade.*
+
