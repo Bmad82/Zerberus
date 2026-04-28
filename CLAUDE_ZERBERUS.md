@@ -144,12 +144,13 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - Config-Keys VORBEREITET nicht aktiv: `limits.per_user_rpm`/`limits.cooldown_seconds` in `config.yaml`|aktives Reading mit Phase-B-Config-Refactor|jetzige Defaults im Code (max_rpm=10, cooldown=60)|`security.guard_fail_policy` IST aktiv gelesen
 - Logging-Tags: `[RATELIMIT-163]` (Rate-Limiter), `[HUGINN-163]` (Router/Bot — Throttle/Retry/Guard-Fail/LLM-Unavailable)
 
-## Input-Sanitizer (P162)
+## Input-Sanitizer (P162 + P173)
 - [`input_sanitizer.py`](zerberus/core/input_sanitizer.py): Interface `InputSanitizer` (Rosa-Skelett) + `RegexSanitizer` (Huginn-jetzt)|Singleton via `get_sanitizer()`
 - VOR jedem LLM-Call: in [`_process_text_message()`](zerberus/modules/telegram/router.py) für DMs + autonomer Gruppen-Einwurf|Neue LLM-Pfade: `get_sanitizer().sanitize(text, metadata={...})` davor
 - Findings geloggt, NICHT geblockt (Tag `[SANITIZE-162]`)|Huginn-Modus: `blocked=False`|Guard (Mistral Small) entscheidet final|`blocked=True`-Pfad im Konsumenten („🚫 Nachricht blockiert.")|aktiv mit Rosa wenn `security.input_sanitizer.mode = "ml"`
-- Patterns konservativ|Lieber ein Pattern weniger als False-Positive auf Deutsch („Kannst du das ignorieren?" darf NICHT triggern)|Neue Patterns: erst gegen [`test_input_sanitizer.py::TestInjectionDetection::test_sanitize_normal_german_no_false_positive`](zerberus/tests/test_input_sanitizer.py)
+- Patterns konservativ|Lieber ein Pattern weniger als False-Positive auf Deutsch („Kannst du das ignorieren?" darf NICHT triggern)|Neue Patterns: erst gegen [`test_guard_stress.py::TestKeineFalsePositives`](zerberus/tests/test_guard_stress.py) (11 FP-Boundary-Cases nach P173) und [`test_input_sanitizer.py`](zerberus/tests/test_input_sanitizer.py) verifizieren
 - Metadata: `user_id`/`chat_type`/`is_forwarded`/`is_reply`|`is_forwarded=True` → Finding `FORWARDED_MESSAGE` (K3-Vektor: Chat-Übernahme via Reply-Chain)|Future: ML-Sanitizer kann je Chat-Typ/Reply unterschiedlich strikt sein
+- **P173-Erweiterungen** (Detection-Rate 5/16 → 12/16): NFKC-Unicode-Normalisierung im Hauptpfad (Ⅰ → I, Homoglyph-Schutz) + Finding `UNICODE_NORMALIZED: NFKC` falls Text geändert|7 neue Patterns: DAN-DE (`(?-i:DAN)` case-sensitive für FP-Schutz vs. Vorname „Dan")|`developer/debug/god/admin mode` mit Aktivierungs-Verb-Kontext|ChatML-/Llama-Tokens (`<|im_start|>`, `[INST]` etc.)|`vergiss alles`|`javascript:` in Markdown-Link|`gib/nenne/verrate/sag deinen System-Prompt`
 
 ## Callback-Spoofing-Schutz (P162, O3)
 - `HitlRequest.requester_user_id: Optional[int]`|`process_update()` validiert bei `callback_query`: clicker_id ∈ `{admin_chat_id, requester_user_id}`|sonst Popup („🚫 Nicht deine Anfrage.") via [`answer_callback_query()`](zerberus/modules/telegram/bot.py) mit `show_alert=True`
@@ -182,13 +183,22 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 
 ## Guard-Stresstests + Policy-Schichten (P172, Phase D)
 - 31-Case-Testbatterie [`test_guard_stress.py`](zerberus/tests/test_guard_stress.py): T01–T16 offline gegen [`core/input_sanitizer.py`](zerberus/core/input_sanitizer.py)|T17–T25 live gegen `mistralai/mistral-small-24b-instruct-2501` mit `@pytest.mark.guard_live` + skipif kein `OPENROUTER_API_KEY`|Marker in [`conftest.py::pytest_configure`](zerberus/tests/conftest.py) registriert
-- Detection-Bilanz P162-Sanitizer: 5/16 (T01, T10, T11, T12, T15)|11 als `pytest.xfail` mit konkretem Empfehlungs-Text dokumentiert (Pattern-Vorschlag + Begründung) — KEIN Pattern in P172 hinzugefügt, das ist P173-Scope
-- Bekannte Sanitizer-Lücken (xfail-dokumentiert): deutsches DAN ohne Adjektiv|`developer mode`|ChatML-Token-Markers (`<|im_start|>` etc.)|`vergiss alles` ohne Substantiv|Leet-Speak/Punkt-/Wort-Rotation/Unicode-Homoglyphen (sind Sanitizer-Out-of-Scope, gehören in semantischen Guard)|`javascript:`-URL-Scheme in Markdown-Links|`gib/nenne/verrate` (nur `zeig` im Pattern)
+- Detection-Bilanz P162-Sanitizer NACH P173: 12/16 (T01–T05, T09, T10–T15)|4 verbleibende xfails (T06/T07/T08/T16 — Sanitizer-Out-of-Scope, semantisch, gehören in den LLM-Guard)
+- Bekannte Sanitizer-Lücken (xfail-dokumentiert): Leet-Speak/Punkt-Obfuskation/Wort-Rotation/Persona-Bypass — KEINE Regex-Lösung sinnvoll (entweder umgehbar oder FP auf normalem Deutsch)
 - Empfehlung 5-Schichten-Architektur (Schicht 1+2 deterministisch+blocking|Schicht 3 Sandbox|LLM-Call|Schicht 4 LLM-Guard fail-open|Schicht 5 Audit-Trail)|Determinismus dominiert Semantik (kein Bypass durch „Guard sagt OK")|Sandbox-Schicht ist die einzige kernel-erzwungene
 - Guard-Eskalations-Empfehlung (NICHT implementiert — Phase E): WARNUNG→BLOCK bei Jailbreak-Pattern/Persona-Exploitation/Prompt-Leak-Versuch/destruktiven Code-Patterns|3-WARNUNG-in-10min-Counter|Pre-Truncation Guard-Input auf 4000 Wörter|Admin-Notify-Format definiert|`guard_fail_policy: allow` Default beibehalten (Verfügbarkeit > Sicherheit)
 - Architektur-Dokumente: [`docs/guard_escalation_analysis.md`](docs/guard_escalation_analysis.md) (10-Zeilen-Tabelle Szenario × Aktuell × Empfehlung × Begründung + YAML-Config-Vorschlag)|[`docs/guard_policy_limits.md`](docs/guard_policy_limits.md) (deterministisch vs. LLM-Guard vs. Grauzone, Schichten-Diagramm, Phase-E-Empfehlung)
 - Live-Test-Erkenntnisse: Mistral-Guard erkennt erfundene Telefonnummern NICHT (T24, OK-Verdict trotz halluzinierter Bürgeramt-Nr)|Persona-Test besteht weil Hauptmodell-Antwort die Persona hält, NICHT weil Guard sie als Bypass-Versuch flaggt (T22)|Latenz wächst linear mit Input-Länge (T25, daher Pre-Truncation-Empfehlung)|Indeterminismus: T17/T18/T23 akzeptieren auch ERROR (transiente Mistral-Glitches)
 - Logging-Tag im Test: KEIN neuer — wir reuse `[GUARD-120]` und `[SANITIZE-162]`. P172 hat keinen Runtime-Tag (nur Tests + Docs).
+
+## Message-Bus-Interfaces (P173, Phase E)
+- [`core/message_bus.py`](zerberus/core/message_bus.py) — transport-agnostische Datenmodelle: `Channel(TELEGRAM/NALA/ROSA_INTERNAL)`|`TrustLevel(PUBLIC/AUTHENTICATED/ADMIN)`|`Attachment(data, filename, mime_type, size)`|`IncomingMessage(text, user_id, channel, trust_level=PUBLIC, attachments=[], metadata={})`|`OutgoingMessage(text, file, file_name, mime_type, reply_to, keyboard, metadata)`
+- [`core/transport.py`](zerberus/core/transport.py) — `TransportAdapter(ABC)` mit `async send(OutgoingMessage) -> bool`|`translate_incoming(raw_data: dict) -> IncomingMessage`|`translate_outgoing(OutgoingMessage) -> dict`
+- WICHTIG: P173 ist NUR Interface-Definition|kein Adapter implementiert|kein bestehender Code refactored|Telegram-Adapter kommt P174|`legacy.py`/`orchestrator.py`-Refactor kommt P175
+- IncomingMessage-`metadata` enthält je nach Transport: `thread_id`, `reply_to_message_id`, `is_forwarded`, `chat_id`, `message_id`|`is_forwarded` bleibt das Signal für den Sanitizer (P162-K3)|`trust_level=ADMIN` ersetzt langfristig die Direkt-Vergleiche gegen `admin_chat_id`
+- Tests in [`test_message_bus.py`](zerberus/tests/test_message_bus.py): Enum-Werte|Default-Factories unabhängig (Regression-Schutz gegen shared mutable state für `attachments`/`metadata`)|ABC-Instanziierungs-Schutz|Subclass-Roundtrip
+- Migrations-Reihenfolge (geplant): P174 Telegram-Adapter (übersetzt `_process_text_message`-Eingang in `IncomingMessage`)|P175 Pipeline (orchestrator/legacy konsumiert `IncomingMessage`, produziert `OutgoingMessage`)|danach Nala-Adapter, dann Rosa-Internal
+- Wenn ein neuer Transport benötigt wird: TransportAdapter-Subclass anlegen, alle 3 Methoden implementieren, NICHT die Datenmodelle selbst erweitern (Felder + `metadata`-Dict reichen)
 
 ## Docker-Sandbox (P171, Phase D)
 - Opt-In via `modules.sandbox.enabled: true` ([`SandboxConfig`](zerberus/core/config.py))|Defaults im Pydantic-Model (config.yaml gitignored)|`enabled=False` per Default — `execute()` liefert dann `None`, Caller fällt auf P168-Datei-Pfad zurück

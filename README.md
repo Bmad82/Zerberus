@@ -366,4 +366,4 @@ Chaos-Payloads. Patch 100 ergänzt `TestJavaScriptIntegrity` (Playwright
 
 ---
 
-*Zerberus Pro 4.0 – Stand: 2026-04-28, Patch 172 (Guard-Stresstests Phase D: 31 Cases gegen Sanitizer + Live-Guard, Eskalations-Analyse, 5-Schichten-Policy-Architektur für Rosa, alle Lücken als Known-Limitations dokumentiert)*
+*Zerberus Pro 4.0 – Stand: 2026-04-28, Patch 173 (Phase E Block 1: Sanitizer-Quick-Fix — Detection-Rate 5/16 → 12/16, NFKC-Unicode-Normalisierung, 7 neue Patterns aus den P172-xfail-Empfehlungen; Block 2: Transport-agnostische Message-Bus-Interfaces (IncomingMessage/OutgoingMessage/Channel/TrustLevel/TransportAdapter) als Grundlage für die Telegram/Nala/Rosa-Adapter ab P174)*
