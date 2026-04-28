@@ -38,6 +38,14 @@
 - DOKU-CHECKER: `scripts/check_docs_consistency.py` (P165) prüft Patch-Nummer-Sync|Tote Links|Log-Tag-Konsistenz|Imports|Settings-Keys|nach jedem Patch laufen lassen, additiv zu pytest
 - RETROAKTIV: Code-Stellen ohne Tests gefunden → Tests nachrüsten (kein separater Patch nötig)
 
+## Coda-Autonomie (P176)
+- Coda übernimmt ALLES was er kann|`docker pull`, `pip install`, `curl`, Testdaten, Sync|Chris nur für physisch Unmögliches
+- Vor Patch-Abschluss prüft Coda|Server startet sauber? Alle Images da? Dependencies aktuell?|Nicht hoffen — verifizieren
+- Neue Dependencies|Coda installiert sie selbst (`pip install` im venv|nicht `--break-system-packages` global)|Nicht als „TODO für Chris" markieren
+- Docker-Images|Coda pullt sie selbst (`docker pull`)|Kein „bitte docker pull ausführen" in der Checkliste
+- Umgebungs-Checks|Coda führt healthchecks aus und fixt Probleme|Erst wenn unfixbar (Auth/Hardware/UX-Gefühl) → an Chris eskalieren
+- Test-Marker (P176)|`@pytest.mark.e2e` für Server-abhängige Tests (Loki/Fenrir/Vidar)|Default-Run via `addopts = -m "not e2e"` (in [`pytest.ini`](pytest.ini))|`pytest -m e2e` nur mit laufendem Server
+
 ## Log-Level-Faustregel (P166)
 - DEBUG: Routine-Heartbeats (Pacemaker-Puls|Watchdog-Healthcheck-OK|Long-Poll-Timeouts)|erwartbare transiente Fehler (DNS-Aussetzer, Long-Poll-Exception)|volle Audio-Transkripte (für Debugging)
 - INFO: Start/Stop/Zustandsänderungen (Watchdog aktiv|Pacemaker gestartet|Container-Restart erfolgreich|Audio-Transkript-Einzeiler mit Längen)

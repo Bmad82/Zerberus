@@ -4618,3 +4618,53 @@ Die ursprüngliche P175-Spec wollte zusätzlich den **Cutover** `process_update`
 
 *Stand: 2026-04-28, Patch 175 — **Phase E abgeschlossen.** NalaAdapter + Policy-Engine-Fassade + RosaAdapter-Stub + Trust-Boundary-Diagramm. Alle Skelett-Dateien angelegt, alle drei Transport-Kanäle als Adapter-Klassen vorhanden, deterministische Pre-LLM-Schicht (HuginnPolicy) aggregiert die existierenden Module. 37 neue Tests + 0 Regressionen. Phase F übernimmt den Cutover und die Migration; Rosa/Heimdall (der LETZTE SCHRITT) baut auf diesem Skelett auf.*
 
+---
+
+## Patch 176 — Coda-Autonomie + Docker-Pull + Test-Isolation-Fix (2026-04-28)
+
+**Stabilisierungs-Patch nach Phase E.** Drei seit Wochen schwelende Hygiene-Probleme erschlagen, ohne neue Features.
+
+### Block 1 — Docker-Pull
+
+Coda hat `python:3.12-slim` und `node:20-slim` selbst gepullt. Der Sandbox-Healthcheck (`SandboxManager().healthcheck()`) liefert jetzt `{'ok': True, 'reason': 'ready', 'docker': True, 'images': {'python:3.12-slim': True, 'node:20-slim': True}}`. Server-Lifespan-Banner zeigt „✅ Sandbox ok" statt der bisherigen „❌ Sandbox — Image fehlt"-Warnung. Die Sandbox-Logik aus P171 ist damit erstmals operationsfähig — bisher fehlten nur die Images.
+
+### Block 2 — Coda-Autonomie-Regel
+
+Neue Sektion in [`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md): „Coda-Autonomie (P176)". Sechs Bibel-Fibel-Punkte: Coda übernimmt `docker pull`, `pip install`, `curl`, Testdaten-Erzeugung und Sync; verifiziert Server-Start vor Patch-Abschluss; installiert neue Dependencies selbst statt sie als TODO bei Chris zu hinterlassen; pullt Images selbst; führt Healthchecks aus und fixt Probleme; eskaliert nur an Chris bei physisch Unmöglichem (Auth, Hardware, UX-Gefühl). Plus eine Test-Marker-Faustregel: `@pytest.mark.e2e` für Server-abhängige Tests, Default-Run via `addopts = -m "not e2e"`, separates `pytest -m e2e` mit laufendem Server.
+
+### Block 3 — Test-Isolation
+
+**E2E-Marker:** `pytestmark = pytest.mark.e2e` in den fünf Playwright-Test-Dateien ([`test_loki.py`](../zerberus/tests/test_loki.py), [`test_loki_mega_patch.py`](../zerberus/tests/test_loki_mega_patch.py), [`test_fenrir.py`](../zerberus/tests/test_fenrir.py), [`test_fenrir_mega_patch.py`](../zerberus/tests/test_fenrir_mega_patch.py), [`test_vidar.py`](../zerberus/tests/test_vidar.py)). Marker in [`conftest.py::pytest_configure`](../zerberus/tests/conftest.py) registriert (zusätzlich zu den bereits bestehenden `docker`/`guard_live`).
+
+**`pytest.ini` neu:** Erste [`pytest.ini`](../pytest.ini) im Projekt-Root. `addopts = -m "not e2e and not guard_live"` → Default-Run überspringt E2E (Server-abhängig) UND Live-Guard-Tests (OpenRouter-Mistral-API, kostenpflichtig + Mistral-Indeterminismus). `pytest -m e2e` und `pytest -m guard_live` overriden das Verhalten. `filterwarnings` filtert die kosmetische `PytestUnhandledThreadExceptionWarning` aus aiosqlite-Cleanup-Threads (harmlos, Test-Loop schließt vor dem Hintergrund-Thread) plus drei Pydantic/faiss/distutils-Deprecations.
+
+**`test_dialect_ui` Slice-Fix:** Hardcoded `[:6000]`-Slice über `function renderDialectGroups` in 5 Tests verfehlte das Ziel `delete-entry` um 69 Zeichen — die Source ist seit P148 auf 6069 Zeichen gewachsen. Slice auf 8000 erhöht (alle 5 Stellen). Nur Such-Range, keine Assertion-Logik geändert.
+
+**Cluster-Befund:** Die im Patch-Prompt vermuteten 122-134 Failures waren fast komplett E2E-Tests ohne laufenden Server (105 Stück) plus 1 Mistral-Live-Flake plus 1 Slice-Bug. „Event loop is closed" sind Pytest-Thread-Warnings aus aiosqlite-Cleanup, KEINE Test-Failures — Tests selbst grün. `sys.modules`-Direktzuweisungen gibt es im aktuellen Test-Code nicht mehr (P169 hat das damalige Vorkommen schon auf `monkeypatch.setitem` umgestellt). Singleton-Resets sind über dedizierte `_reset_*_for_tests()`-Helper geregelt. Cluster-A/B-Refactor war nicht nötig — die existierenden Tests sind sauber, sie wurden nur durch fehlende Marker zugespammt.
+
+### Tests
+
+- **Default-Run:** `pytest zerberus/tests/ -v --tb=short` → **954 passed, 114 deselected, 4 xfailed, 0 failed in 29s.** (Vorher: 122-134 Failures mehrheitlich E2E.)
+- **`pytest -m e2e --collect-only`** → 105 E2E-Tests verfügbar (Loki/Fenrir/Vidar) wenn der Server läuft.
+- **`pytest -m guard_live --collect-only`** → 9 Live-Guard-Tests verfügbar mit `OPENROUTER_API_KEY`.
+
+### Dateien
+
+- **Neu:** [`pytest.ini`](../pytest.ini)
+- **Geändert:** [`CLAUDE_ZERBERUS.md`](../CLAUDE_ZERBERUS.md) (neue Coda-Autonomie-Sektion), [`zerberus/tests/conftest.py`](../zerberus/tests/conftest.py) (e2e-Marker registriert), 5 E2E-Test-Dateien (`pytestmark`), [`zerberus/tests/test_dialect_ui.py`](../zerberus/tests/test_dialect_ui.py) (Slice-Window 6000→8000), [`SUPERVISOR_ZERBERUS.md`](../SUPERVISOR_ZERBERUS.md), [`README.md`](../README.md), [`lessons.md`](../lessons.md), `docs/PROJEKTDOKUMENTATION.md` (dieser Eintrag)
+
+### Manuelle Checkliste (Chris)
+
+- [ ] Server starten → `✅ Sandbox ok` im Boot-Banner (nicht mehr „Image fehlt").
+- [ ] `pytest zerberus/tests/ -v --tb=short` → 0 Failures, 105 e2e + 9 guard_live deselected.
+- [ ] `pytest -m e2e -v` (mit laufendem Server) → zeigt Loki/Fenrir/Vidar-Tests.
+
+### Scope-Grenzen (NICHT in diesem Patch)
+
+- Kein Auto-Pull der Sandbox-Images im Server-Lifespan (zu riskant ohne Internet-Detection — die Coda-Autonomie-Regel deckt das beim nächsten Patch).
+- Kein Refactor von `asyncio.run()`-Tests auf pytest-asyncio (nicht nötig — Tests grün, Warnings kosmetisch).
+- Keine neuen Sandbox- oder Pipeline-Features.
+- Keine Test-Logik-Änderungen — nur Isolation, Marker und ein hardcoded Slice-Window.
+
+*Stand: 2026-04-28, Patch 176 — Stabilisierungs-Patch zwischen Phase E und Phase F. Sandbox erstmals operationsfähig (Images vorhanden), Default-Test-Run sauber (0 Failures), Coda-Autonomie als Doku-Anker für künftige Patches kodifiziert.*
+

@@ -41,18 +41,18 @@ class TestDialectUi:
         assert "function addDialectGroup" in hel_src
 
     def test_von_nach_placeholder(self, hel_src):
-        render_block = hel_src.split("function renderDialectGroups")[1][:6000]
+        render_block = hel_src.split("function renderDialectGroups")[1][:8000]
         assert "'Von…'" in render_block or "'Von...'" in render_block or "Von…" in render_block
         assert "'Nach…'" in render_block or "'Nach...'" in render_block or "Nach…" in render_block
 
     def test_delete_button_pro_eintrag(self, hel_src):
-        render_block = hel_src.split("function renderDialectGroups")[1][:6000]
+        render_block = hel_src.split("function renderDialectGroups")[1][:8000]
         assert "delete-entry" in render_block
         assert "✕" in render_block
 
     def test_neuer_eintrag_oben(self, hel_src):
         """Der Add-Row wird VOR den bestehenden Einträgen angehängt."""
-        render_block = hel_src.split("function renderDialectGroups")[1][:6000]
+        render_block = hel_src.split("function renderDialectGroups")[1][:8000]
         # addRow wird vor der filteredKeys.forEach hinzugefügt
         add_idx = render_block.find("appendChild(addRow)")
         foreach_idx = render_block.find("filteredKeys.forEach")
@@ -60,7 +60,7 @@ class TestDialectUi:
             "addRow muss vor forEach der bestehenden Einträge appended werden"
 
     def test_suche_filtert(self, hel_src):
-        render_block = hel_src.split("function renderDialectGroups")[1][:6000]
+        render_block = hel_src.split("function renderDialectGroups")[1][:8000]
         assert "dialectSearch" in render_block
         assert ".toLowerCase()" in render_block
         assert ".includes(q)" in render_block

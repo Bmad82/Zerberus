@@ -20,6 +20,8 @@ import os
 import pytest
 from playwright.sync_api import Page, expect
 
+pytestmark = pytest.mark.e2e  # P176: braucht laufenden Server
+
 
 MOBILE_VIEWPORT = {"width": 375, "height": 812}
 DESKTOP_VIEWPORT = {"width": 1280, "height": 720}

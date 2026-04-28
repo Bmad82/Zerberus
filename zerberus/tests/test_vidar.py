@@ -21,6 +21,8 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import Page, expect
 
+pytestmark = pytest.mark.e2e  # P176: braucht laufenden Server
+
 
 MOBILE_VP = {"width": 390, "height": 844}
 BASE_URL = "https://127.0.0.1:5000"

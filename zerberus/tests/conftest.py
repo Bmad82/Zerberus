@@ -36,7 +36,7 @@ _load_env_file()
 
 
 def pytest_configure(config):
-    """Patch 171/172 — registriert Custom-Marker fuer Live-Tests."""
+    """Patch 171/172/176 — registriert Custom-Marker fuer Live-Tests."""
     config.addinivalue_line(
         "markers",
         "docker: Tests, die einen erreichbaren Docker-Daemon brauchen (Sandbox).",
@@ -45,6 +45,11 @@ def pytest_configure(config):
         "markers",
         "guard_live: Tests, die einen erreichbaren OpenRouter-Guard "
         "brauchen (Mistral Small via OPENROUTER_API_KEY).",
+    )
+    config.addinivalue_line(
+        "markers",
+        "e2e: Playwright-/Server-abhaengige Tests (Loki/Fenrir/Vidar). "
+        "Default-Run ueberspringt sie (siehe pytest.ini addopts).",
     )
 
 
