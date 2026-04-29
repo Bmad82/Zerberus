@@ -3626,9 +3626,11 @@ CHUNK_CONFIGS: dict[str, dict] = {
     "general":    {"chunk_size": 800, "overlap": 160, "min_chunk_words": 120, "split": "chapter"},
     # Patch 178: ``system`` ist die Selbstwissen-Kategorie fuer Huginn — Dokumente
     # ueber das Zerberus-System selbst, die Huginn ueber den RAG-Filter (nur
-    # ``system``-Chunks) ausschliesslich abrufen darf. Markdown-Splits + grosszuegige
-    # Chunks, weil die Doku in Sektionen organisiert ist (Architektur, Pipeline, etc.).
-    "system":     {"chunk_size": 600, "overlap": 120, "min_chunk_words": 80,  "split": "markdown"},
+    # ``system``-Chunks) ausschliesslich abrufen darf. Markdown-Splits + kleinere
+    # min_chunk_words als technical (50 statt 80), damit kurze, prägnante Sektionen
+    # (z.B. "Was Zerberus NICHT ist", "Mythologische Namen" Tabelle) eigene Chunks
+    # bekommen statt vom Residual-Merge in den Vorgänger geschluckt zu werden.
+    "system":     {"chunk_size": 200, "overlap": 40,  "min_chunk_words": 30,  "split": "none"},
 }
 
 
