@@ -141,6 +141,29 @@ Begründung:
 - [ ] Während des IT-Fachmann-Besuchs: Live-Logs `tail -f logs/zerberus.log | grep HUGINN-178` mitlaufen lassen.
 - [ ] Falls der Filter zu restriktiv ist (Huginn weiß zu wenig): zusätzliche Doku-Sektionen in `docs/huginn_kennt_zerberus.md` ergänzen + Re-Upload mit `category=system`.
 
+## ⚠️ Beobachtete Anomalie — TELEGRAM HTTP 409 (vor IT-Termin klären!)
+
+Beim Server-Neustart wurde im neuen Server-Log permanent `[HUGINN-155] getUpdates HTTP 409: Conflict: terminated by other getUpdates request` beobachtet (~356 Hits in 17 Minuten Server-Laufzeit). Telegram-Webhook ist sauber (`getWebhookInfo.url=""`).
+
+**Befund:**
+- Ein **orphan multiprocessing fork** (PID 45072, Parent 20496 tot, ~1.1 GB RAM) läuft noch — vermutlich Embedding-/Sentiment-Worker des alten Servers vom **2026-04-28 23:22:31**.
+- Coda hat den alten Hauptprozess (PID 20496, Port 5000) gestoppt, der Multiprocessing-Worker wurde aber nicht mit beendet.
+- Möglich auch: zweite Huginn-Instanz auf einem anderen Gerät (Tailscale-Netzwerk?) mit demselben Bot-Token.
+
+**Folge:** Wenn Telegram die getUpdates-Requests kontinuierlich rejectet (HTTP 409), kommen User-Nachrichten verzögert oder gar nicht durch. Während der IT-Fachmann-Demo ist das ein NoGo.
+
+**Empfehlung für Chris (vor heute Abend):**
+```powershell
+# Orphan-Worker prüfen + ggf. stoppen
+Get-CimInstance Win32_Process -Filter "ProcessId = 45072" | Format-List Name, ParentProcessId, StartTime
+Stop-Process -Id 45072  # nur wenn definitiv orphan!
+
+# Anschließend Server-Log beobachten (sollte 409 verschwinden)
+# Falls 409 bleibt: andere Geräte mit Bot-Token-Konfig suchen
+```
+
+Coda hat den Prozess **NICHT gekillt**, weil er Chris-User-Land ist und der Inhalt unbekannt — destruktive Aktion ohne Autorisierung wäre falsch. Bitte vor 18 Uhr fixen.
+
 ## Empfohlene Folge-Patches
 
 - **P179 (optional):** Huginn-Roadmap erweitern — Memory + Sentiment für Huginn (HinL-gated, nicht für externe Chats).
