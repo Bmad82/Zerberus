@@ -38,6 +38,15 @@
 - DOKU-CHECKER: `scripts/check_docs_consistency.py` (P165) prüft Patch-Nummer-Sync|Tote Links|Log-Tag-Konsistenz|Imports|Settings-Keys|nach jedem Patch laufen lassen, additiv zu pytest
 - RETROAKTIV: Code-Stellen ohne Tests gefunden → Tests nachrüsten (kein separater Patch nötig)
 
+## Huginn-RAG-Selbstwissen (P178)
+- Huginn ruft vor jedem LLM-Call `_huginn_rag_lookup(user_msg, settings)` in [`zerberus/modules/telegram/router.py`](zerberus/modules/telegram/router.py)|Treffer landen via `_inject_rag_context` als "--- Systemwissen ---"-Block VOR der Intent-Instruction im System-Prompt|sowohl Legacy-Pfad (`_process_text_message`) als auch P174-Pipeline-Pfad (`handle_telegram_update`) angeschlossen
+- **Category-Filter ist Datenschutz-Schicht**|Default `modules.telegram.rag_allowed_categories=["system"]`|persoenliche/narrative/lore/reference/general-Chunks werden HART verworfen, bevor sie das LLM sehen|Filter greift NACH `_search_index`, also nach Reranking — wir trauen dem Index nicht
+- Neue Kategorie `system` in [`hel.py`](zerberus/app/routers/hel.py)|`_RAG_CATEGORIES` + `CHUNK_CONFIGS["system"]={chunk_size:600, overlap:120, min_chunk_words:80, split:"markdown"}`|ohne diese Erweiterung wuerde Upload mit `category=system` auf "general" zurueckfallen
+- Huginn-Doku liegt in [`docs/huginn_kennt_zerberus.md`](docs/huginn_kennt_zerberus.md)|hochladen via `curl -u Chris:... -F file=@docs/huginn_kennt_zerberus.md -F category=system http://localhost:5000/hel/admin/rag/upload`|MUSS category=system sein, sonst greift der Filter nicht
+- Graceful Degradation|RAG-Modul aus, RAG_AVAILABLE=False, Exception, leerer Query, keine erlaubte Kategorie im Top-K → leerer String → System-Prompt unveraendert → Fastlane-Fallback|Huginn antwortet wie Pre-P178
+- Konfig|`modules.telegram.rag_enabled` (Default `True`)|`rag_allowed_categories: ["system"]` (Default-Liste)|`rag_top_k: 5` (Over-Fetch-Faktor 4 fuer Filter)|in config.yaml setzbar, Defaults stehen in `_HUGINN_RAG_DEFAULT_*` Konstanten am Top der Sektion in router.py
+- Logs|`[HUGINN-178] RAG-Lookup: query=... → N system-chunks (M gefiltert)`|bei Exception: `[HUGINN-178] RAG-Lookup fehlgeschlagen: ...`|alles WARNING+ darunter INFO
+
 ## Pipeline-Cutover-Feature-Flag (P177)
 - `modules.pipeline.use_message_bus: false` (Default)|`true` → `process_update` delegiert an `handle_telegram_update` (Adapter+Pipeline)|false → `_legacy_process_update` (Pre-P177-Body unveraendert)
 - Live-Switch: Flag wird pro Call gelesen, kein Settings-Cache|uvicorn `--reload` greift sofort, kein Server-Neustart noetig|Test-Pattern in [`test_cutover.py`](zerberus/tests/test_cutover.py): zwei aufeinanderfolgende Calls mit unterschiedlichem Flag treffen unterschiedliche Pfade

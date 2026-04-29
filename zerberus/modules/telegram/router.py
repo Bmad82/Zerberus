@@ -377,6 +377,125 @@ _FALLBACK_LLM_UNAVAILABLE = (
 
 
 # ══════════════════════════════════════════════════════════════════
+#  Patch 178 — Huginn RAG-Lookup mit Category-Filter (Selbstwissen)
+# ══════════════════════════════════════════════════════════════════
+
+# Default-Kategorien, die Huginn aus dem RAG abrufen darf. Persoenliche/
+# narrative Kategorien sind bewusst ausgeschlossen — Huginn ist ein
+# oeffentlicher Telegram-Bot, kein Vertrauter fuer Privates. Override
+# via ``modules.telegram.rag_allowed_categories`` in config.yaml.
+_HUGINN_RAG_DEFAULT_CATEGORIES = ("system",)
+_HUGINN_RAG_DEFAULT_TOP_K = 5
+
+
+async def _huginn_rag_lookup(query: str, settings: Settings) -> str:
+    """Patch 178 — Sucht nach System-Doku-Chunks fuer Huginns LLM-Kontext.
+
+    Datenschutz-Filter: Es kommen ausschliesslich Chunks zurueck, deren
+    ``category`` in ``modules.telegram.rag_allowed_categories`` (Default
+    ``["system"]``) liegt. Damit kann ein Fremder ueber Huginn keine
+    persoenlichen Dokumente (Tagebuch, Romanmanuskript, etc.) abrufen.
+
+    Graceful Degradation:
+        - ``modules.telegram.rag_enabled=false`` → leerer String, Fastlane.
+        - ``modules.rag.enabled=false``         → leerer String, Fastlane.
+        - Lookup-Exception                       → leerer String + Warn-Log.
+        - Keine system-Chunks in Top-K           → leerer String, Fastlane.
+
+    Returns:
+        Formatierten Kontext-Block (Chunks getrennt durch ``---``) oder
+        ``""`` wenn nichts/nichts Erlaubtes gefunden wurde.
+    """
+    if not (query or "").strip():
+        return ""
+
+    mod_cfg = settings.modules.get("telegram", {}) or {}
+    if not mod_cfg.get("rag_enabled", True):
+        return ""
+
+    rag_cfg = settings.modules.get("rag", {}) or {}
+    if not rag_cfg.get("enabled", False):
+        return ""
+
+    raw_cats = mod_cfg.get("rag_allowed_categories", list(_HUGINN_RAG_DEFAULT_CATEGORIES))
+    allowed_cats = {str(c).strip().lower() for c in raw_cats if str(c).strip()}
+    if not allowed_cats:
+        return ""
+
+    top_k = int(mod_cfg.get("rag_top_k", _HUGINN_RAG_DEFAULT_TOP_K))
+    if top_k <= 0:
+        return ""
+
+    try:
+        from zerberus.modules.rag.router import (
+            _ensure_init, _encode, _search_index, RAG_AVAILABLE,
+        )
+        if not RAG_AVAILABLE:
+            return ""
+        await _ensure_init(settings)
+        vec = await asyncio.to_thread(_encode, query)
+        # Over-fetch: wir filtern nachtraeglich nach Kategorie. Faktor 4 deckt
+        # gemischte Indizes ab, bei denen system-Chunks in der Minderheit sind.
+        fetch_k = max(top_k * 4, top_k)
+        raw_results = await asyncio.to_thread(
+            _search_index, vec, fetch_k,
+        )
+    except Exception as e:
+        logger.warning("[HUGINN-178] RAG-Lookup fehlgeschlagen: %s", e)
+        return ""
+
+    total = len(raw_results)
+    filtered: list[dict] = []
+    blocked = 0
+    for r in raw_results:
+        cat = str(r.get("category", "") or "").strip().lower()
+        if cat in allowed_cats:
+            filtered.append(r)
+            if len(filtered) >= top_k:
+                break
+        else:
+            blocked += 1
+
+    if not filtered:
+        logger.info(
+            "[HUGINN-178] RAG-Lookup: query=%r → 0 erlaubte chunks (%d gesamt, %d gefiltert)",
+            (query or "")[:80], total, blocked,
+        )
+        return ""
+
+    chunks = [str(r.get("text", "") or "") for r in filtered if r.get("text")]
+    chunks = [c for c in chunks if c.strip()]
+    if not chunks:
+        return ""
+
+    logger.info(
+        "[HUGINN-178] RAG-Lookup: query=%r → %d %s-chunks (%d gefiltert)",
+        (query or "")[:80], len(chunks), sorted(allowed_cats), blocked,
+    )
+    return "\n\n---\n\n".join(chunks)
+
+
+def _inject_rag_context(system_prompt: str, rag_context: str) -> str:
+    """Patch 178 — haengt den System-Wissens-Block an den Persona-Prompt.
+
+    Ohne Kontext bleibt der Prompt unveraendert (Fastlane-Fallback). Mit
+    Kontext bekommt das LLM einen klar abgegrenzten Block + die Anweisung,
+    daraus zu schoepfen statt zu halluzinieren.
+    """
+    if not rag_context:
+        return system_prompt or ""
+    block = (
+        "\n\n--- Systemwissen (aus Zerberus-Dokumentation) ---\n"
+        f"{rag_context}\n"
+        "--- Ende Systemwissen ---\n"
+        "Nutze das Systemwissen oben fuer fundierte Antworten ueber Zerberus, "
+        "Huginn, Hel, Nala und das Gesamtsystem. Wenn die Frage damit nicht "
+        "beantwortbar ist, sag das ehrlich, statt zu raten.\n"
+    )
+    return (system_prompt or "") + block
+
+
+# ══════════════════════════════════════════════════════════════════
 #  Patch 168 — Datei-Output-Pfad (Block 1, 3, 4)
 # ══════════════════════════════════════════════════════════════════
 
@@ -662,10 +781,19 @@ async def _process_text_message(
     """
     if system_prompt is None:
         system_prompt = _resolve_huginn_prompt(settings)
+    user_msg = info.get("text", "") or ""
+
+    # Patch 178: RAG-Lookup mit Category-Filter (system-only by default) — vor
+    # build_huginn_system_prompt, damit der Systemwissen-Block VOR der
+    # Intent-Instruction eingebaut wird (LLM verarbeitet den Kontext zuerst).
+    rag_context = ""
+    if user_msg.strip():
+        rag_context = await _huginn_rag_lookup(user_msg, settings)
+    enriched_persona = _inject_rag_context(system_prompt, rag_context)
+
     # Patch 164: Intent-Instruction an den Persona-Prompt anhaengen, damit das
     # LLM jeden Output mit einem JSON-Header versieht (CHAT/CODE/FILE/...).
-    effective_system_prompt = build_huginn_system_prompt(system_prompt)
-    user_msg = info.get("text", "") or ""
+    effective_system_prompt = build_huginn_system_prompt(enriched_persona)
 
     # Patch 162 (K1, K3, N8): Sanitizer-Pass vor jedem LLM-Call.
     # Findings landen im Log, der User sieht sie nicht. ``blocked=True`` ist
@@ -1282,7 +1410,15 @@ async def handle_telegram_update(
         return await _legacy_process_update(raw_update, settings)
 
     persona = _resolve_huginn_prompt(settings)
-    effective_system_prompt = build_huginn_system_prompt(persona)
+    # Patch 178: Pipeline-Pfad bekommt denselben RAG-Lookup-Schutz wie der
+    # Legacy-Pfad. enrichted_persona schickt einen system-Wissens-Block an
+    # das LLM, falls relevante system-Chunks im RAG liegen — sonst Fastlane.
+    rag_query = (incoming.text or "").strip()
+    rag_context = ""
+    if rag_query:
+        rag_context = await _huginn_rag_lookup(rag_query, settings)
+    enriched_persona = _inject_rag_context(persona, rag_context)
+    effective_system_prompt = build_huginn_system_prompt(enriched_persona)
     guard_context = _build_huginn_guard_context(persona)
 
     async def _llm(user_message: str, system_prompt: str) -> Dict[str, Any]:

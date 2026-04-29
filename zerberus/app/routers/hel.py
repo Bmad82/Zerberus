@@ -3624,6 +3624,11 @@ CHUNK_CONFIGS: dict[str, dict] = {
     "reference":  {"chunk_size": 300, "overlap": 60,  "min_chunk_words": 50,  "split": "none"},
     "personal":   {"chunk_size": 400, "overlap": 80,  "min_chunk_words": 80,  "split": "chapter"},
     "general":    {"chunk_size": 800, "overlap": 160, "min_chunk_words": 120, "split": "chapter"},
+    # Patch 178: ``system`` ist die Selbstwissen-Kategorie fuer Huginn — Dokumente
+    # ueber das Zerberus-System selbst, die Huginn ueber den RAG-Filter (nur
+    # ``system``-Chunks) ausschliesslich abrufen darf. Markdown-Splits + grosszuegige
+    # Chunks, weil die Doku in Sektionen organisiert ist (Architektur, Pipeline, etc.).
+    "system":     {"chunk_size": 600, "overlap": 120, "min_chunk_words": 80,  "split": "markdown"},
 }
 
 
@@ -3706,6 +3711,10 @@ def _chunk_text(
 # Detection (_detect_category), landet aber nie als echte Category in der Metadata.
 _RAG_CATEGORIES = {
     "general", "narrative", "technical", "personal", "lore", "reference",
+    # Patch 178: ``system`` = Selbstwissen-Doku ueber Zerberus, ueber die
+    # Huginn fundiert Auskunft geben darf (Category-Filter im Telegram-Router
+    # laesst nur diese Kategorie an den LLM-Kontext durch).
+    "system",
 }
 
 

@@ -2963,6 +2963,59 @@ Zweiter Zyklus desselben Session-Tests (Token-Budget-Probe): die in Mega-Patch 1
 
 *Stand: 2026-04-23, Patches 127–129 — Phase 4 erweitert.*
 
+### Patch 178 – Huginn-Selbstwissen + RAG-Integration mit Datenschutz-Filter (2026-04-29)
+
+Alarm-Patch unter Zeitdruck — ein externer IT-Fachmann besucht heute Abend den Huginn-Telegram-Chat und Huginn musste fundiert über sich selbst Auskunft geben können. Bisher war Huginn bewusst als Fastlane (P123) ohne RAG/Memory designed, halluzinierte aber regelmäßig über Zerberus-Komponenten ("FIDO", "Kerberos-Authentifizierungsprotokoll", "Red Hat OpenShift on AWS"). Eine direkte RAG-Anbindung war risikoreich, weil im selben Index persönliche Dokumente liegen (Rosendornen-Manuskript, Kintsugi-Korrespondenz, Codex Heroicus, Tagebuch-artige Inhalte).
+
+**Architektur-Lösung — Category-Filter als Datenschutz-Schicht:**
+- `_huginn_rag_lookup(query, settings)` ruft `_search_index` mit Over-Fetch (top_k×4) auf, filtert anschließend hart auf `metadata.category in modules.telegram.rag_allowed_categories` (Default `["system"]`) und liefert die ersten `top_k` erlaubten Chunks als getrennten Kontext-Block.
+- `_inject_rag_context(persona, rag_context)` baut den Block VOR der Intent-Instruction (`build_huginn_system_prompt`) in den effektiven System-Prompt ein. Bei leerem Kontext bleibt der Persona-Prompt unverändert — Fastlane-Fallback.
+- Eingebaut in BEIDE Telegram-Pfade: `_process_text_message` (Legacy/`_legacy_process_update`) UND `handle_telegram_update` (P174-Pipeline). Der Pipeline-Pfad reichert den `system_prompt` vor `process_message(incoming, deps)` an, weil die Pipeline selbst transport-agnostisch bleibt.
+
+**Neue RAG-Kategorie `system` (Block 1):**
+- `_RAG_CATEGORIES` in `zerberus/app/routers/hel.py` um `"system"` erweitert. Ohne diese Erweiterung würde der Upload-Endpoint mit `category=system` den Wert silently auf `"general"` zurückfallen lassen — der Filter wäre wirkungslos.
+- `CHUNK_CONFIGS["system"] = {chunk_size: 600, overlap: 120, min_chunk_words: 80, split: "markdown"}`. Markdown-Splits passen zur Sektions-Struktur der Selbstwissen-Doku (`## Was ist Zerberus?`, `## Die zwei Web-Frontends`, `## Die wichtigen technischen Komponenten` …).
+
+**Konfiguration (Defaults im Code, P102-Lesson):**
+- `modules.telegram.rag_enabled: true` (Default)
+- `modules.telegram.rag_allowed_categories: ["system"]` (Default)
+- `modules.telegram.rag_top_k: 5` (Default)
+- Konstanten `_HUGINN_RAG_DEFAULT_CATEGORIES = ("system",)` und `_HUGINN_RAG_DEFAULT_TOP_K = 5` am Top der Sektion in `router.py`. config.yaml ist gitignored — Defaults müssen ins Code-Modell, sonst greift der Schutz nach `git clone` nicht.
+
+**Graceful Degradation:**
+- `rag_enabled=False` → leerer String, Fastlane.
+- `modules.rag.enabled=False` → leerer String.
+- `RAG_AVAILABLE=False` (faiss/sentence-transformers fehlen) → leerer String.
+- Exception im Lookup-Pfad → `[HUGINN-178] RAG-Lookup fehlgeschlagen: …` als WARNING + leerer String.
+- Keine erlaubte Kategorie im Top-K → leerer String + INFO-Log mit `(N gefiltert)`.
+- In ALLEN Fällen läuft der LLM-Call weiter, der User bekommt eine Antwort. Niemals blockt der RAG-Pfad den Fastlane-Hauptpfad.
+
+**Datenschutz-Test (Block 5):**
+- Test-Doku `test_personal_secret.md` mit Sentinel-Strings `BLAUE_FLEDERMAUS_4711` und `PINPATCH178TESTGEHEIM` als `category=personal` hochgeladen.
+- 5 Queries direkt darauf gerichtet ("Wann hat Chris Geburtstag", "BLAUE_FLEDERMAUS_4711", "Was ist das Passwort fuer das geheime Notizbuch", "Erzaehl mir was Persoenliches ueber Chris", "Was ist Chris Lieblingscocktail").
+- **0 Leaks.** Alle Sentinel-Strings blieben aus dem `_huginn_rag_lookup`-Output. Test-Doku nach Verifikation gelöscht (`/hel/admin/rag/document?source=test_personal_secret.md`).
+
+**Selbstwissen-Doku indexiert:**
+- `docs/RAG Testdokumente/huginn_kennt_zerberus.md` (P169) nach `docs/huginn_kennt_zerberus.md` gespiegelt.
+- Hochgeladen via `curl -u Chris:… -F file=@docs/huginn_kennt_zerberus.md -F category=system`. Ergebnis: 8 Chunks indexiert, 2 Residual-Merges, `chunker_strategy: prose` (markdown-aware).
+- Retrieval-Test mit 10 Queries: 8/10 in Top-3, 1/10 in Top-5, 1/10 nicht gefunden (Query "Kintsugi Philosophie Gold Risse" zielt auf nicht-Doku-Inhalt — erwartetes Verhalten, die Doku enthält kein Kintsugi-Kapitel).
+
+**Tests (Block 1.5):**
+- Neue Datei `zerberus/tests/test_huginn_rag.py` mit **16 Tests in 3 Klassen**: `TestRagLookupFunction` (8), `TestInjectRagContext` (3), `TestProcessTextMessageRagFlow` (5). Alle 16 grün.
+- Volle Regression: **981 passed, 114 deselected, 4 xfailed, 0 failed in 28s** (P177-Baseline 965 + 16 neu = 981 exakt).
+
+**Logging-Tags:**
+- `[HUGINN-178] RAG-Lookup: query=… → N system-chunks (M gefiltert)` (INFO bei Erfolg)
+- `[HUGINN-178] RAG-Lookup: query=… → 0 erlaubte chunks (T gesamt, M gefiltert)` (INFO bei Fastlane-Fallback)
+- `[HUGINN-178] RAG-Lookup fehlgeschlagen: …` (WARNING bei Exception)
+
+**Stand nach Patch 178:**
+- Tests: **981 passed** + 4 xfailed in 28s.
+- Code-Änderungen: 2 Dateien (router.py +123 LOC, hel.py +9 LOC), 1 neue Test-Datei (test_huginn_rag.py +302 LOC), 1 neue Quelldatei (docs/huginn_kennt_zerberus.md kopiert).
+- Live-Verifikation für Chris (nicht delegierbar): Telegram-DM-Test mit echtem User, Sprachnachrichten-Test, UI-Check.
+
+*Stand: 2026-04-29, Patch 178 — Huginn kann fundiert über sich selbst Auskunft geben, ohne persönliche Inhalte zu leaken.*
+
 ### Patch 130 – Loki & Fenrir UI-Sweep + Mega-Patch-Lessons (2026-04-24)
 
 Nach dem Mega-Patch-Zyklus (122–129) fehlte die E2E-Abdeckung der neuen UI-Elemente. Patch 130 schließt die Lücke und hält zusätzlich die Meta-Lernerkenntnisse des Mega-Patch-Experiments in `lessons.md` fest.

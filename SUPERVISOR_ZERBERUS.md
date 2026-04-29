@@ -1,8 +1,30 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 177 (2026-04-28) – Pipeline-Cutover (Feature-Flag `modules.pipeline.use_message_bus`, Legacy-Pfad als Default-Fallback)*
+*Letzte Aktualisierung: Patch 178 (2026-04-29) – Huginn-Selbstwissen + RAG-Integration mit Datenschutz-Filter*
 
 ## Aktueller Patch
+
+**Patch 178** — Huginn-Selbstwissen + RAG-Integration (2026-04-29)
+
+- **Alarm-Patch unter Zeitdruck, sicherheitskritisch.** Ein IT-Fachmann (30 Jahre Erfahrung) besucht heute Abend den Telegram-Chat. Huginn musste fundiert über sich selbst Auskunft geben können — bisher hatte er KEINEN RAG-Zugriff (P123: bewusst als Fastlane designed). Das Problem: Persönliche Dokumente liegen schon im RAG-Index (Rosendornen, Kintsugi, Codex Heroicus, Tagebuch-artige Inhalte). Lösung: RAG-Lookup einbauen, aber mit harter Datenschutz-Schicht — Huginn darf nur Chunks der Kategorie `system` sehen.
+- **Block 1 — neue Kategorie `system` in [`hel.py`](zerberus/app/routers/hel.py):** `_RAG_CATEGORIES` um `"system"` erweitert (sonst würde Upload mit `category=system` auf "general" zurückfallen) und `CHUNK_CONFIGS["system"]={chunk_size:600, overlap:120, min_chunk_words:80, split:"markdown"}` ergänzt. Markdown-Splits passen zur Sektions-Struktur der Selbstwissen-Doku.
+- **Block 2 — `_huginn_rag_lookup` + `_inject_rag_context` in [`telegram/router.py`](zerberus/modules/telegram/router.py):** Neue Helper-Funktion sucht im RAG, filtert NACH `_search_index` auf erlaubte Kategorien (Default `["system"]`), und liefert formatierten Kontext-Block. `_inject_rag_context` hängt den Block VOR der Intent-Instruction an den Persona-Prompt — falls leer (Fastlane-Fallback), bleibt der Prompt unverändert. Eingebaut in BEIDE Pfade: `_process_text_message` (Legacy) UND `handle_telegram_update` (P174-Pipeline). Konstanten `_HUGINN_RAG_DEFAULT_CATEGORIES = ("system",)` und `_HUGINN_RAG_DEFAULT_TOP_K = 5` als Defaults im Code (config.yaml ist gitignored, P102-Lesson).
+- **Block 3 — Konfig-Schlüssel:** `modules.telegram.rag_enabled` (Default `True`), `rag_allowed_categories` (Default `["system"]`), `rag_top_k` (Default `5`). Über-Fetch-Faktor 4 in der Search-Phase, damit der Filter auch bei gemischten Indizes (273 personal/narrative-Chunks + 8 system-Chunks) genug `system`-Treffer findet.
+- **Block 4 — Datenschutz-Test:** Über `_huginn_rag_lookup` Test-Doku `test_personal_secret.md` mit Schlüsselbegriff `BLAUE_FLEDERMAUS_4711` und `PINPATCH178TESTGEHEIM` mit `category=personal` hochgeladen, dann 5 Queries direkt darauf gerichtet ("Wann hat Chris Geburtstag", "BLAUE_FLEDERMAUS_4711", etc.). **0 Leaks.** Test-Doku wieder gelöscht. Filter greift nach Reranking — wir trauen weder dem Index noch dem Query-Expander.
+- **Block 5 — `docs/huginn_kennt_zerberus.md` indexiert:** Bereits in P169 als Quelldatei angelegt unter `docs/RAG Testdokumente/`, jetzt auch nach `docs/` gespiegelt und mit `category=system` hochgeladen — **8 Chunks**, davon 2 Residual-Merges. Retrieval-Test mit 10 Queries: 8/10 in Top-3, 1/10 in Top-5, 1/10 nicht gefunden (Query "Kintsugi" zielt auf nicht-Doku-Inhalt — erwartetes Verhalten).
+- **Tests:** Neue Datei [`zerberus/tests/test_huginn_rag.py`](zerberus/tests/test_huginn_rag.py) mit **16 Tests in 3 Klassen** — `TestRagLookupFunction` (8: rag_enabled=False, rag_module_disabled, empty_query, only_system_passes, no_system_returns_empty, custom_categories, exception, RAG_AVAILABLE=False), `TestInjectRagContext` (3: empty/None/Block-Append), `TestProcessTextMessageRagFlow` (5: system-Chunks im LLM-Prompt, leerer Kontext = Persona-Pur, Exception bricht LLM nicht ab, personal-Chunks werden HART gefiltert, rag_enabled=False schaltet ab). **Alle 16 grün.** Regression: **981 passed, 114 deselected, 4 xfailed, 0 failed** (P177-Baseline 965 + 16 neu = 981 exakt).
+- **Logging-Tags:** `[HUGINN-178]` für RAG-Lookup-Logs (`query=... → N system-chunks (M gefiltert)` bei INFO, `RAG-Lookup fehlgeschlagen: ...` bei WARNING).
+- **Scope:** IN Scope: 2 neue Helper-Funktionen, neue Kategorie+Chunk-Profile, RAG-Lookup in beiden Telegram-Pfaden, neue Test-Datei, Doku-Spiegelung. NICHT in Scope: Memory/Sentiment-Zugriff für Huginn (bleibt Fastlane), neue Intents, UI-Änderungen, FAISS-Migration, Prosodie. Huginn bekommt KEINEN Zugriff auf personal/narrative/lore/reference-Kategorien.
+- **Live-Verifikation (USER):**
+  1. `pytest zerberus/tests/test_huginn_rag.py -v` → 16 passed.
+  2. Server starten → Boot-Banner clean.
+  3. Per Telegram an Huginn: "Was ist Zerberus?" → Antwort enthält spezifische Doku-Begriffe (FastAPI, FAISS, Patch-Stand).
+  4. "Erzähl was Persönliches über Chris" → Huginn antwortet generisch oder verweigert; KEINE Inhalte aus Rosendornen/Kintsugi/Tagebuch.
+  5. `tail -f logs/zerberus.log | grep HUGINN-178` zeigt `RAG-Lookup: query=... → N system-chunks (M gefiltert)`.
+  6. UI-Check + Voice-Test (nicht delegierbar, Chris).
+- **Nächste Schritte:** Phase F (Pipeline-Stages für HitL-Callbacks/Vision/Group), broader HitL-Button-Flow, RosaPolicy. Erweiterung der `system`-Doku wenn neue Komponenten dazukommen (Sandbox, Phase-D-Sicherheits-Layer). Eventuell `system`-Kategorie auch für Nala öffnen, falls dort Selbstwissen gewünscht.
+
+---
 
 **Patch 177** — Pipeline-Cutover (Feature-Flag) (2026-04-28)
 
