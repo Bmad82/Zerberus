@@ -1,13 +1,13 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 178 (2026-04-29) – Huginn-Selbstwissen + RAG-Integration mit Datenschutz-Filter*
+*Letzte Aktualisierung: Patch 178b + Live-Test-Sweep (2026-04-30) – Huginn-Selbstwissen v2 gemerged + Chunk-Profil getuned + 8 neue Live-Lessons*
 
 ## Aktueller Patch
 
 **Patch 178** — Huginn-Selbstwissen + RAG-Integration (2026-04-29)
 
 - **Alarm-Patch unter Zeitdruck, sicherheitskritisch.** Ein IT-Fachmann (30 Jahre Erfahrung) besucht heute Abend den Telegram-Chat. Huginn musste fundiert über sich selbst Auskunft geben können — bisher hatte er KEINEN RAG-Zugriff (P123: bewusst als Fastlane designed). Das Problem: Persönliche Dokumente liegen schon im RAG-Index (Rosendornen, Kintsugi, Codex Heroicus, Tagebuch-artige Inhalte). Lösung: RAG-Lookup einbauen, aber mit harter Datenschutz-Schicht — Huginn darf nur Chunks der Kategorie `system` sehen.
-- **Block 1 — neue Kategorie `system` in [`hel.py`](zerberus/app/routers/hel.py):** `_RAG_CATEGORIES` um `"system"` erweitert (sonst würde Upload mit `category=system` auf "general" zurückfallen) und `CHUNK_CONFIGS["system"]={chunk_size:600, overlap:120, min_chunk_words:80, split:"markdown"}` ergänzt. Markdown-Splits passen zur Sektions-Struktur der Selbstwissen-Doku.
+- **Block 1 — neue Kategorie `system` in [`hel.py`](zerberus/app/routers/hel.py):** `_RAG_CATEGORIES` um `"system"` erweitert (sonst würde Upload mit `category=system` auf "general" zurückfallen) und `CHUNK_CONFIGS["system"]={chunk_size:200, overlap:40, min_chunk_words:30, split:"none"}` ergänzt. **P178b-Tuning:** ursprüngliche Werte (600/120/80/markdown) waren zu grob — kleine FAQ-/Tabellen-Blöcke wie „Was Zerberus NICHT ist" und die Mythologie-Tabelle wurden vom Residual-Merge in den Vorgänger-Chunk geschluckt. Mit 200/40/30/none bekommen sie eigene Chunks und sind im Top-K abrufbar.
 - **Block 2 — `_huginn_rag_lookup` + `_inject_rag_context` in [`telegram/router.py`](zerberus/modules/telegram/router.py):** Neue Helper-Funktion sucht im RAG, filtert NACH `_search_index` auf erlaubte Kategorien (Default `["system"]`), und liefert formatierten Kontext-Block. `_inject_rag_context` hängt den Block VOR der Intent-Instruction an den Persona-Prompt — falls leer (Fastlane-Fallback), bleibt der Prompt unverändert. Eingebaut in BEIDE Pfade: `_process_text_message` (Legacy) UND `handle_telegram_update` (P174-Pipeline). Konstanten `_HUGINN_RAG_DEFAULT_CATEGORIES = ("system",)` und `_HUGINN_RAG_DEFAULT_TOP_K = 5` als Defaults im Code (config.yaml ist gitignored, P102-Lesson).
 - **Block 3 — Konfig-Schlüssel:** `modules.telegram.rag_enabled` (Default `True`), `rag_allowed_categories` (Default `["system"]`), `rag_top_k` (Default `5`). Über-Fetch-Faktor 4 in der Search-Phase, damit der Filter auch bei gemischten Indizes (273 personal/narrative-Chunks + 8 system-Chunks) genug `system`-Treffer findet.
 - **Block 4 — Datenschutz-Test:** Über `_huginn_rag_lookup` Test-Doku `test_personal_secret.md` mit Schlüsselbegriff `BLAUE_FLEDERMAUS_4711` und `PINPATCH178TESTGEHEIM` mit `category=personal` hochgeladen, dann 5 Queries direkt darauf gerichtet ("Wann hat Chris Geburtstag", "BLAUE_FLEDERMAUS_4711", etc.). **0 Leaks.** Test-Doku wieder gelöscht. Filter greift nach Reranking — wir trauen weder dem Index noch dem Query-Expander.
@@ -23,6 +23,26 @@
   5. `tail -f logs/zerberus.log | grep HUGINN-178` zeigt `RAG-Lookup: query=... → N system-chunks (M gefiltert)`.
   6. UI-Check + Voice-Test (nicht delegierbar, Chris).
 - **Nächste Schritte:** Phase F (Pipeline-Stages für HitL-Callbacks/Vision/Group), broader HitL-Button-Flow, RosaPolicy. Erweiterung der `system`-Doku wenn neue Komponenten dazukommen (Sandbox, Phase-D-Sicherheits-Layer). Eventuell `system`-Kategorie auch für Nala öffnen, falls dort Selbstwissen gewünscht.
+
+### Live-Test-Erkenntnisse (Sweep nach P178b, 2026-04-30)
+Nach dem Live-Test mit dem IT-Fachmann sind 8 Findings (L-178a–h) und 2 Cross-Cutting-Themen (L9/L10) entstanden, dokumentiert im Bibel-Fibel-Format am Ende von [`lessons.md`](lessons.md):
+
+- **L-178a Guard kennt RAG nicht** — Mistral-Small-3-Guard bewertet LLM-Antworten ohne Wissen über die RAG-Treffer. Korrekte Antworten zu „Patch 178" / „981 Tests" werden als Halluzination geflaggt. Fix: RAG-Chunks als zusätzlicher Referenz-Block in `caller_context` an [`check_response()`](zerberus/hallucination_guard.py).
+- **L-178b Guard kennt Persona nicht** — wenn die Hel-UI die Persona ändert, sieht der Guard nichts davon. Persona-konforme Antworten könnten als verdächtig geflaggt werden. Fix: aktive Persona aus dem Settings-Cache (`@invalidates_settings` existiert seit P156) in `caller_context` einhängen.
+- **L-178c Intent-Router ADMIN zu sensitiv** — Fragen *über* das System („Wie ist das aufgebaut?") werden als ADMIN-Intent klassifiziert statt als CHAT/SEARCH. ADMIN erzwingt zwingend HitL (P164-K6) → Reibung im Live-Betrieb. Fix: ADMIN-Schwelle anheben + Unterscheidung „Frage über System ≠ Befehl an System" im Intent-Prompt.
+- **L-178d `system`-Kategorie fehlt im Hel-Frontend-Dropdown** — Backend hatte `system` seit P178, das Hel-Upload-Dropdown listete sie nicht. Upload nur per `curl` möglich. **Im aktuellen Doku-Sweep behoben** (siehe Block-Sweep unten).
+- **L-178e Telegram-Bot öffentlich erreichbar** — jeder mit dem Bot-Usernamen kann DM starten und OpenRouter-Credits verbrennen. Fix: Allowlist `modules.telegram.allowed_user_ids` in config.yaml; unbekannte User werden still ignoriert (kein Error, keine Antwort).
+- **L-178f Coda-Server blockiert Port 5000** — Coda startet Uvicorn als Background-Task → `start.bat` kann nicht starten. **In start.bat bereits behoben** (Port-Kill-Schleife `netstat | findstr :5000 → taskkill /F /PID` am Anfang).
+- **L-178g Sprachnachrichten in Telegram-DM funktionieren nicht** — Voice-Message an Huginn im DM bringt keine Antwort und keinen Log-Eintrag. Voice-Handler greift mutmasslich nur in Gruppen oder fehlt komplett. TODO: Pfad in [`telegram/router.py`](zerberus/modules/telegram/router.py) (`_process_voice_message` o. Ä.) prüfen.
+- **L-178h Modell-Selbstkenntnis** — DeepSeek V3.2 sagt manchmal er sei GPT (Trainings-Daten-Kontamination). Persona + RAG überschreiben das schwache Trainings-Echo verlässlich. **Konsequenz für Architektur:** dynamische Runtime-Infos (aktives Modell, GPU-Status, Patch-Version) sollten LIVE aus Config gelesen werden — NICHT als statisches RAG-Dokument indizieren, weil der dann altert.
+- **L9 (Cross-Cutting):** „Was bin ich"-Antworten in Huginn/Nala dürfen nicht aus dem RAG kommen, sondern aus einer Runtime-Quelle. Folgepatch-Idee: Hel-Endpoint `/admin/runtime-info` liefert (model, gpu, patch_version, persona) als JSON, Persona-Prompt zieht das via Settings-Hook.
+- **L10 (Easter Egg, niedrige Priorität):** `// make love ... not war — W.F. Weiher, Stanford AI Lab, 1967` als Kommentar tief im Rosa-Code. Erstes dokumentiertes Software-Easter-Egg.
+
+### Doku-Sweep + Hel-Dropdown-Fix (2026-04-30, kein eigener Patch)
+- 8 neue Lessons (L-178a–h) im Bibel-Fibel-Format an [`lessons.md`](lessons.md) angehängt
+- `system` als Option ins Hel-Frontend-Upload-Dropdown aufgenommen (Backend hatte sie seit P178, Frontend zog noch nicht nach)
+- CLAUDE_ZERBERUS.md auf das gemergedte Chunk-Profil 200/40/30/none aktualisiert + Hinweise auf bekannte Guard-Lücken (L1/L2)
+- start.bat-Port-Fix verifiziert (war bereits drin)
 
 ---
 
@@ -825,7 +845,14 @@
 11. [Phase 4] Background Memory Extraction — wurde aus Phase 2 umgeplant. Aktuell NICHT implementiert.
 12. [Phase 4] LLM-basierte Category-Detection (ergänzt zur Keyword-Heuristik von Patch 111), Sancho-Panza Veto-Layer, Halluzinations-Detektor „Ach laber doch nicht", Multimodalität ZIP/Bild-Upload, Color Picker.
 13. [Patch 108] W-001 Sentence-Repetition-Bug (Whisper), Relative Pfade — aus Scope raus, in Backlog verschoben.
-14. [Patch 111] **torch-cu121-Installation**: Aktuelles venv hat nur `torch==2.10.0+cpu`. Für echte GPU-Nutzung `pip install torch --index-url https://download.pytorch.org/whl/cu121`. Code ist defensiv — ohne CUDA-torch bleibt alles auf CPU (kein Crash).
+14. [Patch 111/111b] **torch-CUDA-Installation prüfen**: Code ist defensiv (CPU-Fallback ohne Crash), aber RTX 3060 ungenutzt wenn pip-Default-CPU-Variante installiert ist. Aktuelle Empfehlung: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 --force-reinstall` (siehe lessons.md P111b). Nach jedem torch-Reinstall: `pip install --upgrade "typing-extensions>=4.13.2"` (cryptography>=46-Konflikt).
+15. **[Live-Sweep nach P178b — Sofort-Patch]** Guard + RAG-Kontext (L-178a) UND Persona-Awareness (L-178b): RAG-Chunks und aktive Persona als `caller_context` an `check_response()` reichen. Eigener Patch, sicherheitskritisch. **Vor** weiteren Phase-F-Schritten.
+16. **[Live-Sweep — Sofort-Patch]** Telegram-Allowlist (L-178e): `modules.telegram.allowed_user_ids` in config.yaml + Bot ignoriert unbekannte User still. Schützt OpenRouter-Credits.
+17. **[Live-Sweep — Sofort-Patch]** ADMIN-Intent-Schwelle (L-178c): Intent-Prompt anpassen, sodass „Wie ist das aufgebaut?" als CHAT/SEARCH läuft, nicht als ADMIN.
+18. **[Live-Sweep — Untersuchung]** Sprachnachrichten in Telegram-DM (L-178g): Voice-Handler-Pfad prüfen, ggf. Handler ergänzen.
+19. **[Phase 5 Vorbereitung]** FAISS-Migration steht weiter aus (P133-Backup vorhanden, Switch wartet auf Chris). Prosodie (Gemma E2B). Danach Phase 5a ab P180.
+20. **[Langfrist]** Runtime-Config-Endpoint statt statisches RAG für Modell-/GPU-/Patch-Info (L-178h, L9). Verhindert dass „Welches Modell bist du?" durch indizierte Doku altert.
+21. **[Niedrige Priorität]** HSL-Farbfehler bei Browser-Kaltstart (cssToHex → schwarze UI, seit P153 bekannt). Easter Egg L10.
 
 ### Erledigt in Patches 105-111
 - Llama-Hardcode-Verdacht (Patch 105 — kein Hardcode, stattdessen Split-Brain in Hel gefixt)

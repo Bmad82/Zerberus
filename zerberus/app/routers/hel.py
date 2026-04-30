@@ -803,6 +803,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                     <option value="personal">Pers&#246;nlich / Tagebuch</option>
                     <option value="lore">Lore / Worldbuilding</option>
                     <option value="reference">Referenz / Nachschlagewerk</option>
+                    <option value="system">System / Selbstwissen</option>
                 </select>
                 <button onclick="uploadRagFile()" style="width:100%; padding:16px; font-size:1.1em; border-radius:12px; touch-action:manipulation;">&#128196; Hochladen &amp; Indizieren</button>
                 <div id="ragUploadStatus" style="margin-top:14px; font-size:1.05em; word-break:break-word;"></div>
@@ -2249,6 +2250,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             personal:  '#b8860b',
             lore:      '#2e7d32',
             reference: '#5d4037',
+            system:    '#37474f',
         };
 
         // Patch 116: Gruppierte Dokumentenliste (eine Card pro Source) + Delete pro Doc
