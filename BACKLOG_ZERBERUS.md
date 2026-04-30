@@ -79,6 +79,7 @@
 | ID | Item | Herkunft | Status |
 |----|------|----------|--------|
 | B-070 | Easter Egg: `// make love ... not war — W.F. Weiher, Stanford AI Lab, 1967` als Kommentar tief im Rosa-Code (erstes dokumentiertes Software-Easter-Egg) | L10 | IDEE |
+| B-071 | ChatML-Wrapper / SillyTavern-Style Personas — Persona nicht als flacher System-Prompt sondern als strukturiertes Character-Card-Format (ChatML `<|im_start|>system`). Felder: Persönlichkeit, Beispiel-Dialoge, Szenario, First-Message. Importierbare `.json`-Character-Cards über Hel hochladbar. Löst Persona-Drift über lange Konversationen (DeepSeek fällt nach ~10-15 Turns in RLHF-Default zurück). Priorität: nach Prosodie + Tool-Use. | Chat 2026-04-30 | IDEE |
 
 ---
 
