@@ -1,3 +1,5 @@
+> 📌 Referenz-Dokument. Tracking des Prosodie-Features erfolgt in [`BACKLOG_ZERBERUS.md`](BACKLOG_ZERBERUS.md) (B-011).
+
 # Backlog-Eintrag: Prosodie-Bewusste Eingabeverarbeitung (Speech Emotion Recognition Layer)
 
 **Status:** Konzept, Backlog (nach Rosa Corporate Security Layer)

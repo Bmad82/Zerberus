@@ -1,3 +1,5 @@
+> ⚠️ OBSOLET — Offene Items konsolidiert in [`BACKLOG_ZERBERUS.md`](BACKLOG_ZERBERUS.md) (Patch 179). Diese Datei wird nicht mehr gepflegt.
+
 # Backlog – Stand nach Patch 83
 *Hier landet alles was nicht sofort dran ist. Wird bei Patch-Planung konsultiert.*
 

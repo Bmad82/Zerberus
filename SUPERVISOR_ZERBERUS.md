@@ -832,42 +832,9 @@ Nach dem Live-Test mit dem IT-Fachmann sind 8 Findings (L-178a–h) und 2 Cross-
 **Patch 66** – RAG Chunk-Optimierung (2026-04-10)
 
 ## Offene Items (Backlog)
-1. Manuell getippter Text → DB-Speicherung verifizieren
-2. [Patch 101] R-07 Live-Chat-Verifikation für Q11: Aggregation-Hint im echten Nala-Chat testen (z.B. „Nenn alle Momente wo Annes Verhalten als unkontrollierbarer Impuls beschrieben wird"). Wenn LLM jetzt mehrere Treffer aufzählt statt nur das Glossar zusammenzufassen → R-07 abgeschlossen. Wenn nicht → Reranker-Tuning (Glossar-Chunk bekommt zu hohen Score).
-3. [Patch 101] Globale Lessons pflegen — nach jedem Patch prüfen ob eine Erkenntnis universell ist (→ Bmad82/Claude/lessons/), oder projektspezifisch (→ Zerberus/lessons.md).
-4. RAG-Auto-Indexing: falls Konversations-Gedächtnis später wieder gewünscht → als optionalen Config-Schalter reaktivieren
-5. [IDEE] Metriken: LLM-Auswertung („Wie haben sich meine Formulierungen verändert?") — Grundlage vorhanden (Patch 91+95)
-6. [BACKLOG] Hel RAG-Tab: Dokumentenliste gruppiert anzeigen (pro Dokument eine Zeile mit Chunk-Anzahl)
-7. [Patch 100] Pre-Commit-Hook / CI-Schritt: `node --check` auf alle `<script>`-Blöcke in hel.py + nala.py (schnellere Variante der `TestJavaScriptIntegrity`-Runtime-Tests)
-8. [Patch 107] Doppelte Pipeline-Verarbeitung: Dictate-Tastatur schickt bereits gecleanten Text, legacy.py cleaned nochmal. Aktuell harmlos (idempotent), aber bei nicht-idempotenten Regeln problematisch. Lösung: `X-Already-Cleaned`-Header oder Channel-basierter Skip in [legacy.py](zerberus/app/routers/legacy.py) `clean_transcript`-Aufruf.
-9. [Patch 107] DB-Deduplizierung: Tastatur-Retries bei schlechtem Empfang erzeugen identische aufeinanderfolgende Messages in `bunker_memory.db`. Overnight-Job soll Duplikate erkennen und markieren/entfernen. Kriterium: gleicher `profile_key` + gleicher `content` + `timestamp` innerhalb von 60 Sekunden.
-10. [Langzeit] Projekt-Oberfläche in Nala: Eigener Workspace pro Projekt mit Dateien, eigenem RAG-Index, Code-Execution in Docker-Sandbox mit Sancho-Panza-Veto (Multi-Agent-Prüfung vor Execution). War von Anfang an geplant, aus Scope rausgefallen. Abhängigkeit: Rosa/Heimdall für Execution Oversight.
-11. [Phase 4] Background Memory Extraction — wurde aus Phase 2 umgeplant. Aktuell NICHT implementiert.
-12. [Phase 4] LLM-basierte Category-Detection (ergänzt zur Keyword-Heuristik von Patch 111), Sancho-Panza Veto-Layer, Halluzinations-Detektor „Ach laber doch nicht", Multimodalität ZIP/Bild-Upload, Color Picker.
-13. [Patch 108] W-001 Sentence-Repetition-Bug (Whisper), Relative Pfade — aus Scope raus, in Backlog verschoben.
-14. [Patch 111/111b] **torch-CUDA-Installation prüfen**: Code ist defensiv (CPU-Fallback ohne Crash), aber RTX 3060 ungenutzt wenn pip-Default-CPU-Variante installiert ist. Aktuelle Empfehlung: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 --force-reinstall` (siehe lessons.md P111b). Nach jedem torch-Reinstall: `pip install --upgrade "typing-extensions>=4.13.2"` (cryptography>=46-Konflikt).
-15. **[Live-Sweep nach P178b — Sofort-Patch]** Guard + RAG-Kontext (L-178a) UND Persona-Awareness (L-178b): RAG-Chunks und aktive Persona als `caller_context` an `check_response()` reichen. Eigener Patch, sicherheitskritisch. **Vor** weiteren Phase-F-Schritten.
-16. **[Live-Sweep — Sofort-Patch]** Telegram-Allowlist (L-178e): `modules.telegram.allowed_user_ids` in config.yaml + Bot ignoriert unbekannte User still. Schützt OpenRouter-Credits.
-17. **[Live-Sweep — Sofort-Patch]** ADMIN-Intent-Schwelle (L-178c): Intent-Prompt anpassen, sodass „Wie ist das aufgebaut?" als CHAT/SEARCH läuft, nicht als ADMIN.
-18. **[Live-Sweep — Untersuchung]** Sprachnachrichten in Telegram-DM (L-178g): Voice-Handler-Pfad prüfen, ggf. Handler ergänzen.
-19. **[Phase 5 Vorbereitung]** FAISS-Migration steht weiter aus (P133-Backup vorhanden, Switch wartet auf Chris). Prosodie (Gemma E2B). Danach Phase 5a ab P180.
-20. **[Langfrist]** Runtime-Config-Endpoint statt statisches RAG für Modell-/GPU-/Patch-Info (L-178h, L9). Verhindert dass „Welches Modell bist du?" durch indizierte Doku altert.
-21. **[Niedrige Priorität]** HSL-Farbfehler bei Browser-Kaltstart (cssToHex → schwarze UI, seit P153 bekannt). Easter Egg L10.
 
-### Erledigt in Patches 105-111
-- Llama-Hardcode-Verdacht (Patch 105 — kein Hardcode, stattdessen Split-Brain in Hel gefixt)
-- Reranker-Threshold fehlt (Patch 105)
-- RAG-Skip für Textverarbeitung (Patch 106)
-- RAG Category-Tagging beim Upload + Anzeige (Patch 108)
-- CLAUDE_ZERBERUS Regel 9 „User-Entscheidungen als klickbare Box" (Patch 108)
-- SSE-Timeout doppelter OpenRouter-Call beim Retry (Patch 109 — REST-Fallback via `/archive/session/{id}`)
-- Theme-Defaults ohne rgba-Tiefe + unvollständiger `resetTheme()` (Patch 109)
-- Upload-Formate: `.json` + `.csv` zusätzlich zu `.txt/.md/.docx/.pdf` (Patch 110)
-- Chunking-Weiche pro Category (CHUNK_CONFIGS, Markdown-Header-Split für `technical`) (Patch 110)
-- **GPU-Acceleration für Embedding + Reranker (Patch 111)** — zentrale `get_rag_device()`-Helper mit VRAM-Check + Fallback
-- **Auto-Category-Detection beim Upload (Patch 111)** — Extension-basiert, UI-Default `auto`
-- **Query-Router mit Category-Boost (Patch 111)** — Keyword-basiert, Score-Boost statt hartes Filtering
-- **→ Phase 2 damit abgeschlossen.**
+→ Konsolidiert in [`BACKLOG_ZERBERUS.md`](BACKLOG_ZERBERUS.md) (seit Patch 179).
+Einzelne Items hier NICHT mehr pflegen.
 
 ## Architektur-Warnungen
 - Rosa Security Layer: NICHT implementiert — Dateien im Projektordner sind nur Vorbereitung
