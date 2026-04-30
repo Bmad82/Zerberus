@@ -1,8 +1,20 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 180–182 (2026-04-30) – Live-Test-Findings L-178a–g abgearbeitet (Guard+RAG+Persona, Allowlist, ADMIN-Heuristik, Media-Handler)*
+*Letzte Aktualisierung: Patch 183–185 (2026-05-01) – Black-Bug-VIERTER + Nala-Persona-Ton + Runtime-Info-Block*
 
 ## Aktueller Patch
+
+**Patch 183–185** — Black-Bug-VIERTER + Persona-Ton + Runtime-Info (2026-05-01)
+
+Drei Patches bündeln drei zähe Bugs. Teststand 1033 → 1119 (+86: 49 P183 + 13 P184 + 24 P185). Backlog-Items B-016 + B-024 (= L8 + L9) erledigt; siehe [`BACKLOG_ZERBERUS.md`](BACKLOG_ZERBERUS.md) und das Post-Mortem zum Schwarzen Bug am Ende von [`lessons.md`](lessons.md).
+
+- **P183 (B-024 / L8 ERLEDIGT) — Black-Bug VIERTER Anlauf:** Vierter Versuch nach P109/P153/P169. Forensische Analyse fand 12 `setProperty('--bubble-*')`-Pfade in [`nala.py`](zerberus/app/routers/nala.py), 5 ohne Guard. Alte `BLACK_VALUES`-Listen waren Exakt-String-Matches mit nur 4 Formaten — `hsl(0,0%,0%)`, `rgba(0,0,0,1.0)`, `rgb(0, 0, 0)` mit Whitespace-Varianten rutschten durch. Fix: zentraler `sanitizeBubbleColor()` mit regex-basiertem `_isBubbleBlack()` + `cleanBlackFromStorage()`-Sweep an Pre-Render UND in `showChatScreen`. 49 Tests in [`test_patch183_blackbug.py`](zerberus/tests/test_patch183_blackbug.py).
+- **P184 — Nala-Persona kommt nicht beim LLM an:** Verdrahtung war OK, Bug war LLM-Verhalten (DeepSeek v3.2 ignorierte abstrakte Personas bei kurzen Inputs). Fix: `_wrap_persona()` in [`legacy.py`](zerberus/app/routers/legacy.py) legt `# AKTIVE PERSONA — VERBINDLICH`-Header vor profil-spezifische Prompts. Persistenter `[PERSONA-184]` INFO-Log für künftige Diagnose. 13 Tests. Bei Drift trotz Wrap: ChatML (B-071) als nächste Stufe.
+- **P185 (B-016 / L9 ERLEDIGT) — Runtime-Info-Block:** Neue Utility [`zerberus/utils/runtime_info.py`](zerberus/utils/runtime_info.py) (`build_runtime_info` + `append_runtime_info`) liefert Cloud-LLM (Kurzname), Guard-Modell, RAG/Sandbox-Status aus den Settings. Injection in beiden Routern NACH Persona, VOR RAG. RAG-Doku bekommt Hinweis-Absatz: statisch vs. zur Laufzeit. 24 Tests inkl. Source-Audit der Call-Reihenfolge.
+
+---
+
+## Vorheriger Patch
 
 **Patch 180–182** — Live-Test-Findings L-178a–g (2026-04-30)
 

@@ -417,3 +417,30 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 
 ## Architektur-Mismatch zwischen Patch-Spec und Code (P182)
 - Patch-Spec sprach von "ADMIN-Confidence ≥ 0.85", aber der Intent-Parser liefert keine Confidence (P182)|Architektur: das LLM emittiert harte Labels (`{"intent": "ADMIN", "needs_hitl": true}`), keine Wahrscheinlichkeiten|Konsequenz für die Umsetzung: das Konzept "höhere Schwelle" wurde umgedeutet auf "höhere Plausibilität" — Heuristik-basierter Downgrade statt numerischer Threshold|Lehre: bei Patches die eine Architektur voraussetzen die nicht existiert, lieber pragmatisch reinterpretieren als vortäuschen die Architektur sei da|Im Patch-Body explizit dokumentieren, dass die Spec angepasst wurde + Begründung
+
+## 🪦 Der Schwarze Bug — Post Mortem (P109 → P153 → P169 → P183)
+
+Der hartnäckigste Bug in Zerberus. Vier Patches, drei Fehldiagnosen, ein Endgegner.
+
+**Symptom:** Nach Kaltstart (Browser zu, abmelden, neu einloggen) waren alle Bubbles schwarz. Unlesbar, hässlich, Jojo-Impact bei jedem Login.
+
+**Chronologie der Fehlschläge:**
+- P109: `resetTheme()` erweitert, rgba-Defaults → Bug kam wieder
+- P153: `cssToHex()` HSL-Parser-Bug gefunden (H/S/L als RGB-Bytes) → Bug kam wieder
+- P169: Favoriten-Loader schrieb schwarze Werte VOR dem Guard → Bug kam wieder
+
+**Warum er immer wiederkam:** Jeder Fix adressierte EINEN Codepfad. Aber es gab 12 Stellen die `--bubble-*-bg` setzten, und 5 davon hatten KEINEN Guard. Zusätzlich waren die `BLACK_VALUES`-Listen simple String-Matches mit nur 4 Formaten — `hsl(0,0%,0%)`, `rgba(0,0,0,1.0)`, `rgb(0, 0, 0)` mit verschiedenen Whitespace-Mustern rutschten alle durch.
+
+**Was ihn endgültig getötet hat (P183):**
+1. Forensische Analyse BEVOR Code geändert wurde — alle 12 Pfade kartiert
+2. Zentraler `sanitizeBubbleColor()` mit regex-basiertem `_isBubbleBlack()` statt String-Liste
+3. ALLE 12 `setProperty`-Pfade durch den Sanitizer geschleift — kein Bypass möglich
+4. `cleanBlackFromStorage()`-Sweep beim Login — korrupte Werte werden proaktiv entfernt
+5. HSL-Slider: Lightness-Minimum auf 10% → fast-schwarz (`#1a1a1a`) wird auch abgefangen
+
+**Universelle Lessons:**
+- Bei wiederkehrenden Bugs NIEMALS an der Symptomstelle patchen|erst ALLE Codepfade inventarisieren
+- String-basierte Blacklists sind brüchig|Regex oder semantische Prüfung (Luminanz < Schwelle) ist robuster
+- „Ist gefixt" heißt nichts wenn nur EIN Pfad gefixt ist und es 12 gibt
+- Init-Reihenfolge dokumentieren|Race Conditions zwischen IIFE/DOMContentLoaded/Login/Favoriten sind unsichtbar
+- Defense-in-depth: Sanitizer an JEDER Setzstelle + proaktiver Storage-Sweep + Backend-Filter = drei Schichten
