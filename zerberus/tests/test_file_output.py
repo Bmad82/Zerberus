@@ -545,7 +545,7 @@ class TestGuardOnFileContent:
         guard_calls: List[Dict[str, Any]] = []
         sent_docs: List[Dict[str, Any]] = []
 
-        async def fake_guard(user_msg, assistant_msg, caller_context=""):
+        async def fake_guard(user_msg, assistant_msg, caller_context="", rag_context=""):
             guard_calls.append({
                 "user_msg": user_msg,
                 "assistant_msg": assistant_msg,

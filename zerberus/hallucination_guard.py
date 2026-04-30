@@ -43,20 +43,38 @@ GUARD_SYSTEM_PROMPT = (
 )
 
 
-def _build_system_prompt(caller_context: str = "") -> str:
-    """Patch 158: fuegt den optionalen Kontext des Antwortenden in den Pruefer-
-    Prompt ein. Ziel ist Halluzinations-False-Positives zu verhindern, wenn
-    der Antwortende eine Persona hat (z. B. Huginn als Rabe) oder Selbst-
-    referenzen auf das Zerberus-System verwendet.
+RAG_CONTEXT_MAX_CHARS = 1500
+
+
+def _build_system_prompt(caller_context: str = "", rag_context: str = "") -> str:
+    """Patch 158/180: optionaler caller_context + rag_context im System-Prompt.
+
+    P158: caller_context beschreibt die Persona des Antwortenden (z. B.
+    Huginn als Rabe), damit Selbstreferenzen + Raben-Metaphern nicht als
+    Halluzination eingestuft werden.
+
+    P180: rag_context ist das Referenz-Material, das dem Antwortenden zur
+    Verfuegung stand. Truncation auf RAG_CONTEXT_MAX_CHARS schuetzt das
+    Token-Budget des Mistral-Small-Guards — der braucht nur genug, um zu
+    erkennen welche Fakten aus dem Index stammen, nicht den vollen Dump.
     """
-    if not caller_context:
-        return GUARD_SYSTEM_PROMPT
-    context_block = (
-        "\n\n[Kontext des Antwortenden]\n"
-        f"{caller_context}\n"
-        "Referenzen auf diese Elemente sind KEINE Halluzinationen."
-    )
-    return GUARD_SYSTEM_PROMPT + context_block
+    base = GUARD_SYSTEM_PROMPT
+    if caller_context:
+        base += (
+            "\n\n[Kontext des Antwortenden]\n"
+            f"{caller_context}\n"
+            "Referenzen auf diese Elemente sind KEINE Halluzinationen."
+        )
+    if rag_context:
+        truncated = rag_context[:RAG_CONTEXT_MAX_CHARS]
+        if len(rag_context) > RAG_CONTEXT_MAX_CHARS:
+            truncated += "\n[... gekuerzt]"
+        base += (
+            "\n\n[Referenz-Wissen das dem Antwortenden zur Verfuegung stand]\n"
+            f"{truncated}\n"
+            "Fakten aus diesem Referenz-Wissen sind KEINE Halluzinationen."
+        )
+    return base
 
 
 def _parse_verdict(content: str) -> Dict[str, Any]:
@@ -83,7 +101,11 @@ async def check_response(
     Args:
         user_message: User-Frage.
         assistant_response: Zu pruefende LLM-Antwort.
-        rag_context: Optionaler RAG-Kontext (ergaenzt das User-Prompt).
+        rag_context: Optionaler RAG-Kontext. Patch 180: erscheint sowohl
+            im User-Prompt (als Faktenmaterial, Cap 2000) als auch im
+            System-Prompt (als Halluzinations-Whitelist, Cap 1500). Ohne
+            Verfuegbarkeit erkennt der Guard RAG-basierte Antworten sonst
+            als erfundene Fakten.
         caller_context: Patch 158 — optionaler Kontext ueber den Antwortenden
             (Persona, System-Zugehoerigkeit). Verhindert dass der Guard
             Persona-Elemente (z. B. Raben-Metaphern bei Huginn) oder
@@ -129,7 +151,13 @@ async def check_response(
                 json={
                     "model": GUARD_MODEL,
                     "messages": [
-                        {"role": "system", "content": _build_system_prompt(caller_context)},
+                        {
+                            "role": "system",
+                            "content": _build_system_prompt(
+                                caller_context=caller_context,
+                                rag_context=rag_context,
+                            ),
+                        },
                         {"role": "user", "content": user_prompt},
                     ],
                     "max_tokens": 100,

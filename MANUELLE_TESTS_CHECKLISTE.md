@@ -1,6 +1,6 @@
 # MANUELLE_TESTS_CHECKLISTE.md — Zerberus Pro 4.0
-*Stand: Patch 178c (2026-04-30) — Patches 120–178 abgedeckt*
-*Teststand: 981 passed, 114 deselected, 4 xfailed (Default-Run)*
+*Stand: Patch 182 (2026-04-30) — Patches 120–182 abgedeckt*
+*Teststand: 1033 passed, 114 deselected, 4 xfailed (Default-Run)*
 
 **Workflow:** Coda schreibt neue Items rein nach jedem Patch. Chris testet und hakt ab.
 Nur Items, die Coda NICHT selbst testen kann, landen hier (UI-Checks, Mobile, Tailscale, iPhone, UX-Gefühl).
@@ -83,11 +83,32 @@ Coda macht: pytest, curls, smoke-checks, code-verify, log-checks — alles Autom
 - [ ] Gruppen-Chat mit Pipeline aktiv → autonomer Einwurf (delegiert an Legacy)
 - [ ] Config zurück auf `false` → sofort Legacy-Pfad aktiv
 
-## Telegram-Sicherheit (Live-Test-Findings P178)
+## Guard + RAG-Kontext (P180)
 
-- [ ] Fremder User schreibt Bot direkt an → Antwort kommt **(ACHTUNG: Allowlist B-003 / L-178e noch nicht implementiert!)**
-- [ ] Alan-Test: 4+ Nachrichten von einem fremden User → keine OpenRouter-Credit-Explosion (B-003)
-- [ ] Frage „Wie ist das System aufgebaut?" → wird als CHAT/SEARCH klassifiziert, NICHT als ADMIN (B-004 / L-178c, OFFEN)
+- [ ] Huginn: „Was ist Zerberus?" → Antwort kommt, Log zeigt KEIN `[GUARD-120] WARNUNG`
+- [ ] Huginn: Echte Halluzination provozieren („Erzähl mir über Zerberus Version 9.0") → Guard `WARNUNG` im Log
+- [ ] Log: `tail logs/zerberus.log | grep "GUARD-120"` zeigt Guard-Calls; Persona-Auszug bis zu 800 Zeichen
+- [ ] Huginn-Persona in Hel auf einen 600-Zeichen-Text setzen → erste 800 Zeichen erreichen Guard (vorher 300)
+
+## Telegram Allowlist (P181)
+
+- [ ] Default (Hel-Dropdown „Offen") → fremder User kann schreiben, Antwort kommt (Backward-Compat)
+- [ ] Mode `admin_only` setzen → fremder User schreibt → bekommt einmalige Absage „🚫 nicht freigeschaltet", kein LLM-Call
+- [ ] Mode `admin_only` → eigene Telegram-User-ID (Admin) → Antwort kommt normal
+- [ ] Mode `allowlist` + eigene ID drin → Antwort kommt; ID weglassen → Block
+- [ ] Hel-UI: Allowlist-Dropdown wechselt sichtbar zwischen Modi; User-IDs-Feld nur im Modus „allowlist" sichtbar
+- [ ] Log: `tail logs/zerberus.log | grep ALLOWLIST-181` zeigt User-Block + Modus
+- [ ] Spam-Test: gesperrter User schickt 10× → genau 1 Absage in der Stunde (Rate-Limit)
+
+## ADMIN-Schwelle + Medien-Handler (P182)
+
+- [ ] Huginn: Harmlose Frage („Wie geht's, Rabe?") → KEIN HitL-Button, normale Chat-Antwort (Plausi-Heuristik downgraded ADMIN→CHAT)
+- [ ] Huginn: `/status` oder „Mach mal Restart" → HitL-Button erscheint (echter Admin-Befehl)
+- [ ] Huginn: Sprachnachricht senden → „🎤 Sprachnachrichten kann ich noch nicht verarbeiten" + kein LLM-Call im Log
+- [ ] Huginn: Sticker senden → „🎨 Sticker kann ich noch nicht verarbeiten"
+- [ ] Huginn: Dokument (PDF) senden → „📎 Dokumente kann ich noch nicht verarbeiten"
+- [ ] Huginn: Bild senden → läuft normal über Vision (NICHT als „unsupported")
+- [ ] Log: `grep "HUGINN-182\|HITL-POLICY-182" logs/zerberus.log` zeigt Media-Skips + ADMIN-Downgrades
 
 ## Sandbox (P171)
 
@@ -98,7 +119,7 @@ Coda macht: pytest, curls, smoke-checks, code-verify, log-checks — alles Autom
 
 ## Cross-Cutting
 
-- [ ] `pytest zerberus/tests/ -v --tb=short` → 981 passed, 114 deselected, 4 xfailed (P178c-Baseline)
+- [ ] `pytest zerberus/tests/ -v --tb=short` → 1033 passed, 114 deselected, 4 xfailed (P182-Baseline)
 - [ ] `sync_repos.ps1` + `verify_sync.ps1` → alle 3 Repos clean
 - [ ] Server überlebt Tailscale-Reconnect ohne Crash
 - [ ] Pacemaker läuft (1× Puls/Minute im Log) — Watchdog ohne Restart-Loop
@@ -107,8 +128,6 @@ Coda macht: pytest, curls, smoke-checks, code-verify, log-checks — alles Autom
 
 ## Bekannte offene Themen (siehe `BACKLOG_ZERBERUS.md`)
 
-- **B-001/B-002** — Guard kennt RAG/Persona nicht (Halluzinations-False-Positives möglich)
-- **B-003** — Telegram-Allowlist fehlt (Credit-Risk)
-- **B-004** — ADMIN-Intent zu sensitiv
-- **B-005** — Voice-DM-Handler fehlt
+- **B-001..B-005** — ✅ ERLEDIGT durch P180/P181/P182 (Guard+RAG, Persona-Cap, Allowlist, ADMIN-Plausi, Media-Handler)
 - **B-024 / L8** — HSL-Farbfehler bei Browser-Kaltstart (Dauerläufer seit P153)
+- **B-072** — Voice→Whisper-Pipeline für Huginn (P182 hat Voice nur abgewiesen, B-072 wäre echte Transkription)

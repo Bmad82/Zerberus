@@ -31,12 +31,52 @@ Sprache ersetzen.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional, TypedDict
 
 from zerberus.core.intent import HuginnIntent
 from zerberus.core.intent_parser import ParsedResponse
 
 logger = logging.getLogger("zerberus.hitl_policy")
+
+
+# Patch 182: ADMIN-Plausibilitaets-Check. Vorher klassifizierte das LLM
+# auch harmlose Smalltalk-Fragen ("Wie geht's dir?") als ADMIN, was den
+# HitL-Button ausloeste. Jetzt verlangen wir ein Indiz im User-Text:
+# entweder Slash-Prefix (/status, /config) oder ein Admin-Keyword.
+# Liegt keins vor → der ADMIN-Verdict des LLM wird verworfen, behandelt
+# als CHAT. False-Positive nervt UX mehr als False-Negative, der echte
+# Admin-Befehle nochmal explizit triggert.
+
+_ADMIN_TOKENS = frozenset({
+    "stats", "status", "config", "konfig", "restart", "shutdown",
+    "neustart", "log", "logs", "logfile", "admin", "debug",
+})
+
+_ADMIN_TOKEN_RE = re.compile(r"[a-zäöüß]+", re.IGNORECASE)
+
+
+def _is_plausible_admin(user_message: str) -> bool:
+    """True wenn der Text plausibel ein Admin-Befehl sein koennte.
+
+    Heuristik:
+        - Slash-Prefix (``/status``, ``/help``, …) → ja.
+        - Admin-Keyword als Token (``status``, ``restart``, …) → ja.
+        - Sonst → nein.
+
+    Word-Boundary via Regex statt ``in``-Substring-Match, damit z. B.
+    ``"vorstaaten"`` kein ``stat``-Hit liefert. Gross-/Kleinschreibung
+    wird ignoriert.
+    """
+    if not user_message:
+        return False
+    text = user_message.strip()
+    if not text:
+        return False
+    if text.startswith("/"):
+        return True
+    tokens = {t.lower() for t in _ADMIN_TOKEN_RE.findall(text)}
+    return bool(tokens & _ADMIN_TOKENS)
 
 
 class HitlDecision(TypedDict):
@@ -56,8 +96,33 @@ class HitlPolicy:
     # setzt. Schutz gegen K5 (Effort-Inflation als Jailbreak-Verstärker).
     NEVER_HITL = {HuginnIntent.CHAT, HuginnIntent.SEARCH, HuginnIntent.IMAGE}
 
-    def evaluate(self, parsed: ParsedResponse) -> HitlDecision:
-        """Evaluiert ob HitL nötig ist und liefert Decision-Dict."""
+    def evaluate(self, parsed: ParsedResponse, user_message: str = "") -> HitlDecision:
+        """Evaluiert ob HitL nötig ist und liefert Decision-Dict.
+
+        Patch 182: Optionaler ``user_message`` ermoeglicht den ADMIN-
+        Plausibilitaets-Check. Ohne ``user_message`` faellt die Policy auf
+        das alte (P164-)Verhalten zurueck — alle bestehenden Tests bleiben
+        gruen, neue Aufrufer profitieren vom Schutz.
+        """
+        # 0) Patch 182 — ADMIN ohne Plausibilitaets-Marker auf CHAT downgraden.
+        # Greift nur wenn der Caller user_message mitgibt; sonst bleibt das
+        # alte Verhalten erhalten. Reihenfolge ist wichtig: VOR dem
+        # ADMIN-erzwingt-HitL-Branch.
+        if (
+            parsed.intent == HuginnIntent.ADMIN
+            and user_message
+            and not _is_plausible_admin(user_message)
+        ):
+            logger.info(
+                "[HITL-POLICY-182] ADMIN-Verdict verworfen (kein Admin-Marker im User-Text): %r",
+                (user_message or "")[:80],
+            )
+            return {
+                "needs_hitl": False,
+                "hitl_type": "none",
+                "reason": "ADMIN ohne Slash/Keyword im User-Text -> CHAT-Fallback",
+            }
+
         # 1) NEVER_HITL überstimmt das LLM-Flag.
         if parsed.intent in self.NEVER_HITL:
             if parsed.needs_hitl:

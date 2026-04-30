@@ -57,7 +57,7 @@ def _patch_telegram_io(monkeypatch, llm_response="Krraa! Antwort."):
         llm_calls.append(kw)
         return {"content": llm_response, "latency_ms": 5}
 
-    async def fake_run_guard(user_msg, assistant_msg, caller_context=""):
+    async def fake_run_guard(user_msg, assistant_msg, caller_context="", rag_context=""):
         return {"verdict": "OK"}
 
     monkeypatch.setattr(telegram_router, "send_telegram_message", fake_send)

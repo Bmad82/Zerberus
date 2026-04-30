@@ -89,6 +89,114 @@ _hitl_sweep_task: Optional["asyncio.Task"] = None
 _bot_user_id: Optional[int] = None
 
 
+# ══════════════════════════════════════════════════════════════════
+#  Patch 181 — Telegram-User-Allowlist
+# ══════════════════════════════════════════════════════════════════
+#
+# Drei Modi (modules.telegram.allowlist_mode):
+#   "open"       (Default): alle duerfen, kein Breaking Change
+#   "allowlist":  nur User-IDs in modules.telegram.allowed_users
+#   "admin_only": nur admin_chat_id
+#
+# Admin ist im allowlist-Mode IMMER erlaubt (Lock-out-Schutz). Leere
+# allowed_users im allowlist-Mode = alle erlaubt (Safety-Fallback).
+# Gruppen-Chats sind ausgenommen — autonomer Einwurf ist kein User-
+# Request, und Gruppen sind Tailscale-intern.
+
+_DENIED_NOTICE_INTERVAL_SECS = 3600
+_DENIED_NOTICE_TEXT = (
+    "\U0001f6ab Du bist nicht für diesen Bot freigeschaltet. "
+    "Kontaktiere den Admin."
+)
+
+
+# Patch 182 (L7): Unsupported-Media-Types. Bisher liefen Sprach-/Sticker-/
+# Dokument-Nachrichten lautlos ins Leere — der User wartete auf eine
+# Antwort, die nie kam. Jetzt: kurze freundliche Absage + Kein LLM-Call.
+# Bilder (``photo``) sind NICHT in dieser Liste — die laufen ueber Vision.
+_UNSUPPORTED_MEDIA: tuple[tuple[str, str], ...] = (
+    ("voice", "\U0001f3a4 Sprachnachrichten"),
+    ("audio", "\U0001f3b5 Audio-Dateien"),
+    ("video_note", "\U0001f4f9 Videonachrichten"),
+    ("video", "\U0001f3ac Videos"),
+    ("document", "\U0001f4ce Dokumente"),
+    ("sticker", "\U0001f3a8 Sticker"),
+)
+
+
+def _detect_unsupported_media(message: Dict[str, Any]) -> Optional[tuple[str, str]]:
+    """Liefert ``(media_type, label)`` falls die Nachricht ein bisher nicht
+    unterstuetzter Medien-Typ ist, sonst ``None``.
+    """
+    if not isinstance(message, dict):
+        return None
+    for key, label in _UNSUPPORTED_MEDIA:
+        if message.get(key):
+            return key, label
+    return None
+# Module-state: pro User der Timestamp der letzten Absage. Verhindert,
+# dass ein Spammer 1000x die Absage triggert und Telegrams Outbound-Rate-
+# Limit reisst.
+_denied_users_last_notice: Dict[int, float] = {}
+
+
+def _reset_allowlist_state_for_tests() -> None:
+    """Test-Helfer: setzt den Absage-Rate-Limiter zurueck."""
+    _denied_users_last_notice.clear()
+
+
+def _resolve_allowlist_mode(mod_cfg: Dict[str, Any]) -> str:
+    """Liest ``allowlist_mode`` aus der Telegram-Section. Default ``open``."""
+    val = mod_cfg.get("allowlist_mode") or "open"
+    return str(val).strip().lower()
+
+
+def _check_allowlist(user_id: Optional[int], mod_cfg: Dict[str, Any]) -> bool:
+    """Patch 181 — prueft, ob ein User den Bot nutzen darf.
+
+    Returns:
+        True wenn erlaubt (oder Mode=open, oder user_id None bei Service-
+        Events), False wenn blockieren.
+
+    ``allowlist`` mit leerer ``allowed_users`` liefert True — ein leeres
+    Feld waere sonst eine versehentliche Total-Sperre. Wer die Liste
+    aktiv leeren will, soll auf Mode ``admin_only`` umstellen.
+    """
+    if user_id is None:
+        return True
+    mode = _resolve_allowlist_mode(mod_cfg)
+    if mode == "open":
+        return True
+    admin_id_str = str(mod_cfg.get("admin_chat_id") or "").strip()
+    user_id_str = str(user_id)
+    if mode == "admin_only":
+        return bool(admin_id_str) and user_id_str == admin_id_str
+    # mode == "allowlist" (oder unbekannt — defensiv: behandeln wie allowlist)
+    allowed = mod_cfg.get("allowed_users") or []
+    if not allowed:
+        return True
+    if admin_id_str and user_id_str == admin_id_str:
+        return True
+    allowed_strs = {str(x).strip() for x in allowed if str(x).strip()}
+    return user_id_str in allowed_strs
+
+
+def _should_send_denied_notice(user_id: int) -> bool:
+    """Liefert True, wenn dem User jetzt eine Absage geschickt werden darf.
+
+    Rate-limited auf 1 Absage pro Stunde pro User — sonst kann jemand mit
+    100 Nachrichten 100 Absagen triggern und uns in Telegrams Outbound-
+    Rate-Limit treiben.
+    """
+    import time
+    now = time.time()
+    last = _denied_users_last_notice.get(int(user_id), 0.0)
+    if now - last < _DENIED_NOTICE_INTERVAL_SECS:
+        return False
+    _denied_users_last_notice[int(user_id)] = now
+    return True
+
+
 def _resolve_hitl_timeout(mod_cfg: Dict[str, Any]) -> int:
     """Liest ``timeout_seconds`` aus der Telegram-HitL-Section.
 
@@ -137,6 +245,7 @@ def _reset_telegram_singletons_for_tests() -> None:
     _group_manager = None
     _hitl_manager = None
     _hitl_sweep_task = None
+    _reset_allowlist_state_for_tests()
 
 
 def init_telegram(settings: Settings):
@@ -265,38 +374,55 @@ def _resolve_huginn_prompt(settings: Settings) -> str:
     return str(val)
 
 
+_GUARD_PERSONA_BUDGET = 800
+
+
 def _build_huginn_guard_context(persona: str) -> str:
-    """Patch 158: liefert den caller_context fuer den Guard.
+    """Patch 158/180: liefert den caller_context fuer den Guard.
 
     Der Guard (Mistral Small) kennt Huginns Persona nicht und haelt Raben-
     Metaphern + Zerberus-Referenzen sonst fuer Halluzinationen. Mit diesem
     Kontext weiss er, dass das Charakter und keine erfundene Fakten sind.
+
+    P180: Persona-Cap von 300 auf 800 Zeichen erhoeht — der Guard braucht
+    die vollen Verhaltensregeln, sonst urteilt er ueber Aussagen, deren
+    Persona-Begruendung er nicht kennt. Hartes Limit schuetzt das knappe
+    Mistral-Small-Token-Budget.
     """
-    return (
+    prefix = (
         "Der Antwortende ist 'Huginn', ein KI-Assistent im Zerberus-System mit einer Raben-Persona. "
         "Selbstreferenzen auf Zerberus, Raben-Metaphern, kraechzende Einwuerfe ('Krraa!', 'Kraechz!'), "
         "sarkastische Kommentare, Gossensprache und Charakter-Elemente sind ERWUENSCHT und KEINE Halluzinationen. "
         "Huginn spricht absichtlich zynisch und bissig - das ist sein Charakter, kein Fehler. "
-        f"Persona-Beschreibung (Auszug): {(persona or '')[:300]}"
+        "Persona-Beschreibung (Auszug): "
     )
+    persona_text = persona or ""
+    max_persona = max(0, _GUARD_PERSONA_BUDGET - len(prefix) - 30)
+    if len(persona_text) > max_persona:
+        persona_text = persona_text[:max_persona] + "\n[... Persona gekuerzt]"
+    return prefix + persona_text
 
 
 async def _run_guard(
     user_msg: str,
     assistant_msg: str,
     caller_context: str = "",
+    rag_context: str = "",
 ) -> Dict[str, Any]:
     """Optionaler Guard-Check via Ach-laber-doch-nicht-Modul.
 
     Patch 158: `caller_context` wird an den Guard weitergereicht, damit er
     Persona-Elemente nicht mehr als Halluzination einstuft.
+    Patch 180: `rag_context` ergaenzt — der Guard sieht das RAG-Material
+    das dem LLM zur Verfuegung stand, und stuft Fakten daraus nicht mehr
+    als erfunden ein.
     """
     try:
         from zerberus.hallucination_guard import check_response
         return await check_response(
             user_msg,
             assistant_msg,
-            rag_context="",
+            rag_context=rag_context,
             caller_context=caller_context,
         )
     except Exception as e:
@@ -899,7 +1025,10 @@ async def _process_text_message(
     # bzw. als Admin-DM gespiegelt — der eigentliche Button-Flow fuer
     # CODE/FILE/ADMIN-Aktionen folgt mit Phase D (Sandbox/Code-Exec).
     policy = get_hitl_policy()
-    hitl_decision = policy.evaluate(parsed)
+    # Patch 182: user_msg an die Policy reichen — ADMIN-Verdict wird auf
+    # CHAT zurueckgestuft, wenn der User-Text keine Admin-Marker enthaelt
+    # (Schutz vor Smalltalk-False-Positives wie "Wie geht's dir?").
+    hitl_decision = policy.evaluate(parsed, user_message=user_msg)
     if hitl_decision["needs_hitl"]:
         logger.warning(
             "[HITL-POLICY-164] Empfehlung: %s (intent=%s, reason=%s)",
@@ -922,8 +1051,12 @@ async def _process_text_message(
 
     # Guard-Check auf den Body (ohne JSON-Header). Patch 158: caller_context
     # mitgeben, damit Persona-Elemente nicht als Halluzination gelten.
+    # Patch 180: rag_context durchreichen — der Guard sah das RAG-Material
+    # bisher nicht und flaggte Fakten daraus als Halluzination.
     guard_ctx = _build_huginn_guard_context(system_prompt)
-    guard = await _run_guard(user_msg, answer, caller_context=guard_ctx)
+    guard = await _run_guard(
+        user_msg, answer, caller_context=guard_ctx, rag_context=rag_context,
+    )
 
     # Patch 163 (K4): Guard-Fail-Policy. ``ERROR`` = Guard nicht
     # erreichbar/kaputt. Default ist ``allow`` (Antwort durchlassen + loggen),
@@ -1059,6 +1192,67 @@ async def _legacy_process_update(data: Dict[str, Any], settings: Settings) -> Di
             sorted(update_types_present), data.get("update_id"),
         )
         return {"ok": True, "skipped": "unknown_update_type"}
+
+    # Patch 181 (L5/D5): Allowlist-Check VOR Rate-Limit, Sanitizer, RAG, LLM.
+    # Greift nur fuer Privat-Chats (Gruppen sind Tailscale-intern). Bei deny
+    # geht eine einmalige Absage raus (1/h pro User, sonst Outbound-Rate-Limit).
+    if "message" in data and isinstance(data["message"], dict):
+        _msg_for_allowlist = data["message"]
+        _chat_type = (_msg_for_allowlist.get("chat", {}) or {}).get("type", "private")
+        _from_id_raw = (_msg_for_allowlist.get("from", {}) or {}).get("id")
+        if _chat_type == "private" and _from_id_raw is not None:
+            _from_id = int(_from_id_raw)
+            if not _check_allowlist(_from_id, mod_cfg):
+                logger.info(
+                    "[ALLOWLIST-181] User %s blockiert (mode=%s)",
+                    _from_id, _resolve_allowlist_mode(mod_cfg),
+                )
+                if _should_send_denied_notice(_from_id):
+                    bot_token = str(
+                        mod_cfg.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+                    )
+                    chat_id = (_msg_for_allowlist.get("chat", {}) or {}).get("id")
+                    thread_id = _msg_for_allowlist.get("message_thread_id")
+                    if bot_token and chat_id is not None:
+                        await send_telegram_message(
+                            bot_token,
+                            chat_id,
+                            _DENIED_NOTICE_TEXT,
+                            message_thread_id=thread_id,
+                        )
+                return {"ok": True, "skipped": "allowlist", "user_id": str(_from_id)}
+
+    # Patch 182 (L7): Voice/Audio/Sticker/Document/Video → freundliche Absage.
+    # Vorher fielen die durch alle Filter und kamen am Ende als "empty" raus —
+    # der User wartete ins Leere. Jetzt kurze Erklaerung + Return, kein LLM.
+    # Position: NACH Allowlist (denied User soll keine freundliche Absage
+    # bekommen), VOR Rate-Limit (sonst wuerde Voice-Spam zu "Sachte Keule"
+    # statt zur Erklaerung fuehren).
+    if "message" in data and isinstance(data["message"], dict):
+        _media_msg = data["message"]
+        _unsupported = _detect_unsupported_media(_media_msg)
+        if _unsupported is not None:
+            media_kind, media_label = _unsupported
+            bot_token = str(
+                mod_cfg.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+            )
+            chat_id = (_media_msg.get("chat", {}) or {}).get("id")
+            thread_id = _media_msg.get("message_thread_id")
+            from_id = (_media_msg.get("from", {}) or {}).get("id")
+            if bot_token and chat_id is not None:
+                await send_telegram_message(
+                    bot_token,
+                    chat_id,
+                    f"{media_label} kann ich noch nicht verarbeiten. "
+                    f"Schreib mir als Text!",
+                    reply_to_message_id=_media_msg.get("message_id"),
+                    message_thread_id=thread_id,
+                )
+            logger.info(
+                "[HUGINN-182] %s von user=%s chat=%s — nicht unterstuetzt",
+                media_kind, from_id, chat_id,
+            )
+            return {"ok": True, "skipped": "unsupported_media", "kind": media_kind}
 
     # Patch 163 (N3, D1): Per-User Rate-Limit. Nur für User-Messages, nicht
     # für Callback-Queries (Admin-HitL-Klicks dürfen jederzeit). User-ID kommt
@@ -1367,6 +1561,36 @@ async def handle_telegram_update(
     if not mod_cfg.get("enabled", False):
         return {"ok": False, "reason": "disabled"}
 
+    # Patch 181: Allowlist-Check vor allem anderen — nur Privat-Chats.
+    # Fruehstmoeglich, damit denied User keinen LLM/RAG/Sanitizer-Code
+    # triggern (Cost + Sanitizer-Findings-Log). Callback-Queries laufen
+    # weiter durch Legacy mit eigener Ownership-Pruefung (P167).
+    _msg_aw = raw_update.get("message") if isinstance(raw_update.get("message"), dict) else None
+    if _msg_aw is not None and "callback_query" not in raw_update:
+        _chat_type_aw = (_msg_aw.get("chat", {}) or {}).get("type", "private")
+        _from_id_raw_aw = (_msg_aw.get("from", {}) or {}).get("id")
+        if _chat_type_aw == "private" and _from_id_raw_aw is not None:
+            _from_id_aw = int(_from_id_raw_aw)
+            if not _check_allowlist(_from_id_aw, mod_cfg):
+                logger.info(
+                    "[ALLOWLIST-181] User %s blockiert (mode=%s, pipeline)",
+                    _from_id_aw, _resolve_allowlist_mode(mod_cfg),
+                )
+                if _should_send_denied_notice(_from_id_aw):
+                    bot_token_aw = str(
+                        mod_cfg.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+                    )
+                    chat_id_aw = (_msg_aw.get("chat", {}) or {}).get("id")
+                    thread_id_aw = _msg_aw.get("message_thread_id")
+                    if bot_token_aw and chat_id_aw is not None:
+                        await send_telegram_message(
+                            bot_token_aw,
+                            chat_id_aw,
+                            _DENIED_NOTICE_TEXT,
+                            message_thread_id=thread_id_aw,
+                        )
+                return {"ok": True, "skipped": "allowlist", "user_id": str(_from_id_aw)}
+
     # Patch 177: Update-Filter (P162-konsistent) + komplexe Pfade an
     # Legacy delegieren. Die Pipeline behandelt nur den linearen
     # DM-Text-Pfad — alles andere bleibt im pre-P177-Code, der die
@@ -1431,7 +1655,15 @@ async def handle_telegram_update(
     async def _guard(
         user_msg: str, assistant_msg: str, caller_context: str
     ) -> Dict[str, Any]:
-        return await _run_guard(user_msg, assistant_msg, caller_context=caller_context)
+        # Patch 180: rag_context aus der Closure (oben pro Update gelookuped)
+        # mitgeben — Guard soll RAG-basierte Fakten nicht als Halluzination
+        # flaggen. caller_context kommt vom Pipeline-Aufrufer.
+        return await _run_guard(
+            user_msg,
+            assistant_msg,
+            caller_context=caller_context,
+            rag_context=rag_context,
+        )
 
     deps = PipelineDeps(
         sanitizer=get_sanitizer(),

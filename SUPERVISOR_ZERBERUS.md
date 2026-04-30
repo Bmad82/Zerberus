@@ -1,8 +1,41 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 178b + Live-Test-Sweep (2026-04-30) – Huginn-Selbstwissen v2 gemerged + Chunk-Profil getuned + 8 neue Live-Lessons*
+*Letzte Aktualisierung: Patch 180–182 (2026-04-30) – Live-Test-Findings L-178a–g abgearbeitet (Guard+RAG+Persona, Allowlist, ADMIN-Heuristik, Media-Handler)*
 
 ## Aktueller Patch
+
+**Patch 180–182** — Live-Test-Findings L-178a–g (2026-04-30)
+
+Drei Patches bündeln die L-178-Findings aus dem IT-Fachmann-Live-Test in P178b. Werden zusammen ausgeliefert, weil sie alle Telegram-Side-Effekte adressieren und die Test-Baseline gemeinsam wandert (981 → 1033). Backlog-Items B-001..B-005 sind dadurch erledigt, siehe [`BACKLOG_ZERBERUS.md`](BACKLOG_ZERBERUS.md).
+
+### Patch 180 — Guard + RAG-Kontext + Persona-Awareness
+
+- **Block 1 — `rag_context` an den Guard durchreichen:** [`hallucination_guard.py::_build_system_prompt`](zerberus/hallucination_guard.py) bekommt einen optionalen `rag_context`-Parameter — der Guard sieht jetzt das Referenz-Material des Antwortenden mit der harten Anweisung „Fakten aus diesem Referenz-Wissen sind KEINE Halluzinationen". Cap auf 1500 Zeichen via `RAG_CONTEXT_MAX_CHARS` (Mistral-Small-Token-Budget). [`telegram/router.py::_run_guard`](zerberus/modules/telegram/router.py) reicht den vom `_huginn_rag_lookup`-Aufruf gewonnenen RAG-String an `check_response()` — Legacy-Pfad und Pipeline-Pfad gleichermaßen. Nala-Pfad ([`legacy.py`](zerberus/app/routers/legacy.py)) hatte den `rag_context` schon seit P120, kein Eingriff nötig.
+- **Block 2 — Persona-Cap im Guard-Context von 300 → 800 Zeichen:** `_build_huginn_guard_context` baut den `caller_context` jetzt mit hartem Budget `_GUARD_PERSONA_BUDGET = 800`. Truncation-Marker `[... Persona gekuerzt]` macht das Limit transparent. Längere Personas (Huginn-Raben-Persona ≈ 600 Zeichen) erreichen den Guard jetzt komplett — vorher wurde die Hälfte abgeschnitten und der Guard hatte keinen Zugriff auf Verhaltens-Klauseln in der unteren Hälfte.
+- **Tests:** 8 neue Tests in [`test_hallucination_guard.py`](zerberus/tests/test_hallucination_guard.py): `TestRagContextInSystemPrompt` (5: Block-Aufnahme, Truncation bei 3000 Zeichen, unter-Limit-unbeschnitten, leerer Kontext = kein Block, beide Kontexte in richtiger Reihenfolge), `TestHuginnGuardContextPersonaBudget` (3: unter 800 Zeichen komplett, über Budget truncated, 350-Zeichen-Persona als Regression-Schutz gegen P158-Cap). Bestehende Tests `test_caller_context_landet_im_system_prompt` + `test_empty_caller_context_aendert_prompt_nicht` bleiben grün (Backward-Compat).
+- **Anpassung in 3 Mock-Tests:** `test_file_output.py`, `test_huginn_rag.py`, `test_telegram_bot.py` — `fake_run_guard`-Signatur um `rag_context=""` ergänzt, sonst wirft Python `TypeError` beim neuen Keyword-Arg.
+
+### Patch 181 — Telegram-User-Allowlist
+
+- **Block 1 — `_check_allowlist` + Pre-Flight-Filter in [`telegram/router.py`](zerberus/modules/telegram/router.py):** Drei Modi unter `modules.telegram.allowlist_mode` (`open` Default, `allowlist`, `admin_only`). Admin ist im allowlist-Mode IMMER erlaubt (Lock-out-Schutz). Leere `allowed_users` im allowlist-Mode = alle erlaubt (Safety-Fallback). Filter greift nur in Privat-Chats — Gruppen sind Tailscale-intern. Position: VOR Sanitizer/Rate-Limit/RAG/LLM (kosten-/sicherheitskritisch). Eingebaut in BEIDE Pfade (`_legacy_process_update` + `handle_telegram_update`).
+- **Block 2 — Absage-Rate-Limit (1/h pro User):** Module-state `_denied_users_last_notice: dict[int, float]` mit Hour-Window. Schützt gegen Voice-Spam → Outbound-Throttle. `_reset_allowlist_state_for_tests()` als Helfer.
+- **Block 3 — Hel-UI:** Huginn-Tab → neue Sektion „Zugriffskontrolle (Allowlist) — Patch 181" mit Mode-Dropdown + (im allowlist-Mode sichtbar) User-IDs-Feld (kommasepariert). GET/POST `/hel/admin/huginn/config` durchgereicht; POST validiert `allowlist_mode ∈ {open, allowlist, admin_only}` und parst User-IDs als Liste-of-Ints. JS-Helper `huginnAllowlistModeChange()` blendet das User-IDs-Feld kontextabhängig ein/aus.
+- **Tests:** Neue Datei [`test_allowlist.py`](zerberus/tests/test_allowlist.py) mit **22 Tests in 4 Klassen**: `TestCheckAllowlistLogic` (11), `TestDeniedNoticeRateLimit` (4), `TestLegacyAllowlistIntegration` (7) — Logging-Tag `[ALLOWLIST-181]`.
+
+### Patch 182 — ADMIN-Plausi-Heuristik + Unsupported-Media-Handler
+
+- **Block 1 — ADMIN-Plausibilitäts-Heuristik in [`hitl_policy.py`](zerberus/core/hitl_policy.py):** `HitlPolicy.evaluate(parsed, user_message="")` nimmt jetzt optional den User-Text an. Wenn Intent=ADMIN, aber `user_message` keine Admin-Marker hat (Slash-Prefix oder Token aus `_ADMIN_TOKENS = {stats, status, config, konfig, restart, shutdown, neustart, log, logs, logfile, admin, debug}`), wird der Verdict auf CHAT downgegradet. Token-Match via `re.findall(r"[a-zäöüß]+", text)` + Set-Intersection — kein Substring-Match (sonst „voraussetzung" → „stat"). Backward-Compat: Aufrufer ohne `user_message` (Default `""`) bekommen das Pre-182-Verhalten — alle bestehenden HitL-Policy-Tests bleiben grün.
+- **Architektur-Mismatch dokumentiert:** Die Patch-Spec sprach von „Confidence ≥ 0.85", aber der Intent-Parser liefert keine Confidence (LLM emittiert harte Labels). Pragmatische Reinterpretation: „höhere Schwelle" = „höhere Plausibilität" über Heuristik. Lessons-Eintrag erklärt den Unterschied, damit die nächste Spec-Welle nicht wieder Confidence annimmt.
+- **Block 2 — Unsupported-Media-Handler in [`telegram/router.py`](zerberus/modules/telegram/router.py):** `_detect_unsupported_media` + Pre-Flight-Filter für `voice`, `audio`, `video_note`, `video`, `document`, `sticker`. Photo bleibt unterstützt (Vision-Pfad). Position: NACH Allowlist (denied User soll Bot-Existenz nicht über die freundliche Erklärung leaken), VOR Rate-Limit (freundliche Erklärung statt „Sachte, Keule"). Backlog-Item B-072 für Voice→Whisper-Pipeline (Option B aus der Spec) angelegt.
+- **Tests:** 8 neue Tests in [`test_hitl_policy.py`](zerberus/tests/test_hitl_policy.py) für ADMIN-Plausi (Backward-Compat, Smalltalk-Downgrade, Slash-Befehl-bleibt, Keyword-bleibt, Substring-FP-Schutz, CHAT/CODE unbeeinflusst). 12 neue Tests in [`test_allowlist.py`](zerberus/tests/test_allowlist.py) für Media-Handler (Detection-Logik + Integration: Voice/Sticker/Document → Absage, Photo → kein Skip, Allowlist-vor-Media-Order). Logging-Tags `[HITL-POLICY-182]` + `[HUGINN-182]`.
+
+### Test-Stand und Sync
+
+- **Vor P180–P182:** 981 passed (P178-Baseline)
+- **Nach P180–P182:** **1033 passed**, 114 deselected, 4 xfailed, 0 failed (52 neue Tests, keine Regressionen)
+- Backlog-Konsolidierung: B-001/B-002/B-003/B-004/B-005 = ERLEDIGT, B-072 (Voice→Whisper) als IDEE neu
+
+---
 
 **Patch 178** — Huginn-Selbstwissen + RAG-Integration (2026-04-29)
 

@@ -1040,6 +1040,25 @@ ADMIN_HTML = """<!DOCTYPE html>
                 </label>
               </div>
 
+              <details style="margin-top:18px;" id="hg-allowlist-details">
+                <summary style="cursor:pointer;color:#DAA520;">&#128274; Zugriffskontrolle (Allowlist) &mdash; Patch 181</summary>
+                <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;padding-left:14px;">
+                  <label style="display:flex;flex-direction:column;gap:4px;">
+                    Modus:
+                    <select id="huginn-allowlist-mode" onchange="huginnAllowlistModeChange()" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                      <option value="open">Offen (alle d&uuml;rfen) &mdash; Default</option>
+                      <option value="allowlist">Allowlist (nur freigeschaltete User)</option>
+                      <option value="admin_only">Nur Admin</option>
+                    </select>
+                  </label>
+                  <label id="huginn-allowed-users-group" style="display:none;flex-direction:column;gap:4px;">
+                    Erlaubte User-IDs (kommasepariert):
+                    <input type="text" id="huginn-allowed-users" placeholder="123456789, 987654321" style="padding:6px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;font-family:monospace;">
+                    <small style="color:#888;">Telegram-User-IDs. Admin ist immer erlaubt. Leere Liste = alle erlaubt (Safety-Fallback).</small>
+                  </label>
+                </div>
+              </details>
+
               <details style="margin-top:18px;">
                 <summary style="cursor:pointer;color:#DAA520;">&#128172; Gruppen-Verhalten</summary>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;padding-left:14px;">
@@ -1316,6 +1335,14 @@ ADMIN_HTML = """<!DOCTYPE html>
             el.value = _huginnDefaultPrompt;
         }
 
+        // Patch 181: User-IDs-Feld nur sichtbar im Allowlist-Modus.
+        function huginnAllowlistModeChange() {
+            const sel = document.getElementById('huginn-allowlist-mode');
+            const grp = document.getElementById('huginn-allowed-users-group');
+            if (!sel || !grp) return;
+            grp.style.display = (sel.value === 'allowlist') ? 'flex' : 'none';
+        }
+
         async function huginnReload() {
             const statusEl = document.getElementById('huginn-status-text');
             const dotEl = document.getElementById('huginn-status-dot');
@@ -1373,6 +1400,18 @@ ADMIN_HTML = """<!DOCTYPE html>
                 document.getElementById('hitl-group').checked = hitl.group_join !== false;
                 document.getElementById('hitl-timeout').value = hitl.confirmation_timeout_seconds || 300;
 
+                // Patch 181: Allowlist-Mode + erlaubte User-IDs.
+                const modeSel = document.getElementById('huginn-allowlist-mode');
+                if (modeSel) {
+                    modeSel.value = cfg.allowlist_mode || 'open';
+                }
+                const usersInput = document.getElementById('huginn-allowed-users');
+                if (usersInput) {
+                    const arr = Array.isArray(cfg.allowed_users) ? cfg.allowed_users : [];
+                    usersInput.value = arr.join(', ');
+                }
+                huginnAllowlistModeChange();
+
                 if (cfg.enabled) {
                     dotEl.style.background = '#3fb84e';
                     statusEl.textContent = 'Aktiv';
@@ -1411,7 +1450,11 @@ ADMIN_HTML = """<!DOCTYPE html>
                     code_execution: document.getElementById('hitl-code').checked,
                     group_join: document.getElementById('hitl-group').checked,
                     confirmation_timeout_seconds: parseInt(document.getElementById('hitl-timeout').value, 10) || 300
-                }
+                },
+                // Patch 181: Allowlist-Mode + erlaubte User-IDs.
+                allowlist_mode: (document.getElementById('huginn-allowlist-mode') || {}).value || 'open',
+                allowed_users: (document.getElementById('huginn-allowed-users') || {value:''}).value
+                    .split(',').map(s => s.trim()).filter(s => s.length > 0)
             };
             const tokenVal = document.getElementById('huginn-bot-token').value.trim();
             if (tokenVal && !tokenVal.includes('\u2026')) {
@@ -3108,6 +3151,9 @@ async def get_huginn_config():
         "default_system_prompt": DEFAULT_HUGINN_PROMPT,
         "group_behavior": mod_cfg.get("group_behavior", {}),
         "hitl": mod_cfg.get("hitl", {}),
+        # Patch 181: Allowlist-Modus + erlaubte User-IDs.
+        "allowlist_mode": mod_cfg.get("allowlist_mode", "open"),
+        "allowed_users": mod_cfg.get("allowed_users", []),
     }
 
 
@@ -3130,12 +3176,31 @@ async def post_huginn_config(request: Request):
 
     # Nur erlaubte Felder durchreichen
     # Patch 158: mode + system_prompt (Persona) dazu.
+    # Patch 181: allowlist_mode + allowed_users dazu.
     for key in (
         "enabled", "admin_chat_id", "allowed_group_ids",
         "model", "max_response_length", "mode", "system_prompt",
     ):
         if key in data:
             tg[key] = data[key]
+    if "allowlist_mode" in data:
+        mode_val = str(data["allowlist_mode"] or "open").strip().lower()
+        if mode_val in {"open", "allowlist", "admin_only"}:
+            tg["allowlist_mode"] = mode_val
+    if "allowed_users" in data:
+        # Akzeptiert Liste oder kommaseparierten String. Filter auf Ints.
+        raw_list = data["allowed_users"]
+        if isinstance(raw_list, str):
+            raw_list = [p.strip() for p in raw_list.split(",") if p.strip()]
+        elif not isinstance(raw_list, list):
+            raw_list = []
+        cleaned: list[int] = []
+        for item in raw_list:
+            try:
+                cleaned.append(int(str(item).strip()))
+            except (TypeError, ValueError):
+                continue
+        tg["allowed_users"] = cleaned
     if "bot_token" in data and data["bot_token"]:
         # Token nur schreiben wenn explizit gesetzt (nicht bei maskierten "…")
         if "…" not in str(data["bot_token"]):

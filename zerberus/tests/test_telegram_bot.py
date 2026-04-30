@@ -1198,7 +1198,7 @@ class TestIntentHeaderStrippedBeforeGuardAndUser:
                 "latency_ms": 5,
             }
 
-        async def fake_run_guard(user_msg, assistant_msg, caller_context=""):
+        async def fake_run_guard(user_msg, assistant_msg, caller_context="", rag_context=""):
             guard_calls.append({"user": user_msg, "assistant": assistant_msg})
             return {"verdict": "OK"}
 

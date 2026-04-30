@@ -261,7 +261,7 @@ class TestHuginnGuardBehavior:
         async def _fake_call_llm(*args, **kwargs):
             return {"content": "KRRAA! Der Rabe antwortet.", "latency_ms": 1}
 
-        async def _fake_guard(user_msg, assistant_msg, caller_context=""):
+        async def _fake_guard(user_msg, assistant_msg, caller_context="", rag_context=""):
             return {"verdict": "WARNUNG", "reason": "Testgrund"}
 
         monkeypatch.setattr(router_mod, "send_telegram_message", _fake_send)
@@ -307,7 +307,7 @@ class TestHuginnGuardBehavior:
         async def _fake_call_llm(*args, **kwargs):
             return {"content": "Antwort.", "latency_ms": 1}
 
-        async def _fake_guard(user_msg, assistant_msg, caller_context=""):
+        async def _fake_guard(user_msg, assistant_msg, caller_context="", rag_context=""):
             return {"verdict": "OK", "reason": "sauber"}
 
         monkeypatch.setattr(router_mod, "send_telegram_message", _fake_send)
@@ -345,3 +345,160 @@ class TestHuginnGuardContextBuilder:
         # bleibt, der Auszug ist eben leer).
         assert "Huginn" in ctx
         assert "Zerberus" in ctx
+
+
+# ---------------------------------------------------------------------------
+# Patch 180 — rag_context im System-Prompt (gegen Halluzinations-False-
+# Positives auf RAG-basierten Antworten) + Persona-Cap auf 800
+# ---------------------------------------------------------------------------
+
+
+class TestRagContextInSystemPrompt:
+    """P180: Der Guard bekommt jetzt zusaetzlich das Referenz-Material, das
+    dem Antwortenden zur Verfuegung stand. Vorher flaggte er Antworten, die
+    Fakten aus dem RAG-Index zitierten, als Halluzination — er konnte nicht
+    wissen, dass das Material echt ist.
+    """
+
+    def test_rag_context_landet_im_system_prompt(self):
+        prompt = hg._build_system_prompt(
+            rag_context="Zerberus ist ein FastAPI-System auf Tailscale.",
+        )
+        assert "Referenz-Wissen" in prompt
+        assert "Zerberus" in prompt
+        assert "FastAPI" in prompt
+        assert "KEINE Halluzinationen" in prompt
+        # Ohne caller_context bleibt der caller-Block weg.
+        assert "[Kontext des Antwortenden]" not in prompt
+
+    def test_rag_context_truncation_bei_3000_zeichen(self):
+        long_context = "A" * 3000
+        prompt = hg._build_system_prompt(rag_context=long_context)
+        # Truncation-Marker ist da …
+        assert "[... gekuerzt]" in prompt
+        # … und der vollstaendige Text steht NICHT drin (nur die ersten 1500).
+        assert long_context not in prompt
+        # Aber die ersten 1500 Zeichen schon.
+        assert "A" * 1500 in prompt
+
+    def test_rag_context_unter_limit_unbeschnitten(self):
+        short = "Zerberus + FastAPI + FAISS."
+        prompt = hg._build_system_prompt(rag_context=short)
+        assert short in prompt
+        assert "[... gekuerzt]" not in prompt
+
+    def test_rag_context_leer_kein_block(self):
+        prompt = hg._build_system_prompt(rag_context="")
+        assert "Referenz-Wissen" not in prompt
+        assert prompt == hg.GUARD_SYSTEM_PROMPT
+
+    def test_beide_kontexte_in_richtiger_reihenfolge(self):
+        prompt = hg._build_system_prompt(
+            caller_context="Huginn ist ein Rabe.",
+            rag_context="Zerberus laeuft auf Tailscale.",
+        )
+        # Reihenfolge: Caller-Block ZUERST, dann Referenz-Wissen — der Guard
+        # liest die Persona-Regeln vor dem Faktenmaterial.
+        caller_pos = prompt.find("[Kontext des Antwortenden]")
+        rag_pos = prompt.find("[Referenz-Wissen")
+        assert caller_pos > -1
+        assert rag_pos > -1
+        assert caller_pos < rag_pos
+        assert "Huginn" in prompt
+        assert "Tailscale" in prompt
+
+    def test_check_response_reicht_rag_context_an_system_prompt_durch(self, monkeypatch):
+        """End-to-End: rag_context-Parameter landet auch im system-message
+        (nicht nur im user-prompt wie bisher in P158/P120)."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
+        mock_resp = _MockResponse(200, _mk_choice('{"verdict": "OK", "reason": "ok"}'))
+        client = _MockClient(mock_resp)
+        with patch("zerberus.hallucination_guard.httpx.AsyncClient", lambda *a, **kw: client):
+            asyncio.run(hg.check_response(
+                "Frage?",
+                " ".join(["wort"] * 80),
+                rag_context="MARKER_RAG_FAKT_XYZ",
+            ))
+        sys_msg = next(m for m in client.last_payload["messages"] if m["role"] == "system")
+        assert "MARKER_RAG_FAKT_XYZ" in sys_msg["content"]
+        assert "Referenz-Wissen" in sys_msg["content"]
+
+
+class TestHuginnGuardContextPersonaBudget:
+    """P180 (Block 2): _build_huginn_guard_context schickt jetzt bis zu
+    800 Zeichen Persona an den Guard (vorher 300). Der Guard muss die
+    vollen Verhaltensregeln kennen, um Persona-Elemente korrekt zu
+    erkennen.
+    """
+
+    def test_persona_unter_800_zeichen_landet_komplett(self):
+        import zerberus.modules.telegram.router as router_mod
+
+        persona = "Huginn-Persona-Marker-" + ("x" * 200)
+        ctx = router_mod._build_huginn_guard_context(persona)
+        assert persona in ctx
+        assert "[... Persona gekuerzt]" not in ctx
+
+    def test_persona_ueber_budget_wird_truncated(self):
+        import zerberus.modules.telegram.router as router_mod
+
+        persona = "X" * 5000
+        ctx = router_mod._build_huginn_guard_context(persona)
+        assert "[... Persona gekuerzt]" in ctx
+        # Hartes Limit: insgesamt darf der Kontext ~850 Zeichen nicht
+        # ueberschreiten (Budget 800 + Truncation-Marker ~25).
+        assert len(ctx) <= 900
+
+    def test_300_zeichen_persona_jetzt_komplett_drin(self):
+        # Regression gegen P158 (300-Zeichen-Cap): eine 350-Zeichen-Persona
+        # wurde frueher abgeschnitten, jetzt nicht mehr.
+        import zerberus.modules.telegram.router as router_mod
+
+        persona = "P158-CAP-MARKER-" + ("y" * 340)
+        ctx = router_mod._build_huginn_guard_context(persona)
+        assert persona in ctx
+
+
+class TestRouterPasstRagContextAnGuard:
+    """P180: _process_text_message reicht den RAG-Lookup-String an
+    _run_guard durch. Vorher rag_context="" → False-Positives.
+    """
+
+    def test_run_guard_bekommt_rag_context_aus_lookup(self, monkeypatch):
+        import zerberus.modules.telegram.router as router_mod
+        from zerberus.modules.telegram.bot import HuginnConfig
+
+        seen = {}
+
+        async def _fake_send(bot_token, chat_id, text, **kw):
+            return True
+
+        async def _fake_call_llm(*args, **kwargs):
+            return {"content": "Antwort mit RAG-Fakten.", "latency_ms": 1}
+
+        async def _fake_rag_lookup(query, settings):
+            return "RAG-CHUNK: Zerberus laeuft auf Tailscale."
+
+        async def _fake_run_guard(user_msg, assistant_msg, caller_context="", rag_context=""):
+            seen["rag_context"] = rag_context
+            seen["caller_context"] = caller_context
+            return {"verdict": "OK", "reason": "ok"}
+
+        monkeypatch.setattr(router_mod, "send_telegram_message", _fake_send)
+        monkeypatch.setattr(router_mod, "call_llm", _fake_call_llm)
+        monkeypatch.setattr(router_mod, "_huginn_rag_lookup", _fake_rag_lookup)
+        monkeypatch.setattr(router_mod, "_run_guard", _fake_run_guard)
+
+        cfg = HuginnConfig(
+            enabled=True,
+            bot_token="T",
+            admin_chat_id="999",
+            allowed_group_ids=[],
+            model="deepseek/deepseek-chat",
+        )
+        settings = SimpleNamespace(modules={"telegram": {}})
+        info = {"chat_id": 42, "text": "Was ist Zerberus?", "message_id": 1, "username": "t"}
+        asyncio.run(router_mod._process_text_message(info, cfg, settings))
+
+        assert "Tailscale" in seen.get("rag_context", "")
+        assert "Huginn" in seen.get("caller_context", "")

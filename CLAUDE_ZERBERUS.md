@@ -43,7 +43,7 @@
 - **Category-Filter ist Datenschutz-Schicht**|Default `modules.telegram.rag_allowed_categories=["system"]`|persoenliche/narrative/lore/reference/general-Chunks werden HART verworfen, bevor sie das LLM sehen|Filter greift NACH `_search_index`, also nach Reranking — wir trauen dem Index nicht
 - Neue Kategorie `system` in [`hel.py`](zerberus/app/routers/hel.py)|`_RAG_CATEGORIES` + `CHUNK_CONFIGS["system"]={chunk_size:200, overlap:40, min_chunk_words:30, split:"none"}` (P178b-Tuning fuer kleine FAQ-/Tabellen-Bloecke wie „Was Zerberus NICHT ist" / Mythologie-Tabelle, sonst schluckt der Residual-Merge sie)|ohne diese Erweiterung wuerde Upload mit `category=system` auf "general" zurueckfallen
 - Test-Coverage P178: 16 neue Tests in [`test_huginn_rag.py`](zerberus/tests/test_huginn_rag.py)|Suite-Total nach P178b: 981 Tests gruen
-- **Bekannte Live-Test-Lücken (TODO Folgepatch):**|Guard kennt RAG-Inhalte NICHT (L-178a) → korrekte RAG-Antworten werden als Halluzination geflaggt, Fix: RAG-Chunks als `caller_context` an `check_response()` reichen|Guard kennt aktive Persona NICHT (L-178b) → Persona-Wechsel in Hel erreicht den Guard nicht, Fix: Persona aus Settings-Cache in `caller_context`|`system`-Kategorie fehlt im Hel-Frontend-Dropdown (L-178d, in P178b-Sweep behoben)
+- **Live-Test-Findings P178 — Status:** L-178a (Guard kennt RAG nicht) → ✅ ERLEDIGT in P180 via `rag_context`-Parameter|L-178b (Guard kennt Persona nicht) → ✅ ERLEDIGT in P180 via Persona-Cap 300→800|L-178c (ADMIN zu sensitiv) → ✅ ERLEDIGT in P182 via Plausi-Heuristik|L-178e (Allowlist fehlt) → ✅ ERLEDIGT in P181|L-178g (Voice-DM lautlos) → ✅ ERLEDIGT in P182 via Unsupported-Media-Handler|L-178d (system-Kategorie im Hel-Dropdown) → ✅ ERLEDIGT in P178c
 - Huginn-Doku liegt in [`docs/huginn_kennt_zerberus.md`](docs/huginn_kennt_zerberus.md)|hochladen via `curl -u Chris:... -F file=@docs/huginn_kennt_zerberus.md -F category=system http://localhost:5000/hel/admin/rag/upload`|MUSS category=system sein, sonst greift der Filter nicht
 - Graceful Degradation|RAG-Modul aus, RAG_AVAILABLE=False, Exception, leerer Query, keine erlaubte Kategorie im Top-K → leerer String → System-Prompt unveraendert → Fastlane-Fallback|Huginn antwortet wie Pre-P178
 - Konfig|`modules.telegram.rag_enabled` (Default `True`)|`rag_allowed_categories: ["system"]` (Default-Liste)|`rag_top_k: 5` (Over-Fetch-Faktor 4 fuer Filter)|in config.yaml setzbar, Defaults stehen in `_HUGINN_RAG_DEFAULT_*` Konstanten am Top der Sektion in router.py
@@ -281,12 +281,38 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - Logging-Tags: `[HITL-167]` (alle Manager-/Sweep-Events)|`[HITL-POLICY-164]` bleibt aktiv für Policy-Decisions
 - Test-Pattern: `tmp_db`-Fixture mit eigener SQLite ([`test_hitl_hardening.py`](zerberus/tests/test_hitl_hardening.py))|Stale-Tasks per `update().values(created_at=...)` direkt zurückdatieren|`_reset_telegram_singletons_for_tests()` für Router-Tests|Backward-Compat-Tests in `test_hitl_manager.py` mit `persistent=False`
 
-## Guard-Kontext (P158)
-- [`check_response()`](zerberus/hallucination_guard.py) akzeptiert optionalen `caller_context: str`|String beschreibt Antwortenden|im Guard-System-Prompt als `[Kontext des Antwortenden]`-Block + harter Satz „Referenzen auf diese Elemente sind KEINE Halluzinationen."
-- Huginn-Calls ([`telegram/router.py`](zerberus/modules/telegram/router.py)): Raben-Persona via `_build_huginn_guard_context(persona)` inkl. 300-Zeichen-Auszug
-- Nala-Calls ([`legacy.py`](zerberus/app/routers/legacy.py)): Zerberus-Selbstreferenz („Referenzen auf Zerberus/Chris/Nala/Hel/Huginn keine Halluzinationen")
+## Guard-Kontext (P158 / P180)
+- [`check_response()`](zerberus/hallucination_guard.py) akzeptiert optionale `caller_context: str` UND `rag_context: str`|`caller_context` beschreibt den Antwortenden (Persona, System-Zugehörigkeit)|`rag_context` ist das Referenz-Material das dem LLM zur Verfügung stand
+- Im System-Prompt erscheinen beide als getrennte Blöcke: `[Kontext des Antwortenden]` (caller_context, ohne harten Cap) und `[Referenz-Wissen das dem Antwortenden zur Verfügung stand]` (rag_context, **Cap 1500 Zeichen** via `RAG_CONTEXT_MAX_CHARS`)
+- `rag_context` lebt zusätzlich im User-Prompt als Faktenmaterial (Cap 2000, P120) — die zwei Stellen sind absichtlich redundant: System-Prompt = "treat as legitimate", User-Prompt = "Diskussions-Material"
+- Huginn-Calls ([`telegram/router.py`](zerberus/modules/telegram/router.py)): Raben-Persona via `_build_huginn_guard_context(persona)` inkl. **800-Zeichen-Auszug** (P180, vorher 300)|RAG-Lookup-String (`_huginn_rag_lookup`) wird als `rag_context` an `_run_guard` durchgereicht
+- Nala-Calls ([`legacy.py`](zerberus/app/routers/legacy.py)): Zerberus-Selbstreferenz („Referenzen auf Zerberus/Chris/Nala/Hel/Huginn keine Halluzinationen")|`rag_hits` werden formatiert als `rag_context` an `check_response()` gereicht (seit P120)
 - WARNUNG = KEIN Block|Antwort geht IMMER an User|Admin (Chris) bekommt bei WARNUNG DM mit Chat-ID+Grund|BLOCK/TOXIC würden Antwort unterdrücken — gibt's aktuell nicht (nur OK/WARNUNG/SKIP/ERROR)
-- Neue Frontends: eigenen `caller_context` definieren|leer = Pre-158-Verhalten
+- Neue Frontends: eigene `caller_context` + `rag_context` definieren|beide leer = Pre-158-Verhalten
+
+## Telegram-User-Allowlist (P181)
+- **Nur Privat-Chats** — Gruppen sind Tailscale-intern, der Allowlist-Filter springt nur bei `chat_type == "private"`
+- Drei Modi unter `modules.telegram.allowlist_mode`: `open` (Default, alle), `allowlist` (nur User in `allowed_users`), `admin_only` (nur `admin_chat_id`)
+- **Admin ist im allowlist-Mode IMMER erlaubt**, auch wenn nicht in `allowed_users` — Lock-out-Schutz
+- **Leere `allowed_users` im allowlist-Mode = alle erlaubt** (Safety-Fallback). Wer nur Admin will: `admin_only` setzen
+- Position im Pipeline-Flow: VOR Sanitizer/Rate-Limit/RAG/LLM (kosten-/sicherheitskritisch)
+- Absage-Rate-Limit: 1 Absage pro User pro Stunde (`_DENIED_NOTICE_INTERVAL_SECS`) — schützt gegen Voice-Spam → Outbound-Throttle
+- Hel-UI: Huginn-Tab → Sektion „Zugriffskontrolle (Allowlist)" mit Mode-Dropdown + User-IDs-Feld (kommasepariert)
+- Logging-Tag: `[ALLOWLIST-181]`
+
+## ADMIN-Plausibilitäts-Heuristik (P182)
+- `HitlPolicy.evaluate(parsed, user_message="")` nimmt jetzt optional den User-Text an|Wenn Intent=ADMIN aber `user_message` keine Admin-Marker hat (Slash-Prefix oder Keyword aus `_ADMIN_TOKENS`) → Downgrade auf CHAT
+- Schutz vor Smalltalk-False-Positives: „Wie geht's dir?" wird vom LLM manchmal als ADMIN klassifiziert, aber ohne Slash und ohne Admin-Keyword bleibt das CHAT
+- Token-Match via `re.findall(r"[a-zäöüß]+", text)` + Set-Intersection — kein Substring-Match (sonst würde "voraussetzung" auf "stat" hitten)
+- Backward-Compat: Aufrufer ohne `user_message` (Default `""`) bekommen das Pre-182-Verhalten — alle bestehenden HitL-Policy-Tests bleiben grün
+- Logging-Tag: `[HITL-POLICY-182]` für Downgrade-Events
+
+## Unsupported-Media-Handler (P182)
+- Voice/Audio/Video/Video-Note/Document/Sticker → kurze freundliche Absage + kein LLM-Call
+- Photo bleibt UNTERSTÜTZT (Vision-Pfad) — nicht in `_UNSUPPORTED_MEDIA`
+- Position: NACH Allowlist (denied User soll nicht erfahren dass der Bot existiert), VOR Rate-Limit (freundliche Erklärung statt „Sachte, Keule")
+- Logging-Tag: `[HUGINN-182]` für Media-Skips
+- Echte Voice→Whisper-Pipeline ist Backlog-Item B-072
 
 ## Settings-Cache (P156)
 - `get_settings()` = Singleton in `core/config.py`|YAML-Write MUSS Cache invalidieren|sonst stale Wert + verzögerte UI-Werte nach Save

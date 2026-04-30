@@ -1,6 +1,6 @@
 # BACKLOG — Zerberus Pro 4.0
 *Konsolidiertes Backlog. Eine Datei, alle offenen Items.*
-*Stand: Patch 179 (2026-04-30) — konsolidiert aus `backlog_nach_patch83.md`, Handover P178 L1-L10, SUPERVISOR_ZERBERUS.md Offene Items*
+*Stand: Patch 182 (2026-04-30) — B-001..B-005 erledigt durch P180/P181/P182*
 *Coda aktualisiert nach jedem Patch. Chris hakt ab.*
 
 **Workflow:** Coda schreibt neue Items rein nach jedem Patch. Coda prüft im Code, ob ein Item bereits erledigt ist, bevor es übernommen wird. Items, die hier gestrichen werden, landen im Kommentar-Block am Ende.
@@ -11,11 +11,11 @@
 
 | ID | Item | Herkunft | Status |
 |----|------|----------|--------|
-| B-001 | Guard kennt RAG-Inhalte nicht — RAG-Chunks als `caller_context` an `check_response()` reichen, sonst werden korrekte RAG-Antworten als Halluzination geflaggt | L-178a | OFFEN |
-| B-002 | Guard kennt aktive Persona nicht — Persona aus Settings-Cache (`@invalidates_settings`) in `caller_context` einhängen | L-178b | OFFEN |
-| B-003 | Telegram-Bot öffentlich erreichbar — Allowlist `modules.telegram.allowed_user_ids` in config.yaml; unbekannte User werden still ignoriert | L-178e | OFFEN |
-| B-004 | Intent-Router ADMIN zu sensitiv — „Wie ist das aufgebaut?" wird als ADMIN klassifiziert (erzwingt HitL). Schwelle erhöhen, „Frage über System ≠ Befehl an System" | L-178c | OFFEN |
-| B-005 | Sprachnachrichten in Telegram-DM funktionieren nicht — Voice-Handler greift mutmasslich nur in Gruppen, prüfen | L-178g | OFFEN |
+| B-001 | Guard kennt RAG-Inhalte nicht — RAG-Chunks als `rag_context` an `check_response()` reichen, sonst werden korrekte RAG-Antworten als Halluzination geflaggt | L-178a | ERLEDIGT (P180) |
+| B-002 | Guard kennt aktive Persona nicht — Persona aus Settings-Cache (`@invalidates_settings`) in `caller_context` einhängen | L-178b | ERLEDIGT (P180, Persona-Cap 300→800) |
+| B-003 | Telegram-Bot öffentlich erreichbar — Allowlist `modules.telegram.allowed_users` in config.yaml; unbekannte User werden mit einmaliger Absage abgewiesen, kein LLM-Call | L-178e | ERLEDIGT (P181) |
+| B-004 | Intent-Router ADMIN zu sensitiv — „Wie ist das aufgebaut?" wird als ADMIN klassifiziert (erzwingt HitL). Plausibilitäts-Heuristik (Slash-Prefix oder Admin-Keyword), sonst Downgrade auf CHAT | L-178c | ERLEDIGT (P182) |
+| B-005 | Sprachnachrichten / Sticker / Dokumente in Telegram-DM laufen lautlos ins Leere — Unsupported-Media-Handler mit freundlicher Absage, kein LLM-Call | L-178g | ERLEDIGT (P182) |
 
 ## Mittelfristig (Phase 5 / Architektur)
 
@@ -80,6 +80,7 @@
 |----|------|----------|--------|
 | B-070 | Easter Egg: `// make love ... not war — W.F. Weiher, Stanford AI Lab, 1967` als Kommentar tief im Rosa-Code (erstes dokumentiertes Software-Easter-Egg) | L10 | IDEE |
 | B-071 | ChatML-Wrapper / SillyTavern-Style Personas — Persona nicht als flacher System-Prompt sondern als strukturiertes Character-Card-Format (ChatML `<|im_start|>system`). Felder: Persönlichkeit, Beispiel-Dialoge, Szenario, First-Message. Importierbare `.json`-Character-Cards über Hel hochladbar. Löst Persona-Drift über lange Konversationen (DeepSeek fällt nach ~10-15 Turns in RLHF-Default zurück). Priorität: nach Prosodie + Tool-Use. | Chat 2026-04-30 | IDEE |
+| B-072 | Huginn Voice→Whisper-Pipeline — Sprachnachrichten in Telegram-DMs über lokalen Whisper-Container transkribieren statt freundlich abzulehnen (P182 Block 2 Option B). Audio von TG-API runterladen → an localhost:8002 → Transkript → normaler Text-Pfad. Abhängigkeit: Whisper-Container muss laufen. | P182 / L7 | IDEE |
 
 ---
 
