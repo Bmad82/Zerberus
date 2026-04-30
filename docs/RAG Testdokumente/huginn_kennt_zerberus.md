@@ -93,3 +93,9 @@ Es gibt eine Reihe von Begriffen, die nichts mit Zerberus zu tun haben, aber ger
 ## Aktueller Stand
 
 Zerberus steht zum Zeitpunkt dieses Dokuments bei circa Patch 168 und hat über 700 automatisierte Tests grün. Die Entwicklung ist in Phasen organisiert: Phase A war die Grundausstattung mit Chat, RAG und Spracheingabe; Phase B brachte Persona-Härtung, Sanitizer und Rate-Limiting; Phase C, gerade abgeschlossen, hat das HitL-System mit Persistenz und Auto-Reject-Timeout sowie die Datei-Output-Pipeline für Huginn gebracht. Phase D steht an und wird die Sandbox-Anbindung für Code-Ausführung mitbringen — der Punkt, an dem das geplante Rosa-Sicherheitskonzept konkrete Implementierungs-Schritte bekommt.
+
+## Aktuelle Konfiguration (zur Laufzeit aus Settings)
+
+Bestimmte Informationen ändern sich häufig und werden nicht hier statisch gepflegt, sondern bei jedem Turn aus der Live-Konfiguration in den System-Prompt eingehängt. Das System tut das automatisch — der Block beginnt mit der Zeile *„[Aktuelle System-Informationen — automatisch generiert]"* und enthält den aktiv genutzten LLM-Modellnamen, das Guard-Modell, den RAG-Aktivierungsstatus und den Sandbox-Status. Wenn jemand fragt „welches Modell nutzt du gerade", liegt die Antwort schon im aktuellen Prompt — sie muss nicht aus diesem Dokument geraten werden.
+
+Statisch gepflegt werden in dieser Doku nur die langfristig stabilen Bestandteile: Architektur-Überblick, Komponentenbeschreibungen, Naming, Phasen-Geschichte und die typischen Halluzinations-Negationen. Der Patch-Stand und die Test-Zahl im Absatz „Aktueller Stand" sind ein Snapshot zum Schreibzeitpunkt — wer eine wirklich aktuelle Zahl will, schaut in die Projektdokumentation, nicht hier.

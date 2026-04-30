@@ -1,6 +1,6 @@
 # MANUELLE_TESTS_CHECKLISTE.md — Zerberus Pro 4.0
-*Stand: Patch 182 (2026-04-30) — Patches 120–182 abgedeckt*
-*Teststand: 1033 passed, 114 deselected, 4 xfailed (Default-Run)*
+*Stand: Patch 185 (2026-04-30) — Patches 120–185 abgedeckt*
+*Teststand: 1033 + P183 (49) + P184 (13) + P185 (24) Tests passed (Default-Run)*
 
 **Workflow:** Coda schreibt neue Items rein nach jedem Patch. Chris testet und hakt ab.
 Nur Items, die Coda NICHT selbst testen kann, landen hier (UI-Checks, Mobile, Tailscale, iPhone, UX-Gefühl).
@@ -17,10 +17,39 @@ Coda macht: pytest, curls, smoke-checks, code-verify, log-checks — alles Autom
 
 ## Nala-UI
 
-- [ ] Login frisch (Cache-Löschen oder Inkognito) → Bubble-Farben sind NICHT schwarz, sondern Pink/Dunkelblau-Default (P153/P169)
+- [ ] Login frisch (Cache-Löschen oder Inkognito) → Bubble-Farben sind NICHT schwarz, sondern Pink/Dunkelblau-Default (P153/P169/P183)
 - [ ] Alten Favoriten mit korruptem `#000000`-BG laden → wird beim Boot bereinigt, Favorit ist persistent gefixt
 - [ ] Hamburger-Menü öffnet auf Mobile, alle Buttons reagieren auf `:active`
-- [ ] Theme-Picker (HSL-Slider): Farb-Wechsel sofort sichtbar, Reload erhält Farben (Achtung B-024 / L8: HSL-Kaltstart-Bug noch offen!)
+- [ ] Theme-Picker (HSL-Slider): Farb-Wechsel sofort sichtbar, Reload erhält Farben (P183 — Sanitizer + Sweep, B-024 / L8 erledigt)
+
+## Modell-Selbstkenntnis (P185)
+
+- [ ] Huginn (Telegram): "Welches Modell nutzt du?" → Antwort nennt korrektes Modell (z.B. deepseek-v3.2)
+- [ ] Huginn: "Ist RAG aktiv?" → Antwort matcht config.yaml (`modules.rag.enabled`)
+- [ ] Huginn: "Welches Guard-Modell?" → Antwort nennt mistral-small-24b-instruct-2501
+- [ ] Nala-Frontend: "Was für ein Modell bist du?" → korrektes Modell
+- [ ] Hel → Modell ändern → Server-Reload → nächste Frage zeigt neues Modell ohne Code-Änderung
+- [ ] Server-Log: System-Prompt enthält den Block `[Aktuelle System-Informationen — automatisch generiert]`
+
+## Nala-Persona / Mein Ton (P184)
+
+- [ ] Settings → Tab Ausdruck → "Mein Ton" → Persona eingeben (z.B. Mutzenbacher) → Speichern → Status `✅ Gespeichert` erscheint
+- [ ] Nachricht senden ("wie geht's?") → Antwort spiegelt den Ton wider (Wiener Schmäh, Persönlichkeit) — KEIN generisches "Alles gut hier"
+- [ ] Server-Log: `[PERSONA-184]` zeigt `persona_active=True`, `sys_prompt_len > 1000`, `first200` enthält Persona-Phrase
+- [ ] Browser neu starten → Login → Settings → Ton-Text ist noch da (atomares File-Write hält)
+- [ ] Ton komplett leeren → Speichern → Antworten kehren auf Default-Nala zurück (warm/direkt aus `system_prompt.json`)
+- [ ] User OHNE eigenen Ton (z.B. neues Profil) → Antworten nutzen Default, Server-Log zeigt `persona_active=False`
+
+## Black-Bug Forensik (P183 — vierter Anlauf)
+
+- [ ] Browser komplett schließen → Nala öffnen → einloggen → Bubbles NICHT schwarz, normale Pink/Dunkelblau-Defaults
+- [ ] Abmelden → Browser-Cache löschen → neu einloggen → Bubbles NICHT schwarz
+- [ ] Favorit speichern (mit normalen Farben) → abmelden → einloggen → Favorit laden → Bubbles NICHT schwarz
+- [ ] Color-Picker auf Schwarz (#000000) stellen → Sanitizer greift, Bubble fällt auf CSS-Default zurück, Konsole zeigt `[BLACK-183]` Warning
+- [ ] HSL-Slider auf Extrem (H=0, S=0, L=10 — minimum) → Sanitizer-Test: L<5% wird abgefangen, sonst durchgelassen
+- [ ] Browser-Konsole bei normalem Login: KEIN `[BLACK-183]` Warning (= keine korrupten Werte vorhanden)
+- [ ] DevTools → Application → localStorage: `nala_bubble_*_bg` enthält nie `#000000`/`hsl(0,0%,0%)`/etc. nach einem Sweep
+- [ ] Alten Pre-P183-Favoriten mit `userText: '#000000'` laden → wird beim Sweep bereinigt (`[BLACK-183] Favorit X bereinigt` im Log)
 - [ ] Wiederholen-Button (🔄) an User-Bubble → schickt Nachricht erneut (P98)
 - [ ] Bearbeiten-Button (✏️) → kopiert Text in Textarea, Cursor ans Ende (P98)
 - [ ] Display-Rotation (Landscape) → Header/Padding kompakt, kein Layout-Bruch (P90)

@@ -237,6 +237,28 @@ uvicorn zerberus.main:app --host 0.0.0.0 --port 5000 --reload
 - `translate_outgoing` liefert `{kind: text|file, text, file, file_name, mime_type, reply_to, metadata}` — der Caller (legacy.py / nala.py) übersetzt das in `ChatCompletionResponse` oder SSE-Event|`send` raised `NotImplementedError` mit Hinweis auf SSE/EventBus — Nala antwortet nicht über Push
 - Wichtig: Adapter ist OVERLAY, kein Ersatz für `legacy.py`/`nala.py`|SSE-Streaming, RAG, Memory, Sentiment, Audio-Pipeline, Query-Expansion bleiben unverändert|wer den Adapter nutzt: in einem Nala-Endpoint `NalaAdapter().translate_incoming({"text": ..., "profile_name": request.state.profile_name, ...})` → `IncomingMessage` an Pipeline (P174) → `OutgoingMessage` mit `translate_outgoing` zurück in eine Nala-Response
 
+## Runtime-Info-Block (P185)
+- Utility: [`zerberus/utils/runtime_info.py`](zerberus/utils/runtime_info.py) — `build_runtime_info(settings) -> str` baut den Block, `append_runtime_info(prompt, settings) -> str` haengt ihn an.
+- Inhalt: Zerberus-Version, Cloud-LLM (Kurzname), Guard-Modell (Kurzname), RAG/Sandbox-Aktivierungs-Status. Marker-Header: `[Aktuelle System-Informationen — automatisch generiert]`.
+- Robust: Pydantic-Settings, Dict-Settings, `SimpleNamespace`, sogar `None` werden akzeptiert — Lesefehler liefern `unbekannt` statt zu crashen.
+- Injection-Punkte:
+  - **Huginn:** [`telegram/router.py`](zerberus/modules/telegram/router.py) `_process_text_message` — Reihenfolge `_resolve_huginn_prompt` → `append_runtime_info` → `_inject_rag_context` → `build_huginn_system_prompt`.
+  - **Nala:** [`legacy.py`](zerberus/app/routers/legacy.py) `chat_completions` — Reihenfolge `load_system_prompt` → `_wrap_persona` (P184) → `append_runtime_info` → `append_decision_box_hint` → insert.
+- Statisch in RAG-Doku ([`huginn_kennt_zerberus.md`](docs/RAG%20Testdokumente/huginn_kennt_zerberus.md)): Architektur, Naming, Komponenten, Halluzinations-Negationen, Phasen-Geschichte. **Dynamisch (Live-Block):** Modellname, Guard-Modell, Modul-Status. RAG-Doku enthält einen Absatz "Aktuelle Konfiguration" der auf den Live-Block zeigt.
+- Source-Audit-Test in [`test_patch185_runtime_info.py`](zerberus/tests/test_patch185_runtime_info.py) verifiziert Reihenfolge der Calls in beiden Routern — verhindert Drift wenn künftige Patches zwischen die Stufen rutschen.
+
+## Nala Prompt-Assembly (P184)
+- **Quellen-Hierarchie** (von Persona-Stärkste zu Schwächste):
+  1. `system_prompt_{profil}.json` (z.B. `system_prompt_chris.json`) — vom User in Settings → Tab Ausdruck → "Mein Ton" via `POST /nala/profile/my_prompt` geschrieben. Atomares Write via tempfile + os.replace. Nur eigenes Profil zugreifbar (JWT-Check).
+  2. `system_prompt.json` — Default Nala-Stil (warmer KI-Assistent), Fallback wenn profil-spezifisch fehlt.
+  3. Empty (kein system-Prompt) — wenn keine Datei existiert.
+- **Resolver:** [`load_system_prompt(profile_name)` in `legacy.py`](zerberus/app/routers/legacy.py)|Reihenfolge: profil-spezifisch (lower-case) → generic|Liest immer fresh von Disk, kein Cache.
+- **Wrapping (P184):** `_wrap_persona()` legt einen `# AKTIVE PERSONA — VERBINDLICH`-Header vor profil-spezifische Prompts|Trigger: `_is_profile_specific_prompt(profile_name)` checkt Datei-Existenz|Generischer Default wird NICHT gewrappt (er IST der Default).
+- **Reihenfolge im messages-Array:** `[system: AKTIVE-PERSONA-Wrapped + decision-box-hint + allgemeinwissen-fallback, user: enriched_with_RAG]`|Persona steht IMMER vorne, RAG-Kontext wird in den USER-Turn injiziert (nicht in system).
+- **Konflikt-Resolution:** Wenn Caller bereits eine `role=system` mitschickt (interne Pipeline-Aufrufe), wird die Persona NICHT eingefügt — Caller-Wahl gewinnt|Standard-Frontend-Calls schicken nur `[{role:user}]`, also greift der Persona-Inject immer.
+- **Diagnose:** Persistenter `[PERSONA-184]`-INFO-Log in `legacy.py` zeigt `profile`, `persona_active`, `sys_prompt_len`, `first200`|Bei Persona-Bug-Reports: erst Server-Log nach `[PERSONA-184]` greppen, dann entscheiden ob Verdrahtung (kein Log/leere Persona) oder LLM-Verhalten (Persona im Log aber Antwort generisch).
+- **Bekanntes Verhalten:** DeepSeek v3.2 ignorierte abstrakte System-Prompts bei kurzen User-Inputs ("wie geht's?")|`# AKTIVE PERSONA — VERBINDLICH`-Marker erzwingt höhere Aufmerksamkeit|Bei weiterhin generischen Antworten: ChatML-Wrapper (B-071) als nächste Eskalations-Stufe.
+
 ## Policy-Engine (P175, Phase E)
 - [`core/policy_engine.py`](zerberus/core/policy_engine.py) — abstraktes `PolicyEngine`-Interface + pragmatische `HuginnPolicy`-Fassade|`evaluate(message, parsed_intent=None) -> PolicyDecision`|`PolicyDecision{verdict, reason, requires_hitl, severity, sanitizer_findings, retry_after}`|`PolicyVerdict ∈ {ALLOW, DENY, ESCALATE}`
 - HuginnPolicy aggregiert: 1) Rate-Limit (P163, billigster Check zuerst — bei DENY wird Sanitizer NICHT aufgerufen), 2) Sanitizer (P162/P173, `blocked=True` → DENY, Findings ohne `blocked` werden nur durchgereicht — kein Eskalations-Trigger, sonst rotten WARNUNG-Patterns), 3) HitL-Check (P164, NUR wenn `parsed_intent` mitgegeben — sonst skip, sonst würde Pre-Pass ohne Intent evaluieren)

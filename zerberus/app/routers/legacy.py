@@ -89,6 +89,42 @@ def load_system_prompt(profile_name: str | None = None) -> str:
     return ""
 
 
+def _is_profile_specific_prompt(profile_name: str | None) -> bool:
+    """True wenn der User in den Settings einen eigenen 'Mein Ton' gespeichert hat.
+
+    Patch 184: Wir wollen NUR profil-spezifische Personas mit dem AKTIVE-PERSONA-
+    Marker wrappen — der generische Nala-Default soll NICHT als Persona auftreten,
+    weil er sowieso nur Smalltalk-Regeln definiert.
+    """
+    if not profile_name:
+        return False
+    return Path(f"system_prompt_{profile_name.lower()}.json").exists()
+
+
+def _wrap_persona(sys_prompt: str) -> str:
+    """Patch 184: Persona-Prompts mit explizitem Verbindlichkeits-Marker einleiten.
+
+    Hintergrund: Chris hat eine umfangreiche Persona (Wiener Kurtisane) in
+    Settings → Ausdruck → Mein Ton hinterlegt. DeepSeek v3.2 ignorierte sie
+    bei kurzen User-Anfragen ("wie geht's?") und antwortete mit dem
+    Assistant-Default-Mode ("Alles gut hier, danke"). Root cause: bei kurzen
+    Inputs gewichtet das LLM den User-Turn staerker als den abstrakten
+    System-Prompt — wir verstaerken die Persona-Direktive durch einen
+    klaren Markenkopf, der dem LLM signalisiert: "das ist verbindlich".
+
+    Anti-Halluzinations-Hinweis am Ende verhindert dass die Persona
+    Zerberus-Selbstreferenzen falsch interpretiert.
+    """
+    return (
+        "# AKTIVE PERSONA — VERBINDLICH\n"
+        "Antworte AUSSCHLIESSLICH in der folgenden Persona. Ignoriere alle\n"
+        "generischen Assistant-Defaults. Sprachstil, Wortwahl und Haltung\n"
+        "MUESSEN die Persona widerspiegeln, auch bei kurzen Nachrichten oder\n"
+        "Begruessungen. Bleib in der Rolle.\n\n"
+        f"{sys_prompt}"
+    )
+
+
 # ---------- Chat-Endpunkt ----------
 # TEXT-CHAT-PFAD (Patch 60 – verifiziert):
 #   Nala-Frontend (sendMessage) → POST /v1/chat/completions → hier → store_interaction() ✅
@@ -121,6 +157,21 @@ async def chat_completions(
 
     # System-Prompt einfügen, falls nicht vorhanden
     sys_prompt = load_system_prompt(profile_name)
+    # Patch 184: Profil-spezifische Persona ("Mein Ton" aus Settings) explizit
+    # als verbindliche Persona markieren. Der generische Nala-Default bleibt
+    # ungewrappt — er IST der Default-Stil und braucht keinen Verstaerker.
+    persona_active = _is_profile_specific_prompt(profile_name)
+    if persona_active and sys_prompt:
+        sys_prompt = _wrap_persona(sys_prompt)
+    # Patch 185: Runtime-Info-Block (Modellname, RAG/Sandbox) zwischen Persona
+    # und Decision-Box-Hint einhaengen. Nala kann damit zur Laufzeit antworten
+    # auf "welches Modell nutzt du?" ohne statisches RAG-Doku-Update.
+    from zerberus.utils.runtime_info import append_runtime_info
+    sys_prompt = append_runtime_info(sys_prompt, settings)
+    logger.info(
+        f"[PERSONA-184] profile={profile_name} | persona_active={persona_active} | "
+        f"sys_prompt_len={len(sys_prompt)} | first200={sys_prompt[:200]!r}"
+    )
     # Patch 118a: Decision-Box-Hinweis anhängen, wenn features.decision_boxes aktiv
     from zerberus.core.prompt_features import append_decision_box_hint
     sys_prompt = append_decision_box_hint(sys_prompt, settings)

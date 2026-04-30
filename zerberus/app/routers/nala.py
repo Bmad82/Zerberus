@@ -1234,8 +1234,87 @@ NALA_HTML = """<!DOCTYPE html>
         }
     </style>
     <script>
+        /* Patch 183 — Black-Bug Forensik (vierter Anlauf, hoffentlich endgültig).
+           Vorgänger: P109 (Anti-Invariante "NIE schwarz auf schwarz"),
+           P153 (cssToHex-HSL-Bug + IIFE-Guard mit 4 String-Matches),
+           P169 (Favoriten-_cleanFav mit 4 Strings + Backend-Filter theme_color).
+           Root Cause: Die alten BLACK_VALUES-Listen waren EXAKT-String-Matches
+           für nur 4 Formate. Nicht erfasst:
+             - hsl(0,0%,0%) und hsl(*,*,L<5%)  → applyHsl() kann das produzieren
+             - rgb(0,0,0) ohne Leerzeichen     → cssToHex-Pre-P153 Daten
+             - rgba(0, 0, 0, 1) mit Spaces vor 1
+             - rgba(0,0,0,1.0) mit Float-Notation
+             - leere/null Werte (transparent ist auch unbrauchbar als BG)
+           Plus: bubblePreview, bubbleTextPreview, applyHsl, loadFav setzten
+           Bubble-CSS-Vars KOMPLETT OHNE Guard. Color-Picker liefert #000000
+           wenn der User Schwarz wählt — wurde direkt in localStorage geschrieben.
+           Fix: regex-basiertes _isBubbleBlack() + zentraler sanitizeBubbleColor()
+           durch JEDE setProperty-Stelle + cleanBlackFromStorage() Sweep beim Boot
+           UND nochmal in showChatScreen (defense-in-depth). */
+        function _isBubbleBlack(v) {
+            if (v === null || v === undefined) return true;
+            var s = String(v).trim().toLowerCase().replace(/\s+/g, '');
+            if (s === '' || s === 'transparent' || s === 'none') return true;
+            // Hex schwarz (alle Varianten inkl. Alpha-Notation, alpha != 0)
+            if (s === '#000' || s === '#000f' || s === '#000000') return true;
+            if (s === '#000000ff' || /^#0{6}[1-9a-f][0-9a-f]$/.test(s)) return true;
+            if (/^#0{3}[1-9a-f]$/.test(s)) return true;  // #000A short-form alpha
+            // rgb(0,0,0)
+            if (/^rgb\(0,0,0\)$/.test(s)) return true;
+            // rgba(0,0,0,A) mit A != 0  (rgba(0,0,0,0) ist transparent, harmlos hier)
+            if (/^rgba\(0,0,0,(?:0?\.0*[1-9]\d*|1(?:\.0+)?)\)$/.test(s)) return true;
+            // hsl/hsla mit L=0 (immer schwarz, egal H/S)
+            if (/^hsla?\(\d+(?:\.\d+)?,\d+(?:\.\d+)?%?,0(?:\.0+)?%(?:,[\d.]+)?\)$/.test(s)) return true;
+            // hsl/hsla mit L<5% (visuell schwarz, unter dem Slider-min von 10)
+            var hslMatch = s.match(/^hsla?\([^,]+,[^,]+,([\d.]+)%/);
+            if (hslMatch && parseFloat(hslMatch[1]) < 5) return true;
+            return false;
+        }
+        function sanitizeBubbleColor(value, fallback) {
+            if (_isBubbleBlack(value)) {
+                try { console.warn('[BLACK-183] Schwarzen Bubble-Wert abgefangen:', value, '→ Fallback:', fallback); } catch(_) {}
+                return fallback;
+            }
+            return value;
+        }
+        function cleanBlackFromStorage() {
+            var keys = ['nala_bubble_user_bg', 'nala_bubble_llm_bg',
+                        'nala_bubble_user_text', 'nala_bubble_llm_text'];
+            keys.forEach(function(k) {
+                try {
+                    var v = localStorage.getItem(k);
+                    if (v && _isBubbleBlack(v)) {
+                        try { console.warn('[BLACK-183] Korrupten localStorage-Wert entfernt:', k, '=', v); } catch(_) {}
+                        localStorage.removeItem(k);
+                    }
+                } catch(_) {}
+            });
+            // Favoriten-Slots prüfen — auch userText/llmText, nicht nur BG
+            for (var i = 1; i <= 5; i++) {
+                try {
+                    var raw = localStorage.getItem('nala_theme_fav_' + i);
+                    if (!raw) continue;
+                    var fav = JSON.parse(raw);
+                    if (!fav || !fav.bubble) continue;
+                    var dirty = false;
+                    ['userBg', 'llmBg', 'userText', 'llmText'].forEach(function(field) {
+                        if (fav.bubble[field] && _isBubbleBlack(fav.bubble[field])) {
+                            delete fav.bubble[field];
+                            dirty = true;
+                        }
+                    });
+                    if (dirty) {
+                        localStorage.setItem('nala_theme_fav_' + i, JSON.stringify(fav));
+                        try { console.warn('[BLACK-183] Favorit', i, 'bereinigt'); } catch(_) {}
+                    }
+                } catch(_) {}
+            }
+        }
+
         /* Patch 77 C3 + Patch 86: Theme + Bubble + Schriftgröße aus localStorage – vor erstem Render
-           Patch 103 B-13/14: Wenn ein Favoriten-Slot als "last active" markiert ist, hat der Vorrang. */
+           Patch 103 B-13/14: Wenn ein Favoriten-Slot als "last active" markiert ist, hat der Vorrang.
+           Patch 183: Pre-IIFE-Sweep + Sanitizer durchgeschleift. */
+        cleanBlackFromStorage();
         (function() {
             var r = document.documentElement.style;
             var favApplied = false;
@@ -1254,35 +1333,32 @@ NALA_HTML = """<!DOCTYPE html>
                             if (t.accent)    r.setProperty('--color-accent', t.accent);
                         }
                         if (fav && fav.v === 2 && fav.bubble) {
-                            // Patch 169 (B1): Favoriten-Daten aus Pre-P153-Sessions
-                            // koennen #000000 als BG enthalten (cssToHex-HSL-Bug, jetzt
-                            // gefixed). Beim Login/Boot wuerden diese Werte direkt in
-                            // die CSS-Vars geschrieben und der LocalStorage-Guard unten
-                            // greift nicht — also hier auch filtern. Anti-Invariante:
-                            // BG-Bubbles werden NIE absichtlich auf #000000 gesetzt.
-                            var FAV_BLACK = ['#000000', '#000', 'rgb(0, 0, 0)', 'rgba(0,0,0,1)'];
-                            function _cleanFav(v) {
-                                if (!v) return null;
-                                if (FAV_BLACK.indexOf(String(v).trim().toLowerCase()) !== -1) {
-                                    try { console.debug('[SETTINGS-169] Bubble-BG aus Favorit war schwarz, verwende Default'); } catch(_) {}
-                                    return null;
+                            // Patch 183: ALLE Bubble-Felder durch _isBubbleBlack filtern,
+                            // nicht nur BG. Korrupte Werte überspringen, Favorit persistent
+                            // reparieren. Anti-Invariante: Bubbles werden NIE absichtlich
+                            // schwarz gesetzt.
+                            var fb = fav.bubble;
+                            var fields = [
+                                ['userBg',   '--bubble-user-bg'],
+                                ['userText', '--bubble-user-text'],
+                                ['llmBg',    '--bubble-llm-bg'],
+                                ['llmText',  '--bubble-llm-text']
+                            ];
+                            var anyDirty = false;
+                            fields.forEach(function(pair) {
+                                var key = pair[0], cssVar = pair[1];
+                                var val = fb[key];
+                                if (!val) return;
+                                if (_isBubbleBlack(val)) {
+                                    try { console.warn('[BLACK-183] Favorit-Feld', key, 'war schwarz:', val); } catch(_) {}
+                                    delete fb[key];
+                                    anyDirty = true;
+                                    return;
                                 }
-                                return v;
-                            }
-                            var ub = _cleanFav(fav.bubble.userBg);
-                            var lb = _cleanFav(fav.bubble.llmBg);
-                            if (ub) r.setProperty('--bubble-user-bg', ub);
-                            if (fav.bubble.userText) r.setProperty('--bubble-user-text', fav.bubble.userText);
-                            if (lb) r.setProperty('--bubble-llm-bg', lb);
-                            if (fav.bubble.llmText)  r.setProperty('--bubble-llm-text', fav.bubble.llmText);
-                            // Korrupten Favoriten persistent reparieren, sodass der
-                            // naechste Save() ihn nicht wieder einsammelt.
-                            if (ub === null || lb === null) {
-                                try {
-                                    if (ub === null) delete fav.bubble.userBg;
-                                    if (lb === null) delete fav.bubble.llmBg;
-                                    localStorage.setItem('nala_theme_fav_' + lastFav, JSON.stringify(fav));
-                                } catch(_) {}
+                                r.setProperty(cssVar, val);
+                            });
+                            if (anyDirty) {
+                                try { localStorage.setItem('nala_theme_fav_' + lastFav, JSON.stringify(fav)); } catch(_) {}
                             }
                         }
                         if (fav && fav.v === 2 && fav.fontSize) {
@@ -1311,16 +1387,14 @@ NALA_HTML = """<!DOCTYPE html>
                     nala_bubble_llm_bg:    '--bubble-llm-bg',
                     nala_bubble_llm_text:  '--bubble-llm-text'
                 };
-                // Patch 153: Guard gegen #000000-Pollution. Wird nie absichtlich als
-                // Hintergrundfarbe gesetzt — entsteht nur durch cssToHex-HSL-Bug oder
-                // kaputte localStorage-Daten. Bereinigen + Fallback auf CSS-Default.
-                var BG_KEYS = ['nala_bubble_user_bg', 'nala_bubble_llm_bg'];
-                var BLACK_VALUES = ['#000000', '#000', 'rgb(0, 0, 0)', 'rgba(0,0,0,1)'];
+                // Patch 183: cleanBlackFromStorage() lief schon — defense-in-depth Check
+                // hier zusätzlich, falls eine künftige Schreib-Stelle den Sweep umgeht.
                 Object.keys(map).forEach(function(k) {
                     var v = localStorage.getItem(k);
                     if (!v) return;
-                    if (BG_KEYS.indexOf(k) !== -1 && BLACK_VALUES.indexOf(v.trim().toLowerCase()) !== -1) {
-                        localStorage.removeItem(k);  // Korrupten Wert bereinigen
+                    if (_isBubbleBlack(v)) {
+                        try { console.warn('[BLACK-183] IIFE-Guard hat schwarzen Wert gefangen:', k, '=', v); } catch(_) {}
+                        localStorage.removeItem(k);
                         return;
                     }
                     r.setProperty(map[k], v);
@@ -1847,8 +1921,18 @@ NALA_HTML = """<!DOCTYPE html>
     function showChatScreen() {
         loginScreen.style.display = 'none';
         chatScreen.style.display  = 'flex';
+        // Patch 183: Defense-in-depth — falls zwischen Pre-Render-IIFE und Login
+        // irgendein Codepfad schwarze Werte zurückgeschrieben hat (z.B. Profile-Reload),
+        // hier nochmal sweepen bevor applyAutoContrast die CSS-Vars liest.
+        try { if (typeof cleanBlackFromStorage === 'function') cleanBlackFromStorage(); } catch(_) {}
         if (currentProfile) {
-            document.documentElement.style.setProperty('--color-accent', currentProfile.theme_color);
+            // Patch 183: theme_color aus Backend ist gefiltert (P169), aber
+            // defense-in-depth — wir sanitizen auch hier, weil --color-accent
+            // als Fallback für --bubble-user-bg dient.
+            var themeColor = (typeof sanitizeBubbleColor === 'function')
+                ? sanitizeBubbleColor(currentProfile.theme_color, '#ec407a')
+                : (currentProfile.theme_color || '#ec407a');
+            document.documentElement.style.setProperty('--color-accent', themeColor);
             profileBadge.textContent    = '– ' + currentProfile.display_name;
         }
         // Patch 140 (B-003): Auto-Kontrast initial anwenden (falls Funktion existiert).
@@ -3019,9 +3103,21 @@ NALA_HTML = """<!DOCTYPE html>
         const r = document.documentElement.style;
         Object.keys(BUBBLE_KEYS).forEach(k => {
             const cfg = BUBBLE_KEYS[k];
-            const val = document.getElementById(cfg.picker).value;
+            const rawVal = document.getElementById(cfg.picker).value;
+            // Patch 183: Color-Picker `<input type="color">` kann #000000 liefern
+            // wenn der User Schwarz wählt — das wäre bei BG unlesbar. Sanitizer
+            // greift auf den computed CSS-Default zurück.
+            const fb = getComputedStyle(document.documentElement).getPropertyValue(cfg.fallback).trim();
+            const val = sanitizeBubbleColor(rawVal, fb);
             r.setProperty(cfg.css, val);
-            localStorage.setItem(cfg.ls, val);
+            // Bei BG-Keys: nur den nicht-schwarzen Wert in localStorage schreiben.
+            // Wenn Sanitizer den Picker-Wert verworfen hat, lassen wir den Storage leer
+            // (der CSS :root-Default greift dann beim nächsten Boot).
+            if (val === rawVal) {
+                localStorage.setItem(cfg.ls, val);
+            } else {
+                localStorage.removeItem(cfg.ls);
+            }
         });
         // Patch 140 (B-003): Text-Kontrast automatisch an Hintergrund anpassen,
         // damit dunkler Text nicht auf dunklem Bubble-Hintergrund landet.
@@ -3034,12 +3130,21 @@ NALA_HTML = """<!DOCTYPE html>
         const pickerId = which === 'user' ? 'bc-user-text' : 'bc-llm-text';
         const cssVar   = which === 'user' ? '--bubble-user-text' : '--bubble-llm-text';
         const lsKey    = which === 'user' ? 'nala_bubble_user_text' : 'nala_bubble_llm_text';
+        const fbVar    = which === 'user' ? '--color-primary' : '--color-text-light';
         const manualKey = lsKey + '_manual';
-        const val = document.getElementById(pickerId).value;
+        const rawVal = document.getElementById(pickerId).value;
+        // Patch 183: Manueller Text auf Schwarz wäre auf dunkler Bubble unlesbar.
+        const fb = getComputedStyle(document.documentElement).getPropertyValue(fbVar).trim();
+        const val = sanitizeBubbleColor(rawVal, fb);
         document.documentElement.style.setProperty(cssVar, val);
         try {
-            localStorage.setItem(lsKey, val);
-            localStorage.setItem(manualKey, '1');
+            if (val === rawVal) {
+                localStorage.setItem(lsKey, val);
+                localStorage.setItem(manualKey, '1');
+            } else {
+                localStorage.removeItem(lsKey);
+                localStorage.removeItem(manualKey);
+            }
         } catch (_) {}
     }
 
@@ -3072,7 +3177,9 @@ NALA_HTML = """<!DOCTYPE html>
         if (!localStorage.getItem('nala_bubble_user_text_manual')) {
             const bg = cs.getPropertyValue('--bubble-user-bg').trim();
             if (bg) {
-                const txt = getContrastColor(bg);
+                // Patch 183: Sanitizer als Sicherheitsnetz — getContrastColor liefert
+                // '#1a1a1a' / '#f0f0f0', aber wir wollen den invariant überall haben.
+                const txt = sanitizeBubbleColor(getContrastColor(bg), '#1a1a1a');
                 r.setProperty('--bubble-user-text', txt);
             }
         }
@@ -3080,7 +3187,7 @@ NALA_HTML = """<!DOCTYPE html>
         if (!localStorage.getItem('nala_bubble_llm_text_manual')) {
             const bg = cs.getPropertyValue('--bubble-llm-bg').trim();
             if (bg) {
-                const txt = getContrastColor(bg);
+                const txt = sanitizeBubbleColor(getContrastColor(bg), '#f0f0f0');
                 r.setProperty('--bubble-llm-text', txt);
             }
         }
@@ -3114,8 +3221,17 @@ NALA_HTML = """<!DOCTYPE html>
         // Als CSS-Variable setzen + im picker synchronisieren, damit Theme-Save mitzieht
         const css = which === 'user' ? '--bubble-user-bg' : '--bubble-llm-bg';
         const lsKey = which === 'user' ? 'nala_bubble_user_bg' : 'nala_bubble_llm_bg';
-        document.documentElement.style.setProperty(css, hslStr);
-        try { localStorage.setItem(lsKey, hslStr); } catch (_) {}
+        const fbVar = which === 'user' ? '--color-accent' : '--color-primary-mid';
+        // Patch 183: HSL-Slider-min ist L=10, aber durch BLACK_REGEX <5% greift der
+        // Sanitizer trotzdem als Sicherheitsnetz. Falls jemand künftig den L-min
+        // auf 0 setzt oder per Direkt-Input einen schwarzen HSL-Wert produziert.
+        const fb = getComputedStyle(document.documentElement).getPropertyValue(fbVar).trim();
+        const safeHsl = sanitizeBubbleColor(hslStr, fb);
+        document.documentElement.style.setProperty(css, safeHsl);
+        try {
+            if (safeHsl === hslStr) localStorage.setItem(lsKey, hslStr);
+            else localStorage.removeItem(lsKey);
+        } catch (_) {}
         // Sync zum <input type="color"> (braucht HEX)
         const hex = hslToHex(h, s, l);
         const pickerId = which === 'user' ? 'bc-user-bg' : 'bc-llm-bg';
@@ -3310,11 +3426,18 @@ NALA_HTML = """<!DOCTYPE html>
                 ];
                 bMap.forEach(([key, cfg]) => {
                     const v = raw.bubble && raw.bubble[key];
-                    if (v) {
+                    // Patch 183: Pre-P183 Favoriten können schwarze Werte enthalten,
+                    // wenn ein Color-Picker auf #000 oder ein Slider auf hsl(*,*,0%)
+                    // stand. Wir behandeln das wie einen leeren Slot — Fallback-Var
+                    // greift, und der Favorit wird beim nächsten Save bereinigt.
+                    if (v && !_isBubbleBlack(v)) {
                         r.setProperty(cfg.css, v);
                         localStorage.setItem(cfg.ls, v);
                         document.getElementById(cfg.picker).value = v;
                     } else {
+                        if (v) {
+                            try { console.warn('[BLACK-183] loadFav übersprang schwarzes Feld', key, '=', v); } catch(_) {}
+                        }
                         r.removeProperty(cfg.css);
                         localStorage.removeItem(cfg.ls);
                         const rr = getComputedStyle(document.documentElement);

@@ -909,13 +909,20 @@ async def _process_text_message(
         system_prompt = _resolve_huginn_prompt(settings)
     user_msg = info.get("text", "") or ""
 
+    # Patch 185: Runtime-Info-Block (Modellname, RAG/Sandbox-Status) zwischen
+    # Persona und RAG-Kontext einhaengen. Loest L9 (Modell-Selbstkenntnis) —
+    # Huginn weiss damit zur Laufzeit welches LLM er nutzt, ohne dass die
+    # statische huginn_kennt_zerberus.md jedes Mal nachgepflegt werden muss.
+    from zerberus.utils.runtime_info import append_runtime_info
+    persona_with_runtime = append_runtime_info(system_prompt, settings)
+
     # Patch 178: RAG-Lookup mit Category-Filter (system-only by default) — vor
     # build_huginn_system_prompt, damit der Systemwissen-Block VOR der
     # Intent-Instruction eingebaut wird (LLM verarbeitet den Kontext zuerst).
     rag_context = ""
     if user_msg.strip():
         rag_context = await _huginn_rag_lookup(user_msg, settings)
-    enriched_persona = _inject_rag_context(system_prompt, rag_context)
+    enriched_persona = _inject_rag_context(persona_with_runtime, rag_context)
 
     # Patch 164: Intent-Instruction an den Persona-Prompt anhaengen, damit das
     # LLM jeden Output mit einem JSON-Header versieht (CHAT/CODE/FILE/...).

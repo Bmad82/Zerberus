@@ -154,19 +154,26 @@ class TestB1FavoriteBlackFilter:
         )
         return path.read_text(encoding="utf-8")
 
-    def test_fav_black_constant_present(self, nala_src):
-        # Filter-Block existiert (FAV_BLACK + Cleanup) — wir suchen den
-        # Patch-169-Marker und das _cleanFav-Symbol.
-        assert "Patch 169 (B1)" in nala_src
-        assert "FAV_BLACK" in nala_src
-        assert "_cleanFav" in nala_src
+    def test_fav_black_filter_exists(self, nala_src):
+        # P169 fuehrte den Filter ein — P183 hat ihn durch zentralen
+        # _isBubbleBlack ersetzt (FAV_BLACK + _cleanFav sind weg, dafuer
+        # ein einheitlicher Sanitizer fuer alle Pfade). Anti-Invariante
+        # bleibt: schwarze BG-Werte aus Favoriten landen NICHT in CSS-Vars.
+        assert "_isBubbleBlack" in nala_src, (
+            "Black-Filter fehlt komplett (weder P169 _cleanFav noch P183 _isBubbleBlack)"
+        )
 
     def test_fav_filter_writes_back_cleaned_favorite(self, nala_src):
-        # Wenn ein BG-Feld bereinigt wurde, muss der Favorit zurueckgeschrieben
+        # Wenn ein Bubble-Feld bereinigt wurde, muss der Favorit zurueckgeschrieben
         # werden — sonst bleibt er korrupt und der Bug kommt nach Reload wieder.
+        # P183 erweitert auf alle 4 Felder (userBg/llmBg/userText/llmText) statt
+        # nur BG-Felder.
         assert "localStorage.setItem('nala_theme_fav_'" in nala_src
-        assert "delete fav.bubble.userBg" in nala_src
-        assert "delete fav.bubble.llmBg" in nala_src
+        # P183-Sweep loescht via 'delete fav.bubble[key]' im IIFE und in
+        # cleanBlackFromStorage — beide muessen die Reparatur persistent machen.
+        assert "delete fb[key]" in nala_src or "delete fav.bubble[" in nala_src, (
+            "Persistente Favoriten-Reparatur fehlt"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@
 | B-013 | Background Memory Extraction (Phase 4) — wurde aus Phase 2 umgeplant, aktuell NICHT implementiert | SUPERVISOR Item 11 | OFFEN |
 | B-014 | Phase 4 Features: LLM-basierte Category-Detection, Sancho-Panza Veto-Layer, Halluzinations-Detektor, Multimodalität ZIP/Bild-Upload, Color Picker | SUPERVISOR Item 12 | OFFEN |
 | B-015 | R-07 Multi-Chunk-Aggregation für Aggregat-Queries („Nenn alle Momente wo …") — Query-Typ-Erkennung + top_k 8+ ohne Rerank-Cut | SUPERVISOR Item 2 / RAG R-07 | OFFEN |
-| B-016 | Runtime-Config-Endpoint statt statisches RAG für Modell-/GPU-/Patch-Info — verhindert dass „Welches Modell bist du?" durch indizierte Doku altert | L-178h / L9 | OFFEN |
+| B-016 | Runtime-Config-Endpoint statt statisches RAG für Modell-/GPU-/Patch-Info — verhindert dass „Welches Modell bist du?" durch indizierte Doku altert | L-178h / L9 | ERLEDIGT (P185 — `zerberus/utils/runtime_info.py` mit `build_runtime_info(settings)` + `append_runtime_info(prompt, settings)`. Injection in [`legacy.py`](zerberus/app/routers/legacy.py) und [`telegram/router.py`](zerberus/modules/telegram/router.py), Position NACH Persona, VOR RAG. Liefert Modellname (Kurzname), Guard-Modell, RAG/Sandbox-Status. RAG-Doku bleibt statisch für Architektur, Live-Werte kommen aus Settings.) |
 
 ## Bugs / Quality (Hel + Nala)
 
@@ -37,7 +37,7 @@
 | B-021 | BERT/Sentiment springt zwischen Extremen — nur maximale Ausschläge, Normalisierungsfehler in `oliverguhr/german-sentiment-bert` prüfen | H-04 | OFFEN |
 | B-022 | Hel Metriken: nur User-Eingaben in Berechnung verifizieren — explizit kommentieren, dass LLM-Outputs NICHT einfließen | H-05 | OFFEN |
 | B-023 | RAG 500er beim ersten Upload nach Clear — Lazy-Load-Guard greift nicht immer | Reminder backlog_nach_patch83 | OFFEN |
-| B-024 | HSL-Farbfehler bei Browser-Kaltstart — cssToHex-Konvertierung → schwarze UI, Dauerläufer seit P153 | L8 | OFFEN |
+| B-024 | HSL-Farbfehler bei Browser-Kaltstart — cssToHex-Konvertierung → schwarze UI, Dauerläufer seit P153 | L8 | ERLEDIGT (P183 — vierter Anlauf, zentraler `sanitizeBubbleColor` mit regex-basiertem `_isBubbleBlack` + `cleanBlackFromStorage` Sweep an Pre-Render und in `showChatScreen`. Alle 12 setProperty-Pfade jetzt durchgeschleift. 49 Tests in `test_patch183_blackbug.py`. Hoffentlich endgültig.) |
 | B-025 | Manuell getippter Text → DB-Speicherung verifizieren | SUPERVISOR Item 1 | OFFEN |
 
 ## Features / UX
