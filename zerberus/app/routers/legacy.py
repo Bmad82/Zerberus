@@ -4,6 +4,7 @@ Patch 38: Chat-Requests laufen durch die Orchestrator-Pipeline (RAG + LLM + Auto
 Patch 47: Permission-Check vor LLM-Call.
 Patch 54: permission_level und profile_name kommen aus request.state (JWT-Middleware).
 """
+import asyncio
 import logging
 import os
 from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File
@@ -175,6 +176,20 @@ async def chat_completions(
     # Patch 118a: Decision-Box-Hinweis anhängen, wenn features.decision_boxes aktiv
     from zerberus.core.prompt_features import append_decision_box_hint
     sys_prompt = append_decision_box_hint(sys_prompt, settings)
+
+    # Patch 190: Prosodie-Block aus X-Prosody-Context Header (vom Audio-Endpoint
+    # kommendes JSON, vom Frontend durchgereicht). Worker-Protection:
+    # nur injizieren wenn Consent + Source != stub + Confidence ausreicht.
+    _prosody_ctx_raw = request.headers.get("X-Prosody-Context", "")
+    _prosody_consent = request.headers.get("X-Prosody-Consent", "false").lower() == "true"
+    if _prosody_ctx_raw and _prosody_consent:
+        try:
+            _prosody_ctx = json.loads(_prosody_ctx_raw)
+            from zerberus.modules.prosody.injector import inject_prosody_context
+            sys_prompt = inject_prosody_context(sys_prompt, _prosody_ctx)
+        except (json.JSONDecodeError, ValueError) as _pr_err:
+            logger.warning(f"[PROSODY-190] X-Prosody-Context ungültig: {_pr_err}")
+
     if sys_prompt and not any(m.role == "system" for m in req.messages):
         req.messages.insert(0, Message(role="system", content=sys_prompt))
 
@@ -399,33 +414,53 @@ async def audio_transcriptions(
         # leben im zentralen whisper_client, damit legacy.py und nala.py
         # denselben Pfad teilen.
         from zerberus.utils.whisper_client import transcribe, WhisperSilenceGuard
-        try:
-            whisper_result = await transcribe(
+
+        # Patch 188: Prosodie-Foundation + Patch 190: Pipeline aktiviert.
+        # Patch 191: Consent-Header — Prosodie nur wenn User explizit zugestimmt.
+        prosody_consent = request.headers.get("X-Prosody-Consent", "false").lower() == "true"
+
+        # Patch 190: Wenn Prosodie aktiv UND Consent: parallel zu Whisper analysieren.
+        # Bei Whisper-Fehler bricht der Endpoint ab (harter Fehler).
+        # Bei Prosodie-Fehler läuft Whisper alleine weiter (weicher Fehler).
+        from zerberus.modules.prosody.manager import get_prosody_manager
+        _prosody_mgr = get_prosody_manager(settings)
+        _prosody_active = _prosody_mgr.is_active and prosody_consent
+
+        async def _whisper_call():
+            return await transcribe(
                 whisper_url=whisper_url,
                 audio_data=audio_data,
                 filename=file.filename,
                 content_type=file.content_type,
                 whisper_cfg=settings.whisper,
             )
+
+        try:
+            if _prosody_active:
+                logger.info("[PROSODY-190] Whisper+Gemma parallel (Consent gegeben)")
+                whisper_task = asyncio.create_task(_whisper_call())
+                prosody_task = asyncio.create_task(_prosody_mgr.analyze(audio_data))
+                whisper_result, prosody_outcome = await asyncio.gather(
+                    whisper_task, prosody_task, return_exceptions=True,
+                )
+                if isinstance(whisper_result, Exception):
+                    raise whisper_result
+                if isinstance(prosody_outcome, Exception):
+                    logger.warning(f"[PROSODY-190] Analyse fehlgeschlagen: {prosody_outcome}")
+                    prosody_outcome = None
+                else:
+                    _src = (prosody_outcome or {}).get("source", "?")
+                    _mood = (prosody_outcome or {}).get("mood", "?")
+                    _conf = (prosody_outcome or {}).get("confidence", 0.0)
+                    logger.info(f"[PROSODY-190] mood={_mood} confidence={_conf:.2f} source={_src}")
+            else:
+                whisper_result = await _whisper_call()
+                prosody_outcome = None
         except WhisperSilenceGuard:
             # Short-Audio: OpenAI-kompatibles Leer-Transkript.
             return {"text": "", "note": "short_audio_skipped"}
 
         raw_transcript = whisper_result.get("text", "")
-
-        # Patch 188: Prosodie-Analyse (Foundation/Anker — derzeit STUB).
-        # Sobald Gemma 4 E2B geladen ist (P189+), greift hier parallel zu
-        # Whisper die Prosodie-Pipeline. Audio-Bytes werden vom Encoder zu
-        # mood/tempo/valence/arousal gemappt; das Ergebnis wandert als
-        # zusätzlicher Kontext in den LLM-Prompt (legacy/audio_transcriptions
-        # selbst gibt nur das Transkript zurück — der Prosodie-Vector wird
-        # in der nachgelagerten /v1/chat-Stelle ergänzt).
-        #
-        # from zerberus.modules.prosody.manager import get_prosody_manager
-        # prosody = get_prosody_manager(settings)
-        # _prosody_status = await prosody.healthcheck()
-        # prosody_result = (await prosody.analyze(audio_data)
-        #                   if _prosody_status.get("ok") else None)
 
         # Patch 135: X-Already-Cleaned-Header überspringt Cleaning
         already_cleaned = request.headers.get("X-Already-Cleaned", "").lower() == "true"
@@ -450,7 +485,21 @@ async def audio_transcriptions(
         await store_interaction("whisper_input", raw_transcript, integrity=0.9)
         await update_interaction()
 
-        return {"text": cleaned_transcript}
+        # Patch 190: Prosodie-Result als optionales Feld in der Response.
+        # Frontend reicht es als X-Prosody-Context-Header an /chat/completions
+        # weiter. KEIN Schreiben in die DB (Worker-Protection P191).
+        response = {"text": cleaned_transcript}
+        if prosody_outcome and isinstance(prosody_outcome, dict) and prosody_outcome.get("source") != "stub":
+            response["prosody"] = {
+                "mood": prosody_outcome.get("mood"),
+                "tempo": prosody_outcome.get("tempo"),
+                "confidence": prosody_outcome.get("confidence"),
+                "valence": prosody_outcome.get("valence"),
+                "arousal": prosody_outcome.get("arousal"),
+                "dominance": prosody_outcome.get("dominance"),
+                "source": prosody_outcome.get("source"),
+            }
+        return response
 
     except Exception as e:
         logger.exception("❌ Audio transcription failed")

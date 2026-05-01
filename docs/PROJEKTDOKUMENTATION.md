@@ -4898,5 +4898,80 @@ Infrastruktur für die Prosodie-Pipeline vorbereiten. NICHT den vollen Audio-Sen
 
 ---
 
-*Stand: 2026-05-01, Patch 186-188 — Auto-TTS + FAISS-Dual-Embedder (live) + Prosodie-Foundation (Stub bis P189+).*
+## Patch 189 — Gemma 4 E2B Backend-Integration (CLI + Server) (2026-05-01)
+
+### Ziel
+Den Stub von P188 durch echten Inferenz-Pfad ersetzen. Gemma 4 E2B (Audio-fähig, ~3 GB Q4_K_M GGUF) via llama.cpp ansprechen — und zwar so, dass beide Backends (CLI heute, Server morgen) ohne Code-Umbau funktionieren.
+
+### Hintergrund
+Stand 2026-05-01: `llama-server` kann Audio-Input noch NICHT via OpenAI-kompatibler API empfangen (Issue [#21868](https://github.com/ggml-org/llama.cpp/issues/21868) — `input_audio` Content-Type fehlt in `server.cpp`). Aber `llama-mtmd-cli` kann Audio JETZT (PR #21421 hat den Conformer-Encoder gemergt). Lösung: Abstraction Layer mit `mode`-Property — erkennt automatisch was geht.
+
+### Was sich geändert hat
+- **Neues Modul [`zerberus/modules/prosody/gemma_client.py`](../zerberus/modules/prosody/gemma_client.py):** `GemmaAudioClient` mit `mode`-Property (`none`/`cli`/`server`) und `analyze_audio(bytes, prompt) -> dict`. `_analyze_via_cli()` ruft `llama-mtmd-cli` als Subprocess (asyncio.create_subprocess_exec, Timeout, finally-unlink). `_analyze_via_server()` baut OpenAI-kompatibles Request-Payload mit `input_audio` Content-Block — wartet auf Issue #21868, läuft aber identisch sobald `llama-server` Audio kann.
+- **JSON-Parsing (`_parse_gemma_output`):** Robust gegen 4 Patterns — clean JSON, Markdown-Wrapper (```json ... ```), JSON-Block in Freitext, kaputtes JSON. Pflichtfelder werden mit Defaults gefüllt. Stub-Fallback bei jedem Fehler.
+- **Neues Modul [`zerberus/modules/prosody/prompts.py`](../zerberus/modules/prosody/prompts.py):** Zentraler `PROSODY_ANALYSIS_PROMPT` — JSON-only-Output, klare Skala (mood/tempo/valence/arousal/dominance), explizite Anweisung "HOW it sounds, not WHAT is said".
+- **`ProsodyConfig` erweitert** um `mmproj_path`, `server_url`, `llama_cli_path`, `n_gpu_layers`, `timeout_seconds`. `to_client_settings()` mappt auf das Settings-Dict für `GemmaAudioClient`. Bestehende Felder unverändert — alle P188-Tests bleiben grün.
+- **`ProsodyManager.analyze()` upgraded:** Routing nach Modus — disabled → Stub, mode=none → Stub, sonst → `_client.analyze_audio()`. Counter-Tracking (`success_count`, `error_count`, `last_success_ts`) für P191-Admin-Status. Bei Client-Exception: graceful Stub + error_count++.
+- **`is_active`-Property** (vorgezogen für P190) und **`admin_status()`** (vorgezogen für P191).
+- **healthcheck() erweitert:** zusätzliches `client_mode`-Feld im OK-Pfad.
+- **`config.yaml.example` + `config.yaml` aktualisiert:** Alle neuen Felder dokumentiert mit Default-Werten + Hinweis auf Pfad A vs Pfad B.
+
+### Tests
+34 Tests in [`test_gemma_client.py`](../zerberus/tests/test_gemma_client.py): Mode-Routing (4), JSON-Parsing (7), Stub-Defaults (2), Analyse-Routing mit Mock-Subprocess + Mock-httpx (3), Fehlerpfade Timeout/FileNotFound/HTTP500/rc!=0 + tmp-Cleanup (5), `ProsodyConfig`-P189-Felder (3), `ProsodyManager.analyze()` mit gemocktem Client (4), `is_active` (4), `client_mode`-Property (1), Source-Audit (2). **Alle Tests gemockt — kein llama-cpp-Binary in der Test-Umgebung nötig.**
+
+### Logging-Tags
+- `[PROSODY-189]` — normaler Pfad (INFO).
+- `[PROSODY-189-CLI]` — Subprocess-Aufrufe (INFO/ERROR).
+- `[PROSODY-189-SRV]` — Server-HTTP-Aufrufe (für Pfad B).
+
+---
+
+## Patch 190 — Audio-Pipeline-Aktivierung (Whisper ‖ Gemma) (2026-05-01)
+
+### Ziel
+Die Prosodie-Analyse in den echten Audio-Pfad einbauen — parallel zu Whisper. Audio rein → Whisper transkribiert wie bisher → GLEICHZEITIG Gemma analysiert Prosodie → beides wird zusammengeführt und ans LLM gegeben.
+
+### Was sich geändert hat
+- **`/nala/voice` und `/v1/audio/transcriptions` parallelisieren:** `asyncio.gather(whisper_task, prosody_task, return_exceptions=True)`. Whisper-Fehler = harter Fehler (raise), Prosodie-Fehler = weicher Fehler (Whisper läuft alleine, prosody_outcome wird None). Pipeline-Gate: `is_active AND consent`.
+- **Neues Modul [`zerberus/modules/prosody/injector.py`](../zerberus/modules/prosody/injector.py):** `inject_prosody_context(system_prompt, prosody_result) -> str`. Fügt einen kompakten Block HINTER den System-Prompt: `[Prosodie-Hinweis (Confidence: NN%): Stimmung=…, Tempo=…, Valenz=±N.N, Arousal=N.N]`. Bei `valence<-0.3` zusätzliche Inkongruenz-Warnung („Stimme klingt anders als Text vermuten lässt — mögliche Ironie oder verdeckter Stress"). Gating: kein Block bei source=stub oder confidence<0.3.
+- **`/v1/chat/completions` liest `X-Prosody-Context`-Header** (JSON, vom Frontend durchgereicht aus dem `prosody`-Feld der Voice-Response). Bei vorhandenem Header + Consent → `inject_prosody_context()` direkt nach `append_decision_box_hint`. Bei JSON-Decode-Fehler: Warning loggen, weiter ohne Block.
+- **Audio-Endpoint-Response erweitert:** `prosody`-Feld nur bei `source != "stub"`. Frontend speichert in `window.__nalaLastProsody` (One-Shot, nach Versand vergessen).
+
+### Tests
+24 Tests in [`test_prosody_pipeline.py`](../zerberus/tests/test_prosody_pipeline.py): Injector-Logik (9 — Block-Bau, Stub-Skip, Low-Confidence, Inkongruenz, Original-Preserve, None, Missing/Invalid Confidence), Parallel-Execution-Pattern (5), Source-Audit der Pipeline-Hooks (8), Worker-Protection-Konzept (1).
+
+### Logging-Tags
+- `[PROSODY-190]` — Pipeline-Aufrufe + Injector (INFO).
+
+---
+
+## Patch 191 — Consent-UI + Worker-Protection + Hel-Admin (2026-05-01)
+
+### Ziel
+Worker-Protection-Layer aus [`backlog_SER_prosody.md`](../backlog_SER_prosody.md) — Prosodie-Analyse ist Opt-In per User, der User sieht DASS Prosodie aktiv ist, der Admin sieht KEINE individuellen Prosodie-Daten.
+
+### Was sich geändert hat
+- **Neuer Toggle „Sprachstimmung analysieren (Prosodie)"** im Settings-Tab „Ausdruck" (UNTER dem Auto-TTS-Toggle, gleicher Stil): `prosodyConsentToggle`. localStorage-Key `nala_prosody_consent`, Default `"false"`. Untertitel: „Erkennt Tonfall und Stimmung deiner Sprache. Audio wird nicht gespeichert."
+- **`isProsodyConsentEnabled()` + `onProsodyConsentToggle()` + `_initProsodyConsentToggle()`** in [`nala.py`](../zerberus/app/routers/nala.py) (analog zum Auto-TTS-Pattern aus P186). Init wird im `loadFromLocalStorage()` zusammen mit `_initAutoTtsToggle()` aufgerufen.
+- **Visueller Indikator 🎭** neben Mikrofon-Button (`prosodyIndicator`, default hidden). Wird via `_updateProsodyIndicator()` bei Toggle-Change und Settings-Init sichtbar/unsichtbar geschaltet.
+- **Frontend sendet Headers:**
+  - `/nala/voice` Fetch: `X-Prosody-Consent: true` nur wenn `isProsodyConsentEnabled()`.
+  - `/v1/chat/completions` Fetch: `X-Prosody-Consent: true` + `X-Prosody-Context: <JSON>` wenn `window.__nalaLastProsody` aus letzter Voice-Response da ist. **One-Shot:** nach Versand wird `__nalaLastProsody = null`. Frischer Audio-Input = neue Chance auf Prosodie-Block.
+- **Backend-Gate:** `legacy.py`-Audio-Endpoint und `nala.py`-Voice-Endpoint prüfen `X-Prosody-Consent`-Header (lower() == "true") UND `is_active`. UND-Verknüpfung: beide müssen wahr sein, sonst kein gather.
+- **Hel-Admin-Endpoint `GET /hel/admin/prosody/status`** in [`hel.py`](../zerberus/app/routers/hel.py): liefert `mgr.admin_status()`. Worker-Protection: `admin_status()` enthält NUR `enabled`, `mode`, `is_active`, `success_count`, `error_count`, `last_success_ts`, `model_path_set`, `mmproj_path_set`, `server_url_set`. **KEINE individuellen mood/valence/arousal/dominance/tempo-Felder.**
+- **Audio-Bytes-Lifecycle (Defense-in-Depth):**
+  - `_analyze_via_cli`: tmp-Datei wird im `finally:` per `Path(tmp_path).unlink(missing_ok=True)` entsorgt.
+  - `analyze()`: KEIN Schreiben des Prosodie-Results in die `interactions`-Tabelle. Nur INFO-Log mit Aggregaten (`mood=… confidence=… source=…`).
+  - `prosody_outcome` lebt nur im Request-Scope.
+
+### Tests
+25 Tests in [`test_prosody_consent.py`](../zerberus/tests/test_prosody_consent.py): Frontend-Source-Audit (8 — Toggle, Callbacks, localStorage-Key, Default-OFF, Header in Voice-Fetch, Header in Chat-Fetch, Indikator, Init-Call), Consent-Backend-Logik (4), Hel-Admin-Endpoint (5), Worker-Protection (4), Audit-Counter (2).
+
+### Logging-Tags
+- `[PROSODY-CONSENT-191]` — Frontend Toggle-State (Console-Log).
+- `[PROSODY-ADMIN-191]` — Hel-Admin-Status-Abfragen (INFO).
+
+---
+
+*Stand: 2026-05-01, Patch 189-191 — Prosodie-Pipeline komplett: Backend (Gemma 4 E2B via llama.cpp CLI/Server) + Pipeline (Whisper ‖ Gemma) + Consent (Opt-In + Worker-Protection).*
 

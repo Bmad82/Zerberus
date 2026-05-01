@@ -1,6 +1,6 @@
 # MANUELLE_TESTS_CHECKLISTE.md — Zerberus Pro 4.0
-*Stand: Patch 188 (2026-05-01) — Patches 120–188 abgedeckt*
-*Teststand: ~1181 Tests passed (Default-Run, P185-Baseline 1119 + 20 P186 + 18 P187 + 24 P188)*
+*Stand: Patch 191 (2026-05-01) — Patches 120–191 abgedeckt*
+*Teststand: ~1264 Tests passed (Default-Run, P188-Baseline 1181 + 34 P189 + 24 P190 + 25 P191)*
 
 **Workflow:** Coda schreibt neue Items rein nach jedem Patch. Chris testet und hakt ab.
 Nur Items, die Coda NICHT selbst testen kann, landen hier (UI-Checks, Mobile, Tailscale, iPhone, UX-Gefühl).
@@ -175,6 +175,38 @@ Coda macht: pytest, curls, smoke-checks, code-verify, log-checks — alles Autom
 - [ ] `model_path: "/nonexistent.gguf"` → Restart → Banner zeigt `❌ Prosodie         Modell nicht gefunden: /nonexistent.gguf`
 - [ ] Voice-Endpunkt aufrufen (Audio aus Nala-UI senden) → KEIN Crash trotz aktivierter Prosody-Config (Pipeline-Anker ist Kommentar — kein aktiver Pfad)
 - [ ] `venv\Scripts\python -c "from zerberus.modules.prosody.manager import ProsodyManager; import asyncio; print(asyncio.run(ProsodyManager().analyze(b'')))"` → Stub-Dict mit `source: "stub"`
+
+## Prosodie-Pipeline (P189-191)
+
+### Gemma-Client (P189)
+- [ ] Modelle vorhanden: `dir C:\Users\chris\models\gemma4-e2b\` zeigt `google_gemma-4-E2B-it-Q4_K_M.gguf` (~3.4 GB) + `mmproj-google_gemma-4-E2B-it-bf16.gguf` (~940 MB)
+- [ ] `config.yaml` → `modules.prosody.enabled: true`, `model_path: "C:/Users/chris/models/gemma4-e2b/google_gemma-4-E2B-it-Q4_K_M.gguf"`, `mmproj_path: "C:/Users/chris/models/gemma4-e2b/mmproj-google_gemma-4-E2B-it-bf16.gguf"`
+- [ ] Server-Start: Banner zeigt `✅ Prosodie ok (Gemma E2B, Stub (Modell nicht geladen), …GB frei)` (CLI-Modus lädt erst pro Call)
+- [ ] `llama-mtmd-cli` im PATH oder voller Pfad in `llama_cli_path` gesetzt — sonst Log `[PROSODY-189-CLI] Binary nicht gefunden`
+- [ ] Audio-Nachricht an Nala (Mikrofon-Knopf) → Log zeigt `[PROSODY-190] Whisper+Gemma parallel (Consent gegeben)` (NUR wenn Consent aktiv) und `[PROSODY-189-CLI] Analyse OK`
+- [ ] Bei deaktiviertem `enabled` → Log zeigt KEIN `[PROSODY-189]`, nur Whisper-Pfad
+
+### Pipeline (P190)
+- [ ] Audio-Nachricht mit Consent → Log zeigt Whisper-Ergebnis UND Prosodie-Ergebnis (`mood=… confidence=… source=gemma_e2b`)
+- [ ] Prosodie-Ergebnis in /nala/voice-Response: Feld `prosody` mit `mood`, `tempo`, `confidence`, `valence`, `arousal`, `dominance`, `source`
+- [ ] Anschließender Chat-Call: System-Prompt enthält `[Prosodie-Hinweis (Confidence: NN%): Stimmung=…, Tempo=…, Valenz=…, Arousal=…]`
+- [ ] Bei `valence < -0.3` zusätzlich `[Hinweis: Stimme klingt anders als Text vermuten lässt — mögliche Ironie oder verdeckter Stress]`
+- [ ] Text-Nachricht (kein Audio) → KEIN Prosodie-Block im Prompt
+- [ ] Gemma-Fehler (z.B. CLI-Timeout) → Whisper-Transkription funktioniert trotzdem, Log `[PROSODY-190] Analyse fehlgeschlagen: …`
+
+### Consent (P191)
+- [ ] Nala → Einstellungen → Tab „Ausdruck" → Toggle „Sprachstimmung analysieren (Prosodie)" vorhanden, UNTER dem Auto-TTS-Toggle
+- [ ] Default: AUS (localStorage `nala_prosody_consent` ist nicht gesetzt oder `"false"`)
+- [ ] Toggle AN → Mikrofon-Button-Bereich zeigt 🎭-Indikator
+- [ ] Toggle AN → Audio-Nachricht → Prosodie-Analyse läuft (Backend-Logs)
+- [ ] Toggle AUS → Audio-Nachricht → NUR Whisper, KEINE Prosodie (Backend prüft `X-Prosody-Consent`)
+- [ ] Reload Seite → Toggle-Status persistiert (localStorage)
+- [ ] DevTools → Network → Audio-Request: Header `X-Prosody-Consent: true` (nur bei Consent)
+- [ ] DevTools → Network → Folge-Chat-Request: Header `X-Prosody-Context: {"mood":…}` (nur bei Consent UND vorheriger Prosodie-Analyse)
+- [ ] Hel → `GET /hel/admin/prosody/status` (curl mit ADMIN_USER/PASSWORD) → JSON mit `enabled`, `mode`, `success_count`, `error_count`, `last_success_ts`
+- [ ] Hel-Status enthält KEINE Felder `mood`, `valence`, `arousal`, `dominance`, `tempo` (Worker-Protection)
+- [ ] **Jojo (iPhone):** Prosodie-Toggle vorhanden und bedienbar (Settings → Ausdruck-Tab)
+- [ ] DB-Check: `sqlite3 bunker_memory.db ".schema interactions"` → KEINE Spalte `prosody_*` (Worker-Protection)
 
 ## Cross-Cutting
 

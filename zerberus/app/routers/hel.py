@@ -4767,3 +4767,27 @@ async def tests_reports_list():
             for f in files
         ]
     }
+
+
+# ====================================================================
+# Patch 191: Prosodie-Admin-Status
+# ====================================================================
+# Worker-Protection: NUR Aggregate (Counter, Modus, Timestamps).
+# KEINE individuellen Mood/Valence/Arousal-Werte. Audio nicht in DB.
+# Logging-Tags: [PROSODY-ADMIN-191]
+# ====================================================================
+
+@router.get("/admin/prosody/status")
+async def admin_prosody_status():
+    """Aggregierter Prosodie-Status für Hel-Admin (P191).
+
+    Worker-Protection: gibt nur Modus, Counter und Timestamps zurück —
+    NIEMALS individuelle Mood-/Valence-/Arousal-Werte. Audio-Bytes werden
+    nicht in der DB gespeichert (siehe ProsodyManager.analyze).
+    """
+    settings = get_settings()
+    from zerberus.modules.prosody.manager import get_prosody_manager
+    mgr = get_prosody_manager(settings)
+    status = mgr.admin_status()
+    logger.info("[PROSODY-ADMIN-191] Status abgefragt")
+    return status

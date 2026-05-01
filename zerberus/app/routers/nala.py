@@ -1495,6 +1495,8 @@ NALA_HTML = """<!DOCTYPE html>
                 <button class="expand-btn" onclick="fullscreenOpen()" title="Vollbild">⛶</button>
                 <button class="send-btn" id="sendBtn" onclick="sendTextMessage()">➤</button>
                 <button class="mic-btn" id="micBtn" onclick="toggleRecording()">🎤</button>
+                <!-- Patch 191: Prosodie-Indikator (sichtbar nur bei Consent=on) -->
+                <span id="prosodyIndicator" title="Sprachstimmung wird analysiert" style="display:none;font-size:0.85em;margin-left:4px;opacity:0.75;">🎭</span>
             </div>
             <div id="transcript-hint"></div>
             <div id="mic-error" class="mic-error"></div>
@@ -1720,6 +1722,15 @@ NALA_HTML = """<!DOCTYPE html>
                 </label>
                 <div style="font-size:0.78em;color:#8aa0c0;margin-left:30px;margin-top:-4px;">
                     Nutzt die oben gewählte Stimme &amp; Tempo. Spielt jede neue Bot-Antwort automatisch ab.
+                </div>
+                <!-- Patch 191: Prosodie-Consent-Toggle. localStorage-Key: nala_prosody_consent (Default: false) -->
+                <label for="prosodyConsentToggle" style="display:flex;align-items:center;gap:10px;margin-top:14px;padding:8px;min-height:44px;cursor:pointer;color:var(--zb-text-light, #e0e8f8);">
+                    <input type="checkbox" id="prosodyConsentToggle" onchange="onProsodyConsentToggle(this.checked)"
+                           style="width:20px;height:20px;cursor:pointer;accent-color:var(--zb-accent, var(--color-accent, #ec407a));">
+                    <span>Sprachstimmung analysieren (Prosodie)</span>
+                </label>
+                <div style="font-size:0.78em;color:#8aa0c0;margin-left:30px;margin-top:-4px;">
+                    Erkennt Tonfall und Stimmung deiner Sprache. Audio wird nicht gespeichert.
                 </div>
             </div>
         </div>
@@ -2203,9 +2214,21 @@ NALA_HTML = """<!DOCTYPE html>
         resetWatchdog();
 
         try {
+            // Patch 191: Prosodie-Header durchreichen (Consent + Context aus letzter Audio-Analyse).
+            const _chatHeaders = profileHeaders({ 'Content-Type': 'application/json' });
+            if (isProsodyConsentEnabled()) {
+                _chatHeaders['X-Prosody-Consent'] = 'true';
+                if (window.__nalaLastProsody) {
+                    try {
+                        _chatHeaders['X-Prosody-Context'] = JSON.stringify(window.__nalaLastProsody);
+                    } catch(_) {}
+                    // One-shot: nach Versand vergessen (frischer Audio-Input erforderlich).
+                    window.__nalaLastProsody = null;
+                }
+            }
             const response = await fetch('/v1/chat/completions', {
                 method: 'POST',
-                headers: profileHeaders({ 'Content-Type': 'application/json' }),
+                headers: _chatHeaders,
                 body: JSON.stringify({ messages: [{ role: 'user', content: text }] }),
                 signal: myAbort.signal
             });
@@ -2274,14 +2297,24 @@ NALA_HTML = """<!DOCTYPE html>
                     const formData  = new FormData();
                     formData.append('file', audioBlob, 'recording.webm');
                     try {
+                        // Patch 191: Consent-Header für Prosodie-Analyse
+                        const _voiceHeaders = profileHeaders();
+                        if (isProsodyConsentEnabled()) {
+                            _voiceHeaders['X-Prosody-Consent'] = 'true';
+                        }
                         const response = await fetch('/nala/voice', {
                             method: 'POST',
-                            headers: profileHeaders(),
+                            headers: _voiceHeaders,
                             body: formData
                         });
                         if (response.status === 401) { handle401(); return; }
                         const data = await response.json();
                         const transcript = data.transcript || '';
+                        // Patch 191: Prosodie-Result für nächsten Chat-Request merken.
+                        // Wird im sendMessage als X-Prosody-Context Header durchgereicht.
+                        if (data.prosody && isProsodyConsentEnabled()) {
+                            window.__nalaLastProsody = data.prosody;
+                        }
                         if (transcript) {
                             // Patch 76: Selektion=ersetzen / Cursor=einfügen / leer=setzen
                             const sel0 = textInput.selectionStart;
@@ -3355,6 +3388,8 @@ NALA_HTML = """<!DOCTYPE html>
         if (val) val.textContent = (parseInt(rate, 10) >= 0 ? '+' : '') + rate + '%';
         // Patch 186: Auto-TTS-Toggle-State aus localStorage wiederherstellen
         try { _initAutoTtsToggle(); } catch(_) {}
+        // Patch 191: Prosodie-Consent-Toggle-State + Indikator-Sichtbarkeit
+        try { _initProsodyConsentToggle(); } catch(_) {}
     }
     function applyTtsRate(val) {
         const v = parseInt(val, 10);
@@ -3414,6 +3449,31 @@ NALA_HTML = """<!DOCTYPE html>
     function _initAutoTtsToggle() {
         const cb = document.getElementById('autoTtsToggle');
         if (cb) cb.checked = isAutoTtsEnabled();
+    }
+
+    // ── Patch 191: Prosodie-Consent — Opt-In für Sprachstimmungs-Analyse ──
+    // localStorage-Key: nala_prosody_consent ("true" / "false", Default: "false").
+    // Wird als X-Prosody-Consent Header gesendet bei /nala/voice + /v1/chat/completions.
+    function isProsodyConsentEnabled() {
+        try { return localStorage.getItem('nala_prosody_consent') === 'true'; } catch(_) { return false; }
+    }
+    function onProsodyConsentToggle(checked) {
+        try { localStorage.setItem('nala_prosody_consent', checked ? 'true' : 'false'); } catch(_) {}
+        console.log('[PROSODY-CONSENT-191] Toggle ' + (checked ? 'ON' : 'OFF'));
+        // Bei OFF: gespeichertes Prosodie-Result aus letzter Analyse vergessen.
+        if (!checked) { window.__nalaLastProsody = null; }
+        _updateProsodyIndicator();
+    }
+    function _initProsodyConsentToggle() {
+        const cb = document.getElementById('prosodyConsentToggle');
+        if (cb) cb.checked = isProsodyConsentEnabled();
+        _updateProsodyIndicator();
+    }
+    function _updateProsodyIndicator() {
+        // 🎭 Indikator neben Mikrofon-Button, wenn Consent aktiv.
+        const ind = document.getElementById('prosodyIndicator');
+        if (!ind) return;
+        ind.style.display = isProsodyConsentEnabled() ? 'inline-block' : 'none';
     }
     function _stopAutoTtsAudio() {
         if (window.__nalaAutoTtsAudio) {
@@ -4130,14 +4190,48 @@ async def voice_endpoint(
         # Patch 160: Short-Audio-Guard + konfigurierbarer Timeout + Einmal-Retry
         # via zentralem whisper_client (legacy.py teilt dieselbe Logik).
         from zerberus.utils.whisper_client import transcribe, WhisperSilenceGuard
-        try:
-            whisper_result = await transcribe(
+
+        # Patch 188: Prosodie-Foundation + Patch 190: Pipeline aktiviert.
+        # [PROSODY-188] Marker für Anchor-Audit.
+        # Patch 191: Consent-Header — Prosodie nur wenn User explizit zugestimmt.
+        prosody_consent = request.headers.get("X-Prosody-Consent", "false").lower() == "true"
+
+        # Patch 190: Prosodie-Manager + Parallel-Analyse (asyncio.gather).
+        # Whisper-Fehler = harter Fehler; Prosodie-Fehler = weicher Fehler.
+        from zerberus.modules.prosody.manager import get_prosody_manager
+        _prosody_mgr = get_prosody_manager(settings)
+        _prosody_active = _prosody_mgr.is_active and prosody_consent
+        prosody_outcome = None
+
+        async def _whisper_call():
+            return await transcribe(
                 whisper_url=settings.legacy.urls.whisper_url,
                 audio_data=audio_data,
                 filename=file.filename,
                 content_type=file.content_type,
                 whisper_cfg=settings.whisper,
             )
+
+        try:
+            if _prosody_active:
+                logger.info("[PROSODY-190] Whisper+Gemma parallel (Consent gegeben)")
+                whisper_task = asyncio.create_task(_whisper_call())
+                prosody_task = asyncio.create_task(_prosody_mgr.analyze(audio_data))
+                whisper_result, prosody_outcome = await asyncio.gather(
+                    whisper_task, prosody_task, return_exceptions=True,
+                )
+                if isinstance(whisper_result, Exception):
+                    raise whisper_result
+                if isinstance(prosody_outcome, Exception):
+                    logger.warning(f"[PROSODY-190] Analyse fehlgeschlagen: {prosody_outcome}")
+                    prosody_outcome = None
+                else:
+                    _src = (prosody_outcome or {}).get("source", "?")
+                    _mood = (prosody_outcome or {}).get("mood", "?")
+                    _conf = (prosody_outcome or {}).get("confidence", 0.0)
+                    logger.info(f"[PROSODY-190] mood={_mood} confidence={_conf:.2f} source={_src}")
+            else:
+                whisper_result = await _whisper_call()
         except WhisperSilenceGuard:
             # Short-Audio: nala.voice-Format — Transcript + Response beide leer.
             return {
@@ -4148,23 +4242,6 @@ async def voice_endpoint(
             }
 
         raw_transcript = whisper_result.get("text", "")
-
-        # ------------------------------------------------------------------
-        # 1b. Patch 188: Prosodie-Analyse (Foundation/Anker — derzeit STUB)
-        # ------------------------------------------------------------------
-        # Sobald Gemma 4 E2B geladen ist (P189+), greift hier parallel zu
-        # Whisper die Prosodie-Pipeline. Audio-Bytes werden vom Encoder zu
-        # mood/tempo/valence/arousal gemappt; das Ergebnis wandert als
-        # zusätzlicher Kontext in den LLM-Prompt.
-        #
-        # from zerberus.modules.prosody.manager import get_prosody_manager
-        # prosody = get_prosody_manager(settings)
-        # _prosody_status = await prosody.healthcheck()
-        # prosody_result = (await prosody.analyze(audio_data)
-        #                   if _prosody_status.get("ok") else None)
-        # if prosody_result and prosody_result.get("source") != "stub":
-        #     cleaned += f"\n[Prosodie: {prosody_result['mood']}, " \
-        #                f"Tempo: {prosody_result['tempo']}]"
 
         # ------------------------------------------------------------------
         # 2. Cleaner (Patch 135: X-Already-Cleaned überspringt doppeltes Cleaning)
@@ -4227,11 +4304,25 @@ async def voice_endpoint(
 
         # Transkript ans Frontend zurückgeben – kein LLM-Aufruf hier.
         # Der Browser zeigt es editierbar an; der User sendet selbst.
-        return {
+        # Patch 190: Prosodie-Result (wenn vorhanden + nicht Stub) als Bonus-Feld;
+        # Frontend gibt es als X-Prosody-Context-Header an /chat/completions weiter.
+        # Worker-Protection P191: KEIN Speichern in interactions-Tabelle!
+        result_payload = {
             "transcript": cleaned,
             "response": "",
             "sentiment": "neutral"
         }
+        if prosody_outcome and isinstance(prosody_outcome, dict) and prosody_outcome.get("source") != "stub":
+            result_payload["prosody"] = {
+                "mood": prosody_outcome.get("mood"),
+                "tempo": prosody_outcome.get("tempo"),
+                "confidence": prosody_outcome.get("confidence"),
+                "valence": prosody_outcome.get("valence"),
+                "arousal": prosody_outcome.get("arousal"),
+                "dominance": prosody_outcome.get("dominance"),
+                "source": prosody_outcome.get("source"),
+            }
+        return result_payload
 
     except Exception as e:
         logger.error(f"❌ Voice processing failed: {e}")

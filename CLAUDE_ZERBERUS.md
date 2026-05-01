@@ -20,15 +20,29 @@
 - Backward-Compat: Flag `false` → MiniLM-Pfad unveraendert (Pre-P133)
 - Logging-Tags: `[DUAL-187]` (Init + Index-Load), `[RAG-187]` (Encode-Switch im DEBUG)
 
-## Prosodie-Foundation (P188)
-- Modul: [`zerberus/modules/prosody/manager.py`](zerberus/modules/prosody/manager.py)|`ProsodyConfig` + `ProsodyManager` + `get_prosody_manager()` (Singleton)
-- Config: `modules.prosody.{enabled, model_path, device, vram_threshold_gb, output_format}`|alle Defaults im Code (config.yaml gitignored)
-- Status P188: STUB|`analyze()` gibt `{mood:neutral, tempo:normal, confidence:0.0, valence:0.5, arousal:0.5, dominance:0.5, source:"stub"}`|Modell wird (noch) NICHT geladen
+## Prosodie-Pipeline (P188 Foundation + P189 Backend + P190 Pipeline + P191 Consent)
+- Modul: [`zerberus/modules/prosody/`](zerberus/modules/prosody/)|`manager.py` + `gemma_client.py` (P189) + `prompts.py` (P189) + `injector.py` (P190)
+- Config: `modules.prosody.{enabled, model_path, mmproj_path, server_url, llama_cli_path, device, n_gpu_layers, timeout_seconds, vram_threshold_gb, output_format}`|alle Defaults im Code (config.yaml gitignored)
+- Backend P189: `GemmaAudioClient` mit Dual-Path|CLI (`llama-mtmd-cli` Subprocess pro Call) ODER Server (`llama-server` HTTP)|`mode`-Property routet automatisch
+- `mode` = `none` (Stub) / `cli` (Pfad A, JETZT) / `server` (Pfad B, wartet auf llama.cpp Issue #21868)
+- Pfad A funktioniert JETZT|Pfad B nur Code-Skelett — `input_audio` Content-Block in `llama-server` noch nicht gemergt
+- JSON-Parsing: robust gegen Markdown-Wrapper (```json ... ```), Freitext, kaputtes JSON|Fallback auf Stub
+- `analyze()` routing|enabled=False oder mode=none → Stub (P188-Verhalten)|sonst → `client.analyze_audio()`
+- `is_active`-Property (P190): enabled UND mode != none|Pipeline-Gate für `asyncio.gather`
+- Pipeline P190: Whisper + Gemma PARALLEL via `asyncio.gather(return_exceptions=True)` in `/nala/voice` und `/v1/audio/transcriptions`
+- Whisper-Fehler = harter Fehler (raise)|Prosodie-Fehler = weicher Fehler (Whisper läuft alleine)
+- Frontend reicht Prosodie-Result aus `/nala/voice`-Response (`prosody`-Feld) als `X-Prosody-Context`-Header an `/v1/chat/completions` weiter
+- Injector P190: `inject_prosody_context(sys_prompt, prosody_result)` in [`injector.py`](zerberus/modules/prosody/injector.py)|fügt Block HINTER System-Prompt
+- Injector-Gating: kein Block bei source=stub oder confidence<0.3|valence<-0.3 → Inkongruenz-Warnung („Stimme klingt anders als Text vermuten lässt")
+- Consent P191: Frontend-Toggle „Sprachstimmung analysieren (Prosodie)"|localStorage `nala_prosody_consent` (Default `false`)|Header `X-Prosody-Consent: true` nur bei aktiv
+- Pipeline-Gate Endpoint: `is_active AND consent` (UND-Verknüpfung — beide müssen wahr sein)
+- Visueller Indikator 🎭 neben Mikrofon-Button (nur sichtbar bei Consent=on)
+- Hel-Admin-Endpoint `GET /hel/admin/prosody/status`: NUR Aggregate (mode, success_count, error_count, last_success_ts)|KEINE individuellen mood/valence/arousal Felder
+- Worker-Protection: tmp-Audio-Datei wird im `finally:` per `unlink()` entsorgt|KEIN Schreiben in `interactions`-Tabelle|KEIN Logging von Audio-Rohdaten
 - `healthcheck()` reasons: `disabled`/`no_model`/`model_not_found`/`no_cuda`/`not_enough_vram`/`ok`|nutzt `_cuda_state()` aus RAG-Device-Helper (P111)
-- main.py-Lifespan: loggt Status `Prosodie ok / skip / fail` analog Sandbox|Manager wird IMMER instanziiert (auch bei enabled=false), gibt aber dann Stub-Werte
-- Pipeline-Anker: auskommentiertes Skelett in [`nala.py`](zerberus/app/routers/nala.py) (`voice_endpoint` Block 1b) und [`legacy.py`](zerberus/app/routers/legacy.py) (`audio_transcriptions`)
-- Modell: Gemma 4 E2B (Q4_K_M GGUF ~3 GB)|Folge-Patch P189+ aktiviert den Inferenz-Pfad
-- Logging-Tags: `[PROSODY-188]` (Startup/Healthcheck), `[PROSODY-STUB-188]` (Stub-Aufrufe im DEBUG)
+- main.py-Lifespan: loggt Status `Prosodie ok / skip / fail` im Startup-Banner
+- Modell: Gemma 4 E2B (Q4_K_M GGUF ~3.4 GB) + mmproj (BF16 ~940 MB)|liegen unter `C:\Users\chris\models\gemma4-e2b\`
+- Logging-Tags: `[PROSODY-188]` (Startup/Healthcheck), `[PROSODY-STUB-188]` (Stub-Aufrufe im DEBUG), `[PROSODY-189]`/`[PROSODY-189-CLI]`/`[PROSODY-189-SRV]` (Backend), `[PROSODY-190]` (Pipeline+Injector), `[PROSODY-CONSENT-191]` (Frontend), `[PROSODY-ADMIN-191]` (Hel-Status)
 
 ## Globale Wissensbasis
 - Repo: https://github.com/Bmad82/Claude (PUBLIC|keine Secrets/Keys/IPs/interne URLs)

@@ -282,16 +282,24 @@ modules:
   metrics:
     enabled: true
 
-  # Patch 188: Prosodie-Foundation (Gemma 4 E2B Audio-Encoder, Q4_K_M ~3 GB).
-  # NICHT der vollständige Pipeline-Pfad — nur das Fundament. Modell wird
-  # erst geladen wenn `enabled: true` UND `model_path` auf eine echte
-  # GGUF-Datei zeigt UND genug VRAM frei ist (>= vram_threshold_gb).
-  # Aktuell Stub: analyze() gibt {"source": "stub"} zurück bis das Modell
-  # heruntergeladen ist. Folge-Patch P189+ aktiviert den Inferenz-Pfad.
+  # Patch 188 (Foundation) + Patch 189 (Gemma-Backend): Prosodie-Pipeline.
+  # Backend: Gemma 4 E2B (Q4_K_M ~3 GB GGUF) via llama.cpp (CLI oder Server).
+  #
+  # Pfad A (CLI, funktioniert JETZT): model_path + mmproj_path setzen,
+  #   `llama-mtmd-cli` als Subprocess pro Audio-Call.
+  # Pfad B (Server, Zukunft / Issue #21868): server_url setzen, dann läuft
+  #   Gemma resident im `llama-server`. Wenn server_url gesetzt ist,
+  #   gewinnt Server gegen CLI.
+  # Wenn beides leer: analyze() gibt {"source": "stub"} zurück.
   prosody:
     enabled: false
-    model_path: ""           # z.B. ./models/gemma-4-e2b-Q4_K_M.gguf
+    model_path: ""           # z.B. C:/Users/chris/models/gemma4-e2b/google_gemma-4-E2B-it-Q4_K_M.gguf
+    mmproj_path: ""          # P189: z.B. C:/Users/chris/models/gemma4-e2b/mmproj-BF16.gguf
+    server_url: ""           # P189: z.B. http://localhost:8003 (für Pfad B)
+    llama_cli_path: llama-mtmd-cli  # P189: Pfad zum CLI-Binary
     device: cuda             # cuda / cpu
+    n_gpu_layers: 99         # P189: -ngl Parameter (99 = alles auf GPU)
+    timeout_seconds: 30      # P189: CLI/HTTP Timeout
     vram_threshold_gb: 2.0   # min freier VRAM zum Laden
     output_format: json      # json / text
 
