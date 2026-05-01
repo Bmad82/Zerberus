@@ -75,6 +75,14 @@
 - SUPERVISOR/PROJEKTDOKU/README/Patch-Prompts: Prosa (menschliche Leser)
 - Neue Einträge in CLAUDE_ZERBERUS.md + lessons.md IMMER im komprimierten Format schreiben
 
+## Marathon-Workflow (Phase 5+)
+- Session-Start: HANDOVER.md → ZERBERUS_MARATHON_WORKFLOW.md → loslegen
+- Ziele statt Rezepte|WAS nicht WIE|eigene Architektur-Entscheidungen erwünscht
+- Stopp bei ~400k Token oder Kontextvergiftung|aktuellen Patch sauber fertig → Doku → Handover → STOPP
+- Blockiert → Frage in DECISIONS_PENDING parken → nächsten unabhängigen Patch nehmen
+- Session-Ende: HANDOVER.md überschreiben|Manuelle-Tests-Liste pflegen|Patch-Status in Workflow aktualisieren
+- Push + sync_repos.ps1 + scripts/verify_sync.ps1 als letzter Schritt
+
 ## Pflicht nach jedem Patch
 - SUPERVISOR_ZERBERUS.md aktualisieren: Nummer|Datum|3-5 Zeilen Inhalt
 - Offene Items: erledigte raus|neue rein
