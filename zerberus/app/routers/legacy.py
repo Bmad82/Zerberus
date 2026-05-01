@@ -412,6 +412,21 @@ async def audio_transcriptions(
             return {"text": "", "note": "short_audio_skipped"}
 
         raw_transcript = whisper_result.get("text", "")
+
+        # Patch 188: Prosodie-Analyse (Foundation/Anker — derzeit STUB).
+        # Sobald Gemma 4 E2B geladen ist (P189+), greift hier parallel zu
+        # Whisper die Prosodie-Pipeline. Audio-Bytes werden vom Encoder zu
+        # mood/tempo/valence/arousal gemappt; das Ergebnis wandert als
+        # zusätzlicher Kontext in den LLM-Prompt (legacy/audio_transcriptions
+        # selbst gibt nur das Transkript zurück — der Prosodie-Vector wird
+        # in der nachgelagerten /v1/chat-Stelle ergänzt).
+        #
+        # from zerberus.modules.prosody.manager import get_prosody_manager
+        # prosody = get_prosody_manager(settings)
+        # _prosody_status = await prosody.healthcheck()
+        # prosody_result = (await prosody.analyze(audio_data)
+        #                   if _prosody_status.get("ok") else None)
+
         # Patch 135: X-Already-Cleaned-Header überspringt Cleaning
         already_cleaned = request.headers.get("X-Already-Cleaned", "").lower() == "true"
         if already_cleaned:

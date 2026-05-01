@@ -45,6 +45,13 @@ _initialized = False
 _dual_embedder: "object | None" = None
 _use_dual: bool = False
 
+# Patch 187: Bei Dual-Modus zusätzlich der EN-Index als zweite Hälfte.
+# DE liegt in den globalen `_index` / `_metadata` (für Backward-Compat
+# mit Reset/Health/etc.). EN-Index wird optional gehalten — fehlt er,
+# wird für EN-Queries auf den DE-Index zurückgegriffen.
+_en_index: "faiss.IndexFlatL2 | None" = None
+_en_metadata: list[dict] = []
+
 
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen (synchron, laufen in Thread-Pool)
@@ -92,8 +99,13 @@ def _init_sync(settings: Settings) -> None:
     Indices (de.index/en.index + *_meta.json) existieren, wird der Dual-
     Embedder geladen und der Index auf die DE-Variante gezeigt (EN kann
     optional später dazugemergt werden). Ansonsten Legacy MiniLM.
+
+    Patch 187: Wenn ein zusätzlicher en.index vorhanden ist, wird er
+    parallel geladen und für EN-Queries genutzt (sprach-spezifischer
+    Retrieval-Pfad). Fehlt er → Fallback auf DE-Index für EN-Queries.
     """
     global _index, _model, _metadata, _initialized, _dual_embedder, _use_dual
+    global _en_index, _en_metadata
     with _init_lock:
         if _initialized:
             return
@@ -112,21 +124,35 @@ def _init_sync(settings: Settings) -> None:
                 base = Path(rag_cfg.get("vector_db_path", "./data/vectors"))
                 de_index_path = base / "de.index"
                 de_meta_path = base / "de_meta.json"
+                en_index_path = base / "en.index"
+                en_meta_path = base / "en_meta.json"
                 if de_index_path.exists() and de_meta_path.exists():
                     _index = faiss.read_index(str(de_index_path))
                     with open(de_meta_path, "r", encoding="utf-8") as f:
                         _metadata = json.load(f)
                     logger.warning(
-                        f"[DUAL-133] Dual-Embedder aktiv. DE-Index: {_index.ntotal} Vektoren"
+                        f"[DUAL-187] Dual-Embedder aktiv. DE-Index: {_index.ntotal} Vektoren"
                     )
+                    # Patch 187: EN-Index optional dazuladen
+                    if en_index_path.exists() and en_meta_path.exists():
+                        _en_index = faiss.read_index(str(en_index_path))
+                        with open(en_meta_path, "r", encoding="utf-8") as f:
+                            _en_metadata = json.load(f)
+                        logger.warning(
+                            f"[DUAL-187] EN-Index geladen: {_en_index.ntotal} Vektoren"
+                        )
+                    else:
+                        logger.info(
+                            "[DUAL-187] Kein EN-Index — EN-Queries fallen auf DE-Index zurück"
+                        )
                 else:
                     logger.warning(
-                        "[DUAL-133] use_dual_embedder=true aber de.index fehlt — "
+                        "[DUAL-187] use_dual_embedder=true aber de.index fehlt — "
                         "Fallback auf Legacy MiniLM"
                     )
                     _use_dual = False
             except Exception as e:
-                logger.warning(f"[DUAL-133] Dual-Init fehlgeschlagen: {e} — Fallback Legacy")
+                logger.warning(f"[DUAL-187] Dual-Init fehlgeschlagen: {e} — Fallback Legacy")
                 _use_dual = False
 
         if not _use_dual:
@@ -175,11 +201,25 @@ class IndexDocumentRequest(BaseModel):
 # Blocking Worker-Funktionen (laufen in Thread-Pool via asyncio.to_thread)
 # ---------------------------------------------------------------------------
 
-def _encode(text: str) -> np.ndarray:
-    """Encode text. Patch 133: nutzt DualEmbedder wenn `_use_dual=True`, sonst Legacy."""
+def _detect_lang(text: str) -> str:
+    """Wrapper um detect_language — exportiert für Tests + _encode/_search."""
+    from zerberus.modules.rag.language_detector import detect_language
+    return detect_language(text or "")
+
+
+def _encode(text: str, language: str | None = None) -> np.ndarray:
+    """Encode text. Patch 187: nutzt DualEmbedder wenn `_use_dual=True`, sonst Legacy.
+
+    Bei Dual-Modus wird die Sprache erkannt (oder explizit übergeben), damit
+    der passende sprachspezifische Embedder genutzt wird. Der erzeugte Vector
+    hat die Dimension des entsprechenden Modells und passt zum sprach-
+    spezifischen FAISS-Index (de.index oder en.index).
+    """
     global _model, _dual_embedder
     if _use_dual and _dual_embedder is not None:
-        vec_list = _dual_embedder.embed(text)
+        lang = language or _detect_lang(text)
+        vec_list = _dual_embedder.embed(text, language=lang)
+        logger.debug(f"[RAG-187] Encode via DualEmbedder lang={lang}, dim={len(vec_list)}")
         return np.array([vec_list], dtype="float32")
     if _model is None:
         from sentence_transformers import SentenceTransformer
@@ -207,6 +247,21 @@ def _add_to_index(vec: np.ndarray, text: str, extra_meta: dict, settings: Settin
     return _index.ntotal
 
 
+def _select_index_and_meta(language: str | None) -> tuple["faiss.IndexFlatL2 | None", list[dict]]:
+    """Patch 187: Wählt den passenden Index + Metadata basierend auf der Sprache.
+
+    Bei Dual-Modus:
+      - language='en' UND en_index existiert  → EN-Index
+      - language='en' UND en_index fehlt      → DE-Index (Fallback)
+      - sonst                                 → DE-Index (= globaler _index)
+
+    Bei Legacy-Modus: immer der globale _index.
+    """
+    if _use_dual and language == "en" and _en_index is not None:
+        return _en_index, _en_metadata
+    return _index, _metadata
+
+
 def _search_index(
     vec: np.ndarray,
     top_k: int,
@@ -215,6 +270,7 @@ def _search_index(
     rerank_enabled: bool = False,
     rerank_model: str = "",
     rerank_multiplier: int = 4,
+    language: str | None = None,
 ) -> list[dict]:
     """Führt Nearest-Neighbor-Suche durch und gibt Ergebnisse zurück.
 
@@ -230,8 +286,15 @@ def _search_index(
     die Liste an den Cross-Encoder (`zerberus.modules.rag.reranker.rerank`)
     weiter. Das Reranker-Ergebnis wird auf `top_k` getrimmt. Benötigt
     `query_text` (Cross-Encoder scored Query+Chunk-Paare).
+
+    Patch 187: Bei Dual-Embedder-Modus wählt `language` den sprach-
+    spezifischen Index (de.index / en.index). Fallback auf DE-Index wenn
+    EN-Index nicht vorhanden.
     """
-    n_vectors = _index.ntotal
+    target_index, target_meta = _select_index_and_meta(language)
+    if target_index is None:
+        return []
+    n_vectors = target_index.ntotal
     if n_vectors == 0:
         return []
 
@@ -244,7 +307,7 @@ def _search_index(
         over_fetch = 1
 
     fetch_k = min(top_k * over_fetch, n_vectors)
-    distances, indices = _index.search(vec, fetch_k)
+    distances, indices = target_index.search(vec, fetch_k)
 
     results = []
     dropped = 0
@@ -252,7 +315,7 @@ def _search_index(
     for dist, idx in zip(distances[0], indices[0]):
         if idx == -1:
             continue
-        entry = _metadata[idx].copy()
+        entry = target_meta[idx].copy()
         # Patch 116: Soft-deleted Chunks (per /hel/admin/rag/document DELETE)
         # werden im Retrieval übersprungen, bleiben aber physisch im Index,
         # bis der nächste vollständige Reindex läuft.
@@ -357,8 +420,12 @@ async def semantic_search(
     per_query_k = req.top_k * (rerank_multiplier if rerank_enabled else 1)
     all_candidates: list[dict] = []
     seen: set[str] = set()
+    # Patch 187: Sprache der ORIGINAL-Query erkennen — alle Expand-Varianten
+    # nutzen denselben Sprach-Index, damit der Reranker konsistente Kandidaten
+    # bekommt. (Query-Expansion paraphrasiert in derselben Sprache.)
+    query_lang = _detect_lang(query) if _use_dual else None
     for q in queries:
-        vec = await asyncio.to_thread(_encode, q)
+        vec = await asyncio.to_thread(_encode, q, query_lang)
         sub_hits = await asyncio.to_thread(
             _search_index,
             vec,
@@ -368,6 +435,7 @@ async def semantic_search(
             False,          # rerank OFF per sub-query, once at end
             "",
             rerank_multiplier,
+            query_lang,
         )
         for h in sub_hits:
             key = (h.get("text", "") or "")[:200]

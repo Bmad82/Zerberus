@@ -1,8 +1,20 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 183–185 (2026-05-01) – Black-Bug-VIERTER + Nala-Persona-Ton + Runtime-Info-Block*
+*Letzte Aktualisierung: Patch 186–188 (2026-05-01) – Auto-TTS + FAISS-Migration + Prosodie-Foundation*
 
 ## Aktueller Patch
+
+**Patch 186** + **Patch 187** + **Patch 188** — Auto-TTS + FAISS-Migration + Prosodie-Foundation (2026-05-01)
+
+Drei zusammen ausgelieferte Patches, die alle drei Säulen (Frontend / Backend / Infrastruktur) anfassen. Teststand 1119 → ~1181 (+62: 20 P186 + 18 P187 + 24 P188), 0 Failures.
+
+- **P186 — Auto-TTS (Nala Autovorlese-Funktion):** Neuer Toggle „Antworten automatisch vorlesen" im Settings-Tab „Ausdruck" (UNTER Stimmen-Dropdown + Rate-Slider). localStorage-Key `nala_auto_tts` (Default `false`). Wenn aktiv: jede neue Bot-Antwort wird NACH Render der Bubble (entspricht SSE-done-Moment) über den bestehenden `/nala/tts/speak`-Endpunkt vorgelesen. Stille Degradation bei Fehler (`console.warn`, kein Popup). Audio-Stop bei Session-Wechsel, Logout, 401, Toggle-OFF. `window.__nalaAutoTtsAudio` als globale Audio-Referenz analog dem SSE-Watchdog-Pattern. KEIN Backend-Change — der edge-tts-Pfad ist seit P143 stabil. 20 Tests in [`test_auto_tts.py`](zerberus/tests/test_auto_tts.py).
+- **P187 — FAISS-Migration (Embedder-Umschaltung):** `scripts/migrate_embedder.py --execute` lokal gefahren — `data/vectors/de.index` + `de_meta.json` mit 19 DE-Chunks geschrieben (0 EN-Chunks im aktuellen Korpus). Lokale `config.yaml` auf `modules.rag.use_dual_embedder: true` gestellt; `config.yaml.example` bekommt den Default `false` für `git clone`-Sicherheit + den `embedder`-Subblock zur Doku. Retriever-Code (`zerberus/modules/rag/router.py`) erweitert um sprach-spezifische Index-Auswahl: `_select_index_and_meta(language)` wählt DE/EN-Index, mit Fallback auf DE wenn EN-Index fehlt. `_encode(text, language=None)` reicht die erkannte Sprache an `DualEmbedder.embed()` weiter — Dimensions-Mismatch zwischen DE-Modell (cross-en-de-roberta, 1024D) und EN-Modell (multilingual-e5-large, 1024D) bleibt im jeweiligen Index gekapselt. Legacy `paraphrase-multilingual-MiniLM-L12-v2` läuft weiter wenn der Flag false ist (Backward-Compat). 18 Tests in [`test_faiss_migration.py`](zerberus/tests/test_faiss_migration.py); alle 50 bestehenden RAG-Tests bleiben grün.
+- **P188 — Prosodie-Foundation (Gemma 4 E2B Infrastruktur):** Fundament-Patch ohne echtes Modell-Loading. Neues Modul [`zerberus/modules/prosody/`](zerberus/modules/prosody/) mit `ProsodyConfig` + `ProsodyManager`. `analyze()` gibt einen neutralen Stub zurück (`mood=neutral`, `tempo=normal`, `confidence=0.0`, `source="stub"`) bis das Modell geladen ist. `healthcheck()` meldet ehrlich `disabled` / `no_model` / `model_not_found` / `no_cuda` / `not_enough_vram` / `ok` und nutzt `_cuda_state()` aus dem RAG-Device-Helper (P111). main.py-Lifespan loggt den Status im Startup-Banner („Prosodie ok / skip / fail"). Pipeline-Anker als auskommentiertes Skelett in [`nala.py`](zerberus/app/routers/nala.py) (`voice_endpoint`) und [`legacy.py`](zerberus/app/routers/legacy.py) (`audio_transcriptions`) — zeigt wo der Prosodie-Vector NACH Whisper / VOR LLM in den Prompt wandert. Folge-Patch P189+ aktiviert den Inferenz-Pfad mit GGUF-Datei. 24 Tests in [`test_prosody.py`](zerberus/tests/test_prosody.py).
+
+---
+
+## Vorheriger Patch
 
 **Patch 183–185** — Black-Bug-VIERTER + Persona-Ton + Runtime-Info (2026-05-01)
 

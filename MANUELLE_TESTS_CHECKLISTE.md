@@ -1,6 +1,6 @@
 # MANUELLE_TESTS_CHECKLISTE.md — Zerberus Pro 4.0
-*Stand: Patch 185 (2026-04-30) — Patches 120–185 abgedeckt*
-*Teststand: 1033 + P183 (49) + P184 (13) + P185 (24) Tests passed (Default-Run)*
+*Stand: Patch 188 (2026-05-01) — Patches 120–188 abgedeckt*
+*Teststand: ~1181 Tests passed (Default-Run, P185-Baseline 1119 + 20 P186 + 18 P187 + 24 P188)*
 
 **Workflow:** Coda schreibt neue Items rein nach jedem Patch. Chris testet und hakt ab.
 Nur Items, die Coda NICHT selbst testen kann, landen hier (UI-Checks, Mobile, Tailscale, iPhone, UX-Gefühl).
@@ -146,9 +146,39 @@ Coda macht: pytest, curls, smoke-checks, code-verify, log-checks — alles Autom
 - [ ] Code mit `import os` → blockiert mit Pattern-Error (Belt+Suspenders)
 - [ ] Sandbox-Container nach Crash/Timeout: `docker ps -a | grep zerberus-sandbox` → leer (force-rm)
 
+## Auto-TTS (P186)
+
+- [ ] Nala öffnen → Settings → Tab „Ausdruck" → Toggle „Antworten automatisch vorlesen" sichtbar UNTER Stimmen-Dropdown + Rate-Slider
+- [ ] Toggle einmal an/aus klicken → reload Seite → Status persistiert (localStorage `nala_auto_tts`)
+- [ ] Toggle AN, neue Frage stellen → nach Bot-Antwort startet TTS automatisch (gleiche Stimme wie Probe-Hören)
+- [ ] Während TTS läuft, neue Frage senden → vorheriges Audio stoppt, neue Antwort wird vorgelesen
+- [ ] Während TTS läuft, andere Session aus Sidebar laden → Audio stoppt
+- [ ] Während TTS läuft, ausloggen → Audio stoppt
+- [ ] Toggle AUS während Wiedergabe → laufendes Audio stoppt sofort, nächste Antwort nicht mehr vorgelesen
+- [ ] DevTools Console → bei TTS-Fehler `[AUTO-TTS-186]`-warn statt Error-Popup
+- [ ] Toggle AUS, neue Frage → KEINE TTS-Wiedergabe (Regression: 🔊-Button funktioniert weiterhin)
+
+## FAISS-Migration / Dual-Embedder (P187)
+
+- [ ] `ls data/vectors/` → `de.index`, `de_meta.json`, `faiss.index` (Legacy), `metadata.json` (Legacy) alle vorhanden
+- [ ] Server-Restart → Startup-Log zeigt `[DUAL-187] Dual-Embedder aktiv. DE-Index: N Vektoren`
+- [ ] Hel → RAG-Status → Index zeigt korrekte Anzahl Vektoren
+- [ ] Nala-Query auf Deutsch („Was sind die Rosendornen?") → Antwort enthält Doku-Inhalt
+- [ ] Hel → RAG-Search-Test → top-3-Treffer haben sinnvolle Distanzen (< 2.0 für relevante Queries)
+- [ ] Reranker bleibt aktiv (Log: `[RERANK-89]` o.ä. bei jedem Search-Call)
+- [ ] Optional: `config.yaml` → `use_dual_embedder: false` setzen → Server-Restart → Legacy-MiniLM-Pfad → Logs zeigen kein `[DUAL-187]` mehr (Backward-Compat-Verifikation)
+
+## Prosodie-Foundation (P188)
+
+- [ ] Server-Restart → Startup-Banner zeigt `⏭️  Prosodie         deaktiviert (modules.prosody.enabled=false)` (Default)
+- [ ] `config.yaml` → `modules.prosody.enabled: true` + `model_path: ""` → Restart → Banner zeigt `⏭️  Prosodie         model_path leer — Modell nicht geladen`
+- [ ] `model_path: "/nonexistent.gguf"` → Restart → Banner zeigt `❌ Prosodie         Modell nicht gefunden: /nonexistent.gguf`
+- [ ] Voice-Endpunkt aufrufen (Audio aus Nala-UI senden) → KEIN Crash trotz aktivierter Prosody-Config (Pipeline-Anker ist Kommentar — kein aktiver Pfad)
+- [ ] `venv\Scripts\python -c "from zerberus.modules.prosody.manager import ProsodyManager; import asyncio; print(asyncio.run(ProsodyManager().analyze(b'')))"` → Stub-Dict mit `source: "stub"`
+
 ## Cross-Cutting
 
-- [ ] `pytest zerberus/tests/ -v --tb=short` → 1033 passed, 114 deselected, 4 xfailed (P182-Baseline)
+- [ ] `pytest zerberus/tests/ -v --tb=short` → ~1181 passed, 114 deselected, 4 xfailed (P186-188-Baseline)
 - [ ] `sync_repos.ps1` + `verify_sync.ps1` → alle 3 Repos clean
 - [ ] Server überlebt Tailscale-Reconnect ohne Crash
 - [ ] Pacemaker läuft (1× Puls/Minute im Log) — Watchdog ohne Restart-Loop

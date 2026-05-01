@@ -172,6 +172,39 @@ async def lifespan(app: FastAPI):
     else:
         _log_item("RAG/FAISS", "skip", "deaktiviert")
 
+    # Patch 188: Prosodie-Foundation. Modell wird (noch) nicht geladen — der
+    # Manager existiert als Stub bis das Gemma-4-E2B-GGUF lokal vorhanden ist.
+    try:
+        from zerberus.modules.prosody.manager import (
+            get_prosody_manager, reset_prosody_manager,
+        )
+        reset_prosody_manager()
+        _prosody_status = await get_prosody_manager(settings).healthcheck()
+        if not _prosody_status["ok"]:
+            _reason = _prosody_status["reason"]
+            if _reason == "disabled":
+                _log_item("Prosodie", "skip", "deaktiviert (modules.prosody.enabled=false)")
+            elif _reason == "no_model":
+                _log_item("Prosodie", "skip", "model_path leer — Modell nicht geladen")
+            elif _reason == "model_not_found":
+                _log_item("Prosodie", "fail", f"Modell nicht gefunden: {_prosody_status.get('path', '?')}")
+            elif _reason == "no_cuda":
+                _log_item("Prosodie", "fail", "kein CUDA verfügbar")
+            elif _reason == "not_enough_vram":
+                _log_item(
+                    "Prosodie", "fail",
+                    f"VRAM zu klein ({_prosody_status.get('vram_free_gb', 0):.1f} < "
+                    f"{_prosody_status.get('vram_threshold_gb', 0):.1f} GB)",
+                )
+            else:
+                _log_item("Prosodie", "fail", _reason)
+        else:
+            _vram = _prosody_status.get("vram_free_gb", 0.0)
+            _loaded = "geladen" if _prosody_status.get("loaded") else "Stub (Modell nicht geladen)"
+            _log_item("Prosodie", "ok", f"Gemma E2B, {_loaded}, {_vram:.1f} GB frei")
+    except Exception as _pr_err:
+        _log_item("Prosodie", "fail", str(_pr_err)[:100])
+
     # ── Scheduler ────────────────────────────────────────────────────
     _log_section("Scheduler")
 

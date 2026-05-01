@@ -1,5 +1,35 @@
 # CLAUDE_ZERBERUS.md – Zerberus Pro 4.0
 
+## Auto-TTS (P186)
+- Toggle: `Antworten automatisch vorlesen` im Settings-Tab `Ausdruck`|UNTER Stimmen-Dropdown + Rate-Slider|44px Touch-Target|`id="autoTtsToggle"`
+- localStorage-Key: `nala_auto_tts` ("true"/"false")|Default `false`|Check via `=== 'true'` (alles andere → false)
+- Trigger: NACH `addMessage(reply, 'bot')` im non-streaming Chat-Pfad (entspricht SSE-done-Moment)|nicht pro Chunk
+- Endpoint: nutzt bestehenden `POST /nala/tts/speak` (edge-tts seit P143)|gleiche Stimme + Rate wie 🔊-Button
+- Audio-Stop bei: `loadSession`, `doLogout`, `handle401`, Toggle-OFF (`onAutoTtsToggle(false)`)
+- Audio-Referenz: `window.__nalaAutoTtsAudio` (analog SSE-Watchdog-Pattern)
+- Stille Degradation bei Fehler: `console.warn('[AUTO-TTS-186] ...')`|kein Error-Popup
+- KEIN Backend-Change|TTS-Endpunkte unveraendert seit P143
+
+## RAG Dual-Embedder (P187)
+- Flag: `modules.rag.use_dual_embedder` in config.yaml|Default `false` in `config.yaml.example` (Backward-Compat nach `git clone`)|lokal seit 2026-05-01 auf `true`
+- DE-Modell: `T-Systems-onsite/cross-en-de-roberta-sentence-transformer` auf GPU|EN-Modell: `intfloat/multilingual-e5-large` auf CPU
+- Indices: `data/vectors/de.index` + `de_meta.json` (DE-Chunks)|`en.index` + `en_meta.json` (EN-Chunks, optional)|Legacy `faiss.index` bleibt erhalten als MiniLM-Fallback
+- `_select_index_and_meta(language)` in [`router.py`](zerberus/modules/rag/router.py): waehlt DE/EN-Index|Fallback DE wenn EN-Index fehlt
+- `_encode(text, language=None)` reicht erkannte Sprache an `DualEmbedder.embed()`|Dimensions-Mismatch zwischen Modellen bleibt im jeweiligen Index gekapselt
+- Migration: `scripts/migrate_embedder.py --execute`|Backup nach `data/backups/pre_patch129_*` (auch fuer P187 wiederverwendet)
+- Backward-Compat: Flag `false` → MiniLM-Pfad unveraendert (Pre-P133)
+- Logging-Tags: `[DUAL-187]` (Init + Index-Load), `[RAG-187]` (Encode-Switch im DEBUG)
+
+## Prosodie-Foundation (P188)
+- Modul: [`zerberus/modules/prosody/manager.py`](zerberus/modules/prosody/manager.py)|`ProsodyConfig` + `ProsodyManager` + `get_prosody_manager()` (Singleton)
+- Config: `modules.prosody.{enabled, model_path, device, vram_threshold_gb, output_format}`|alle Defaults im Code (config.yaml gitignored)
+- Status P188: STUB|`analyze()` gibt `{mood:neutral, tempo:normal, confidence:0.0, valence:0.5, arousal:0.5, dominance:0.5, source:"stub"}`|Modell wird (noch) NICHT geladen
+- `healthcheck()` reasons: `disabled`/`no_model`/`model_not_found`/`no_cuda`/`not_enough_vram`/`ok`|nutzt `_cuda_state()` aus RAG-Device-Helper (P111)
+- main.py-Lifespan: loggt Status `Prosodie ok / skip / fail` analog Sandbox|Manager wird IMMER instanziiert (auch bei enabled=false), gibt aber dann Stub-Werte
+- Pipeline-Anker: auskommentiertes Skelett in [`nala.py`](zerberus/app/routers/nala.py) (`voice_endpoint` Block 1b) und [`legacy.py`](zerberus/app/routers/legacy.py) (`audio_transcriptions`)
+- Modell: Gemma 4 E2B (Q4_K_M GGUF ~3 GB)|Folge-Patch P189+ aktiviert den Inferenz-Pfad
+- Logging-Tags: `[PROSODY-188]` (Startup/Healthcheck), `[PROSODY-STUB-188]` (Stub-Aufrufe im DEBUG)
+
 ## Globale Wissensbasis
 - Repo: https://github.com/Bmad82/Claude (PUBLIC|keine Secrets/Keys/IPs/interne URLs)
 - lessons/ nur bei Bedarf prüfen|nicht rituell bei jedem Patch

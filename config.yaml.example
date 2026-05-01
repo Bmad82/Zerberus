@@ -217,6 +217,20 @@ modules:
     # kleinen Score-Bonus nach dem Reranking. Keyword-basiert.
     category_boost_enabled: true
     category_boost_value: 0.1
+    # Patch 187: Dual-Embedder (DE auf GPU + EN auf CPU) — Default false
+    # für Backward-Compat bei frischem git clone. Auf true setzen NACHDEM
+    # `scripts/migrate_embedder.py --execute` durchgelaufen ist und die
+    # Dual-Indices (data/vectors/de.index + en.index) existieren.
+    use_dual_embedder: false
+    embedder:
+      de:
+        model: T-Systems-onsite/cross-en-de-roberta-sentence-transformer
+        device: cuda
+      en:
+        model: intfloat/multilingual-e5-large
+        device: cpu
+      auto_detect_language: true
+      fallback_language: de
 
   # MQTT – IoT-Sensor-Integration (aktuell deaktiviert)
   mqtt:
@@ -267,6 +281,19 @@ modules:
   #   venv\Scripts\activate && python -m spacy download de_core_news_sm
   metrics:
     enabled: true
+
+  # Patch 188: Prosodie-Foundation (Gemma 4 E2B Audio-Encoder, Q4_K_M ~3 GB).
+  # NICHT der vollständige Pipeline-Pfad — nur das Fundament. Modell wird
+  # erst geladen wenn `enabled: true` UND `model_path` auf eine echte
+  # GGUF-Datei zeigt UND genug VRAM frei ist (>= vram_threshold_gb).
+  # Aktuell Stub: analyze() gibt {"source": "stub"} zurück bis das Modell
+  # heruntergeladen ist. Folge-Patch P189+ aktiviert den Inferenz-Pfad.
+  prosody:
+    enabled: false
+    model_path: ""           # z.B. ./models/gemma-4-e2b-Q4_K_M.gguf
+    device: cuda             # cuda / cpu
+    vram_threshold_gb: 2.0   # min freier VRAM zum Laden
+    output_format: json      # json / text
 
 # ============================================================
 # Patch 131: Vision-Modell für Bild-Analyse (Huginn-Fotos, zukünftig Nala-Upload).

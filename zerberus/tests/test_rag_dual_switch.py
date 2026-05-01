@@ -25,16 +25,41 @@ class TestDualSwitchDefaults:
         assert hasattr(rag_router, "_dual_embedder")
 
 
-class TestConfigDefaultFalse:
-    def test_config_yaml_use_dual_embedder_false(self):
-        """config.yaml hat use_dual_embedder explizit auf false (Pre-Patch-133-Verhalten)."""
+class TestConfigDefault:
+    def test_config_yaml_example_default_false(self):
+        """config.yaml.example dokumentiert den Flag mit Default false (sicher nach git clone)."""
+        import yaml
+        with open("config.yaml.example", "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        rag = cfg["modules"]["rag"]
+        # Patch 187: Default in der example.yaml bleibt false — der Migration-
+        # Schritt (`scripts/migrate_embedder.py --execute`) und das Drehen
+        # des Flags ist eine bewusste Operation pro Installation.
+        assert rag.get("use_dual_embedder") is False, (
+            "use_dual_embedder muss in config.yaml.example false sein "
+            "(Backward-Compat nach git clone)"
+        )
+
+    def test_local_config_consistent_with_index(self):
+        """Patch 187: Wenn lokale config.yaml den Flag auf true hat, MUSS de.index existieren.
+
+        Schützt vor dem Anti-Pattern „Flag aktiviert, Migration vergessen" — der
+        Server würde sonst beim Start auf Legacy zurückfallen und die Migration
+        wäre umsonst gewesen.
+        """
         import yaml
         with open("config.yaml", "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         rag = cfg["modules"]["rag"]
-        assert rag.get("use_dual_embedder") is False, (
-            "use_dual_embedder muss initial false sein (Legacy MiniLM bleibt aktiv)"
-        )
+        if rag.get("use_dual_embedder") is True:
+            base = Path(rag.get("vector_db_path", "./data/vectors"))
+            assert (base / "de.index").exists(), (
+                "use_dual_embedder=true aber de.index fehlt — bitte "
+                "scripts/migrate_embedder.py --execute fahren"
+            )
+            assert (base / "de_meta.json").exists(), (
+                "use_dual_embedder=true aber de_meta.json fehlt"
+            )
 
 
 class TestFallbackWhenDualIndicesMissing:

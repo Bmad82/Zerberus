@@ -4804,3 +4804,99 @@ Alle 11 grün. **Regression: 965 passed, 114 deselected, 4 xfailed, 0 failed in 
 
 *Stand: 2026-04-28, Patch 177 — Pipeline-Cutover als Feature-Flag aktiviert. `process_update` ist Stable-API, `_legacy_process_update` und `handle_telegram_update` sind beide Implementierungen, Default ist Legacy. Phase F übernimmt die schrittweise Migration der delegierten Pfade.*
 
+---
+
+## Patch 186 — Auto-TTS (Nala Autovorlese-Funktion) (2026-05-01)
+
+### Ziel
+Globaler Toggle in Nala Settings → Tab "Ausdruck": **"Antworten automatisch vorlesen"**. Default AUS. Wenn AN, wird jede neue Bot-Antwort automatisch über den bestehenden TTS-Pfad (edge-tts via `POST /nala/tts/speak`) vorgelesen, ohne manuellen 🔊-Tap.
+
+### Was sich geändert hat
+- **Neuer Toggle in [`nala.py`](../zerberus/app/routers/nala.py)** im Settings-Tab `settings-tab-voice`, UNTER Stimmen-Dropdown + Rate-Slider. `id="autoTtsToggle"`, 44px Touch-Target, `accent-color` aus den Design-Tokens.
+- **localStorage-Key `nala_auto_tts`** ("true"/"false", Default "false"). `isAutoTtsEnabled()` prüft auf `=== 'true'` — alles andere → false.
+- **`autoTtsPlay(text)`-Funktion** nutzt denselben `POST /nala/tts/speak`-Endpunkt wie der manuelle 🔊-Button. Gleiche Stimme + Rate aus Settings. Bei Fehler: `console.warn('[AUTO-TTS-186] ...')`, kein Error-Popup (stille Degradation).
+- **Trigger im SSE-done-Moment:** Im non-streaming Chat-Pfad (`sendMessage`) wird `autoTtsPlay(reply)` NACH `addMessage(reply, 'bot')` aufgerufen. Das entspricht semantisch dem SSE-done-Event (Backend feuert es zur selben Zeit). Nicht pro Chunk.
+- **Audio-Stop bei Lifecycle-Events:** `loadSession`, `doLogout`, `handle401`, Toggle-OFF (`onAutoTtsToggle(false)`) rufen alle `_stopAutoTtsAudio()` auf. `window.__nalaAutoTtsAudio` als globale Audio-Referenz analog dem SSE-Watchdog-Pattern.
+
+### Was NICHT geändert wurde
+- **KEIN Backend-Change.** Der bestehende `POST /nala/tts/speak`-Endpunkt aus P143 bleibt unverändert. `zerberus/utils/tts.py` ebenfalls.
+- **Kein neuer Settings-Tab.** Toggle hängt sich an die vorhandene TTS-Sektion im "Ausdruck"-Tab.
+- **Kein Auto-Stop bei Stream-Pause.** Wenn der User mitten in einer Antwort eine neue Frage stellt, läuft das alte Audio zu Ende — nur Session-Wechsel oder Toggle-OFF stoppen aktiv.
+
+### Tests
+20 Tests in [`test_auto_tts.py`](../zerberus/tests/test_auto_tts.py): `TestAutoTtsToggleHtml` (3), `TestAutoTtsLocalStorage` (2), `TestAutoTtsPlayFunction` (5), `TestAutoTtsLifecycle` (4), `TestAutoTtsTriggerTiming` (3), `TestAutoTtsBackendUntouched` (3 — Regression dass die TTS-Endpoints aus P143 unangetastet sind).
+
+### Logging-Tags
+- `[AUTO-TTS-186]` — Frontend-only (`console.log` für Toggle-State, `console.warn` für Fehler). Kein Backend-Log nötig.
+
+---
+
+## Patch 187 — FAISS-Migration (Dual-Embedder Aktivierung) (2026-05-01)
+
+### Ziel
+Den aktiven RAG-Retriever von MiniLM auf den seit P126 vorbereiteten Dual-Embedder umschalten. Migration-Script `scripts/migrate_embedder.py --execute` ausführen, Config-Flag drehen, Retriever-Code für sprach-spezifische Index-Auswahl erweitern.
+
+### Was sich geändert hat
+- **Migration ausgeführt:** `venv\Scripts\python.exe scripts/migrate_embedder.py --execute`. 19 DE-Chunks, 0 EN-Chunks (aktueller Korpus ist deutschsprachig). Backup nach `data/backups/pre_patch129_20260501_033231/` (Script-Marker bleibt P129 für Konsistenz, der eigentliche Cutover ist P187). Probe-Query "Was ist die Rosendornen-Sammlung?" → top-3 = [1, 2, 13], Distanzen [1.752, 1.838, 1.840].
+- **Config-Default in [`config.yaml.example`](../config.yaml.example):** Neuer Block `use_dual_embedder: false` (sicher nach `git clone`) + `embedder.{de,en}.{model,device}` als Doku. Lokale `config.yaml` auf `true` umgestellt + voller `embedder`-Block eingetragen.
+- **Retriever erweitert in [`zerberus/modules/rag/router.py`](../zerberus/modules/rag/router.py):**
+  - Neuer State `_en_index`, `_en_metadata` für den optionalen EN-Index.
+  - `_init_sync` lädt bei Dual-Modus zusätzlich `en.index` + `en_meta.json` wenn vorhanden, sonst Logging "Kein EN-Index — EN-Queries fallen auf DE-Index zurück".
+  - Neue Helper `_detect_lang(text)` (Wrapper um `detect_language`) und `_select_index_and_meta(language)` (wählt DE/EN basierend auf Sprache + Fallback DE).
+  - `_encode(text, language=None)` nimmt jetzt optional die Sprache und reicht sie an `DualEmbedder.embed()` weiter — das verhindert den Dimensions-Mismatch zwischen DE-Modell (cross-en-de-roberta) und EN-Modell (multilingual-e5-large).
+  - `_search_index(..., language=None)` nutzt `_select_index_and_meta()` für die Index-Auswahl.
+  - `semantic_search` erkennt die Sprache der Original-Query einmal und reicht sie an alle Expand-Varianten weiter (Query-Expansion paraphrasiert in derselben Sprache, der Reranker bekommt konsistente Kandidaten).
+- **Backward-Compat:** Bei `use_dual_embedder: false` bleibt der MiniLM-Pfad komplett unangetastet (Pre-P133-Verhalten). Die Legacy-`faiss.index` + `metadata.json` bleiben physisch erhalten.
+
+### Was NICHT geändert wurde
+- **Reranker, Query-Expansion, Category-Boost** bleiben unverändert — sie operieren auf den Kandidaten-Listen und sind agnostisch gegenüber dem Embedder.
+- **Hel-Upload-UI** unverändert — der Upload-Pfad geht durch `_encode` und nutzt den richtigen Embedder ab dem Moment der Umschaltung automatisch.
+- **Huginn-RAG-Lookup (P178)** unverändert — selber Code-Pfad wie Nala, kein extra Eingriff nötig.
+
+### Tests
+18 Tests in [`test_faiss_migration.py`](../zerberus/tests/test_faiss_migration.py): `TestConfigDefaults` (3), `TestEncodePathSwitch` (4), `TestSearchIndexSelection` (4), `TestRerankIntegration` (1), `TestMigrationArtefacts` (2 — Live-Check der `de.index` + Legacy-Index), `TestRagUploadPath` (1), `TestHuginnRagIntegration` (1), `TestConfigYamlExample` (2).
+
+Bestehende RAG-Tests (`test_dual_embedder.py`, `test_huginn_rag.py`, `test_language_detector.py`) → 50/50 grün, keine Regressions.
+
+### Logging-Tags
+- `[DUAL-187]` — Init + Index-Load (WARNING/INFO).
+- `[RAG-187]` — Encode-Switch (DEBUG, nur bei aktivem Dual-Pfad).
+
+---
+
+## Patch 188 — Prosodie-Foundation (Gemma 4 E2B Infrastruktur) (2026-05-01)
+
+### Ziel
+Infrastruktur für die Prosodie-Pipeline vorbereiten. NICHT den vollen Audio-Sentiment-Pfad — nur das Fundament: Modell-Management, Config-Schema, VRAM-Check, Stub-Endpoint, Pipeline-Anker. Gemma 4 E2B wird in diesem Patch NICHT geladen oder heruntergeladen.
+
+### Was sich geändert hat
+- **Neues Modul [`zerberus/modules/prosody/`](../zerberus/modules/prosody/):**
+  - `__init__.py` (leer, macht das Verzeichnis zum Python-Package).
+  - `manager.py` mit `ProsodyConfig` (Dataclass) + `ProsodyManager` + `get_prosody_manager()` (Singleton-Factory) + `reset_prosody_manager()` (für Tests/Reload).
+- **`ProsodyConfig`-Felder:** `enabled` (bool, default false), `model_path` (str, default leer), `device` ("cuda"/"cpu"), `vram_threshold_gb` (float, default 2.0), `output_format` ("json"/"text"). `from_dict()` für Settings-Integration.
+- **`ProsodyManager.healthcheck()`** liefert immer ein dict mit `ok` + `reason` und ggf. `vram_free_gb`. Reasons: `disabled` / `no_model` / `model_not_found` / `no_cuda` / `not_enough_vram` / `vram_check_failed` / `ok`. Nutzt `_cuda_state()` aus dem RAG-Device-Helper (P111) — VRAM-Check bleibt zentral.
+- **`ProsodyManager.analyze(audio_bytes)`** gibt einen neutralen Stub zurück solange `self._model is None`: `{mood: neutral, tempo: normal, confidence: 0.0, valence: 0.5, arousal: 0.5, dominance: 0.5, source: "stub"}`. Echter Inferenz-Pfad raised `NotImplementedError` — kommt in P189+.
+- **`ProsodyManager._load_model()`** ist Stub: kein Modell wird geladen, nur ein Log-Eintrag. WICHTIG dokumentiert: nur aufrufen wenn `healthcheck()` ok ist.
+- **main.py-Lifespan-Integration in [`zerberus/main.py`](../zerberus/main.py):** Im Services-Block nach RAG/FAISS wird `get_prosody_manager(settings).healthcheck()` aufgerufen und der Status im Startup-Banner gelogged. Reasons → menschenlesbare Zeile ("deaktiviert", "Modell nicht geladen", "VRAM zu klein …", "Gemma E2B, Stub, X.X GB frei").
+- **Pipeline-Anker (auskommentiertes Skelett):**
+  - In [`nala.py`](../zerberus/app/routers/nala.py) `voice_endpoint` als neuer Block "1b" zwischen Whisper-Transkription und Cleaner. Kommentar zeigt wie `get_prosody_manager(settings).analyze(audio_data)` aufgerufen würde und wie das Ergebnis NACH dem Cleaner an `cleaned` angehängt wird.
+  - In [`legacy.py`](../zerberus/app/routers/legacy.py) `audio_transcriptions` analoger Block direkt nach dem Whisper-Result. Klarstellung: `audio_transcriptions` selbst gibt nur das Transkript zurück, der Prosodie-Vector wird in der nachgelagerten `/v1/chat`-Stelle ergänzt.
+- **Config-Schema in [`config.yaml.example`](../config.yaml.example):** Neuer Block `modules.prosody` mit allen Feldern + Doku-Kommentar (Defaults + Hinweis auf Folge-Patch).
+
+### Was NICHT geändert wurde
+- **Gemma 4 E2B wird nicht heruntergeladen, nicht geladen, nicht inferiert.** Folge-Patch.
+- **Audio-Pipeline-Logik unverändert.** Die Pipeline-Anker sind Kommentare, kein aktiver Code-Pfad.
+- **Keine Änderungen an Whisper, RAG, Memory, Sentiment.**
+- **Kein neuer Endpunkt.** `/prosody/` o.ä. existiert nicht — der Manager wird intern instanziiert.
+
+### Tests
+24 Tests in [`test_prosody.py`](../zerberus/tests/test_prosody.py): `TestProsodyConfig` (3), `TestProsodyManagerStub` (3), `TestProsodyHealthcheck` (6 — alle Reason-Pfade abgedeckt), `TestProsodyPipelineAnchor` (2 — Source-Audit der Kommentar-Skelette in nala.py + legacy.py), `TestProsodyModuleImport` (2), `TestProsodyFactory` (4 — Singleton, Reset, Settings-Integration), `TestMainStartupIntegration` (3 — Source-Audit dass main.py den Manager startet/loggt), `TestConfigYamlExample` (1).
+
+### Logging-Tags
+- `[PROSODY-188]` — Startup, Healthcheck, `_load_model`-Stub-Log (INFO/WARNING).
+- `[PROSODY-STUB-188]` — Stub-Aufrufe von `analyze()` (DEBUG, hochfrequent bei aktivem Voice-Pfad).
+
+---
+
+*Stand: 2026-05-01, Patch 186-188 — Auto-TTS + FAISS-Dual-Embedder (live) + Prosodie-Foundation (Stub bis P189+).*
+

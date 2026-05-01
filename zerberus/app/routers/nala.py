@@ -1712,6 +1712,15 @@ NALA_HTML = """<!DOCTYPE html>
                 </div>
                 <button class="export-opt-btn" onclick="previewTts()">🔊 Probe hören</button>
                 <div id="tts-preview-status" style="font-size:0.82em;min-height:1.2em;margin-top:4px;color:#8aa0c0;"></div>
+                <!-- Patch 186: Auto-TTS-Toggle. localStorage-Key: nala_auto_tts (Default: false) -->
+                <label for="autoTtsToggle" style="display:flex;align-items:center;gap:10px;margin-top:14px;padding:8px;min-height:44px;cursor:pointer;color:var(--zb-text-light, #e0e8f8);">
+                    <input type="checkbox" id="autoTtsToggle" onchange="onAutoTtsToggle(this.checked)"
+                           style="width:20px;height:20px;cursor:pointer;accent-color:var(--zb-accent, var(--color-accent, #ec407a));">
+                    <span>Antworten automatisch vorlesen</span>
+                </label>
+                <div style="font-size:0.78em;color:#8aa0c0;margin-left:30px;margin-top:-4px;">
+                    Nutzt die oben gewählte Stimme &amp; Tempo. Spielt jede neue Bot-Antwort automatisch ab.
+                </div>
             </div>
         </div>
 
@@ -1907,6 +1916,8 @@ NALA_HTML = """<!DOCTYPE html>
     function doLogout() {
         // Patch 102 (B-02): Laufenden Chat abbrechen vor Logout
         abortActiveChat('logout');
+        // Patch 186: Auto-TTS-Wiedergabe stoppen
+        try { _stopAutoTtsAudio(); } catch(_) {}
         localStorage.removeItem('nala_profile');
         currentProfile = null;
         disconnectSSE();
@@ -1957,6 +1968,8 @@ NALA_HTML = """<!DOCTYPE html>
     function handle401() {
         // Patch 102 (B-02): Laufenden Chat abbrechen bei 401
         abortActiveChat('auth-expired');
+        // Patch 186: Auto-TTS-Wiedergabe stoppen
+        try { _stopAutoTtsAudio(); } catch(_) {}
         localStorage.removeItem('nala_profile');
         currentProfile = null;
         disconnectSSE();
@@ -2109,6 +2122,8 @@ NALA_HTML = """<!DOCTYPE html>
         try {
             // Patch 102 (B-02/B-06): Aktiven Chat-Request abbrechen, bevor wir zur neuen Session wechseln
             abortActiveChat('session-switch');
+            // Patch 186: Auto-TTS-Wiedergabe der vorigen Session stoppen
+            try { _stopAutoTtsAudio(); } catch(_) {}
             const response = await fetch(`/archive/session/${sid}`, { headers: profileHeaders() });
             // Patch 103 B-10: 401-Check auch beim Session-Laden
             if (response.status === 401) { handle401(); return; }
@@ -2207,6 +2222,11 @@ NALA_HTML = """<!DOCTYPE html>
             removeTypingIndicator();
             addMessage(reply, 'bot');
             loadSessions();
+            // Patch 186: Auto-TTS — erst NACH Render der Bot-Bubble (entspricht SSE-done-Moment).
+            // Nicht pro Chunk (Chat ist non-streaming → genau ein Trigger pro Antwort).
+            if (isAutoTtsEnabled() && reply && reply.trim()) {
+                autoTtsPlay(reply);
+            }
         } catch (error) {
             // AbortError = Timeout ODER Session-Wechsel/Superseded
             if (error.name === 'AbortError' || (error.message || '').includes('aborted')) {
@@ -3333,6 +3353,8 @@ NALA_HTML = """<!DOCTYPE html>
         const val = document.getElementById('tts-rate-val');
         if (slider) slider.value = rate;
         if (val) val.textContent = (parseInt(rate, 10) >= 0 ? '+' : '') + rate + '%';
+        // Patch 186: Auto-TTS-Toggle-State aus localStorage wiederherstellen
+        try { _initAutoTtsToggle(); } catch(_) {}
     }
     function applyTtsRate(val) {
         const v = parseInt(val, 10);
@@ -3376,6 +3398,56 @@ NALA_HTML = """<!DOCTYPE html>
         const url = URL.createObjectURL(blob);
         _ttsAudio = new Audio(url);
         await _ttsAudio.play();
+    }
+
+    // ── Patch 186: Auto-TTS — automatisches Vorlesen jeder neuen Bot-Antwort ──
+    // localStorage-Key: nala_auto_tts ("true" / "false", Default: "false").
+    // Wird beim done-Event NACH Render der Bot-Bubble aufgerufen (nicht pro Chunk).
+    function isAutoTtsEnabled() {
+        try { return localStorage.getItem('nala_auto_tts') === 'true'; } catch(_) { return false; }
+    }
+    function onAutoTtsToggle(checked) {
+        try { localStorage.setItem('nala_auto_tts', checked ? 'true' : 'false'); } catch(_) {}
+        console.log('[AUTO-TTS-186] Toggle ' + (checked ? 'ON' : 'OFF'));
+        if (!checked) { _stopAutoTtsAudio(); }
+    }
+    function _initAutoTtsToggle() {
+        const cb = document.getElementById('autoTtsToggle');
+        if (cb) cb.checked = isAutoTtsEnabled();
+    }
+    function _stopAutoTtsAudio() {
+        if (window.__nalaAutoTtsAudio) {
+            try { window.__nalaAutoTtsAudio.pause(); } catch(_) {}
+            try { window.__nalaAutoTtsAudio.src = ''; } catch(_) {}
+            window.__nalaAutoTtsAudio = null;
+        }
+    }
+    async function autoTtsPlay(text) {
+        if (!text || !text.trim()) return;
+        // Wenn schon eine Auto-TTS-Wiedergabe läuft → vorherige stoppen
+        _stopAutoTtsAudio();
+        const voice = (document.getElementById('tts-voice-select') || {}).value
+            || localStorage.getItem('nala_tts_voice') || 'de-DE-ConradNeural';
+        const rate = parseInt(localStorage.getItem('nala_tts_rate') || '0', 10);
+        const rateStr = (rate >= 0 ? '+' : '') + rate + '%';
+        try {
+            const resp = await fetch('/nala/tts/speak', {
+                method: 'POST',
+                headers: profileHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ text: text.trim(), voice, rate: rateStr })
+            });
+            if (!resp.ok) {
+                console.warn('[AUTO-TTS-186] HTTP ' + resp.status + ' — stille Degradation');
+                return;
+            }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            window.__nalaAutoTtsAudio = audio;
+            await audio.play();
+        } catch (e) {
+            console.warn('[AUTO-TTS-186] Fehler: ' + (e && e.message ? e.message : e));
+        }
     }
 
     // ── Patch 86: Favoriten v2 (Theme + Bubble + Schrift) ──
@@ -4076,6 +4148,23 @@ async def voice_endpoint(
             }
 
         raw_transcript = whisper_result.get("text", "")
+
+        # ------------------------------------------------------------------
+        # 1b. Patch 188: Prosodie-Analyse (Foundation/Anker — derzeit STUB)
+        # ------------------------------------------------------------------
+        # Sobald Gemma 4 E2B geladen ist (P189+), greift hier parallel zu
+        # Whisper die Prosodie-Pipeline. Audio-Bytes werden vom Encoder zu
+        # mood/tempo/valence/arousal gemappt; das Ergebnis wandert als
+        # zusätzlicher Kontext in den LLM-Prompt.
+        #
+        # from zerberus.modules.prosody.manager import get_prosody_manager
+        # prosody = get_prosody_manager(settings)
+        # _prosody_status = await prosody.healthcheck()
+        # prosody_result = (await prosody.analyze(audio_data)
+        #                   if _prosody_status.get("ok") else None)
+        # if prosody_result and prosody_result.get("source") != "stub":
+        #     cleaned += f"\n[Prosodie: {prosody_result['mood']}, " \
+        #                f"Tempo: {prosody_result['tempo']}]"
 
         # ------------------------------------------------------------------
         # 2. Cleaner (Patch 135: X-Already-Cleaned überspringt doppeltes Cleaning)
