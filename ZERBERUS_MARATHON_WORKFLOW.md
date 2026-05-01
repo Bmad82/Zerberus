@@ -121,9 +121,9 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 
 | # | Frage | Kontext | Antwort Chris | Status |
 |---|-------|---------|---------------|--------|
-| 1 | Projekt-DB: eigene SQLite oder Tabellen in bunker_memory.db? | Isolation vs. Einfachheit | — | OFFEN |
-| 2 | Projekt-UI zuerst in Hel oder auch in Nala? | Admin-first vs. Mobile-first | — | OFFEN |
-| 3 | Persona-Hierarchie: Projekt überschreibt User-Persona? | "Mein Ton" vs. Projekt-Ton | — | OFFEN |
+| 1 | Projekt-DB: eigene SQLite oder Tabellen in bunker_memory.db? | Isolation vs. Einfachheit | **bunker_memory.db** mit eigenen Tabellen (projects, project_files). Vermeidet zwei Connections/WAL-Configs/Backup-Pfade und ATTACH bei Joins. Isolation via Foreign Keys + Namespaces. | BEANTWORTET 2026-05-01 |
+| 2 | Projekt-UI zuerst in Hel oder auch in Nala? | Admin-first vs. Mobile-first | **Hel-first.** Projekt-Verwaltung (anlegen/konfigurieren/Dateien) = Admin-Arbeit, Desktop-Kontext. Nala-Integration zweiter Schritt: im Chat "Wechsel zu Projekt X", Projektkontext fließt in Antworten. | BEANTWORTET 2026-05-01 |
+| 3 | Persona-Hierarchie: Projekt überschreibt User-Persona? | "Mein Ton" vs. Projekt-Ton | **Merge, nicht Override.** Layer-Order: System-Default → User-Persona ("Mein Ton") → Projekt-Persona. Projekt darf Fachsprache und Kontext-Regeln hinzufügen, Grundton bleibt erhalten. | BEANTWORTET 2026-05-01 |
 
 ---
 
@@ -131,6 +131,6 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 
 | Item | Status |
 |------|--------|
-| system_prompt_chris.json Mutzenbacher-Persona-Experiment | gestasht (Bootstrap-Session). Chris entscheidet pop/drop |
+| system_prompt_chris.json Mutzenbacher-Persona-Experiment | gedroppt 2026-05-01 (Chris-Entscheidung) |
 | interactions-Tabelle ohne User-Spalte | Alembic nötig vor Per-User-Metriken |
 | 2 pre-existing Test-Failures (SentenceTransformer-Mock, edge-tts-Install) | Nicht blockierend |

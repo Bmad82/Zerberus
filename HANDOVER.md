@@ -13,9 +13,11 @@ Phase 4 abgeschlossen. Bootstrap-Session: Marathon-Workflow eingerichtet (HANDOV
 ZERBERUS_MARATHON_WORKFLOW.md lesen. Phase 5a starten. Erstes Ziel: #1 (Projekte als Entität).
 
 ## Offenes
-- DECISIONS_PENDING in Workflow-Datei prüfen — vielleicht hat Chris geantwortet
-- Manuelle-Tests-Liste prüfen — vielleicht hat Chris was abgehakt
-- Stash `Mutzenbacher-Persona-Experiment` (system_prompt_chris.json) liegt offen — Chris entscheidet pop/drop via `git stash list`
+- DECISIONS_PENDING #1-3 BEANTWORTET (2026-05-01) — Phase 5a Ziel #1 entblockt
+  - DB: bunker_memory.db mit eigenen Tabellen (projects, project_files)
+  - UI: Hel-first, Nala-Integration zweiter Schritt
+  - Persona: Merge (System → User → Projekt), kein Override
+- Manuelle Tests #2-4 noch offen (Prosodie, Triptychon iOS/Android, Live-Update)
 
 ## Stack
 DeepSeek V3.2 (OpenRouter) | Mistral Small 3 Guard | Gemma E2B Prosodie (lokal) | faster-whisper FP16 (Docker :8002) | SQLite WAL | Nala + Hel | Huginn Telegram
