@@ -63,6 +63,10 @@ class ChatCompletionResponse(BaseModel):
     created: int
     model: str
     choices: list[Choice]
+    # Patch 192: Sentiment-Triptychon — additive Felder fuer Frontend-Bubbles.
+    # Bleibt None, wenn BERT nicht laeuft oder Pipeline keine Daten liefert.
+    # Backward-Compat: OpenAI-Clients ignorieren unbekannte Felder.
+    sentiment: dict | None = None
 
 
 # ---------- Hilfsfunktionen ----------
@@ -389,11 +393,38 @@ async def chat_completions(
     except Exception as e:
         logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")
 
-    # Response-Format bleibt exakt OpenAI-kompatibel (Nala-Weiche)
+    # Patch 192: Sentiment-Triptychon — BERT-Analyse fuer User + Bot, Konsens
+    # mit optionaler Prosodie aus dem X-Prosody-Context Header (one-shot).
+    # Fail-open: jeder Fehler setzt sentiment_payload auf None; OpenAI-Schema
+    # bleibt unveraendert.
+    sentiment_payload: dict | None = None
+    try:
+        from zerberus.utils.sentiment_display import build_sentiment_payload
+        _user_prosody = None
+        if _prosody_ctx_raw and _prosody_consent:
+            try:
+                _user_prosody = json.loads(_prosody_ctx_raw)
+            except (json.JSONDecodeError, ValueError):
+                _user_prosody = None
+        sentiment_payload = {
+            "user": build_sentiment_payload(last_user_msg, prosody=_user_prosody),
+            "bot": build_sentiment_payload(answer, prosody=None),
+        }
+        _u_emoji = (sentiment_payload["user"].get("consensus") or {}).get("emoji", "?")
+        _b_emoji = (sentiment_payload["bot"].get("consensus") or {}).get("emoji", "?")
+        logger.info(f"[SENTIMENT-192] user={_u_emoji} bot={_b_emoji}")
+    except Exception as _sent_err:
+        logger.warning(f"[SENTIMENT-192] Triptychon-Payload fehlgeschlagen (fail-open): {_sent_err}")
+        sentiment_payload = None
+
+    # Response-Format bleibt exakt OpenAI-kompatibel (Nala-Weiche).
+    # Patch 192: zusaetzliches `sentiment`-Feld ist additiv — Clients die nur
+    # `choices` lesen (Dictate, SillyTavern, OpenAI-SDK) bleiben kompatibel.
     return ChatCompletionResponse(
         created=int(datetime.now().timestamp()),
         model=model,
-        choices=[Choice(index=0, message=Message(role="assistant", content=answer), finish_reason="stop")]
+        choices=[Choice(index=0, message=Message(role="assistant", content=answer), finish_reason="stop")],
+        sentiment=sentiment_payload,
     )
 
 
@@ -489,8 +520,9 @@ async def audio_transcriptions(
         # Frontend reicht es als X-Prosody-Context-Header an /chat/completions
         # weiter. KEIN Schreiben in die DB (Worker-Protection P191).
         response = {"text": cleaned_transcript}
+        _prosody_clean: dict | None = None
         if prosody_outcome and isinstance(prosody_outcome, dict) and prosody_outcome.get("source") != "stub":
-            response["prosody"] = {
+            _prosody_clean = {
                 "mood": prosody_outcome.get("mood"),
                 "tempo": prosody_outcome.get("tempo"),
                 "confidence": prosody_outcome.get("confidence"),
@@ -499,6 +531,37 @@ async def audio_transcriptions(
                 "dominance": prosody_outcome.get("dominance"),
                 "source": prosody_outcome.get("source"),
             }
+            # Backward-Compat: prosody-Top-Level-Feld bleibt (P190-Schema).
+            response["prosody"] = _prosody_clean
+
+        # Patch 193: Whisper-Endpoint Enrichment — additives sentiment-Feld
+        # mit BERT-Label/Score und optionalem Konsens (wenn Prosodie da).
+        # text-Feld ist IMMER da; Clients die nur ["text"] lesen, bleiben
+        # kompatibel. Fail-open bei BERT-Fehlern.
+        try:
+            from zerberus.modules.sentiment.router import analyze_sentiment
+            from zerberus.utils.sentiment_display import compute_consensus
+            _bert = analyze_sentiment(cleaned_transcript or "")
+            _sentiment_block: dict = {
+                "bert": {
+                    "label": _bert.get("label", "neutral"),
+                    "score": float(_bert.get("score", 0.5)),
+                }
+            }
+            if _prosody_clean is not None:
+                _sentiment_block["consensus"] = compute_consensus(
+                    _bert.get("label", "neutral"),
+                    float(_bert.get("score", 0.5)),
+                    _prosody_clean,
+                )
+            response["sentiment"] = _sentiment_block
+            logger.info(
+                f"[ENRICHMENT-193] bert={_sentiment_block['bert']['label']}/"
+                f"{_sentiment_block['bert']['score']:.2f} prosody={'yes' if _prosody_clean else 'no'}"
+            )
+        except Exception as _enrich_err:
+            logger.warning(f"[ENRICHMENT-193] Sentiment-Enrichment fehlgeschlagen (fail-open): {_enrich_err}")
+
         return response
 
     except Exception as e:

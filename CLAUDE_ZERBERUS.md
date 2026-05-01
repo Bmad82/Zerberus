@@ -1,5 +1,24 @@
 # CLAUDE_ZERBERUS.md – Zerberus Pro 4.0
 
+## Sentiment-Triptychon (P192)
+- Modul: [`zerberus/utils/sentiment_display.py`](zerberus/utils/sentiment_display.py) — `bert_emoji()`, `prosody_emoji()`, `consensus_emoji()`, `compute_consensus()`, `build_sentiment_payload()`
+- Drei Kanaele: BERT 📝 (Text-Sentiment), Prosodie 🎙️ (Stimm-Analyse, nur bei Audio), Konsens 🎯 (Fusion)
+- Mehrabian-Regel: `confidence > 0.5` → Prosodie dominiert|sonst Fallback auf BERT
+- Inkongruenz-Erkennung: BERT positiv (`label=positive` UND `score > 0.5`) + Prosodie-Valenz `< -0.2` → 🤔 + `incongruent=true`
+- BERT-Score-Schwellen: `> 0.7` = 😊/😟 (stark), `<= 0.7` = 🙂/😐 (mild), `neutral` immer 😶
+- Prosodie-Mood-Mapping (10 Werte): `happy=😊`/`excited=🤩`/`calm=😌`/`sad=😢`/`angry=😠`/`stressed=😰`/`tired=😴`/`anxious=😬`/`sarcastic=😏`/`neutral=😶`
+- Frontend: `.sentiment-triptych` mit drei `.sent-chip`-Spans (BERT/Prosodie/Konsens)|44px Touch-Targets|Hover/`:active` Sichtbarkeit analog `.msg-toolbar`-Pattern (P139)|User-Bubbles links (`flex-start`), Bot-Bubbles rechts (`flex-end`)|`.sent-incongruent` faerbt Konsens-Chip gold bei Widerspruch
+- Backend: `/v1/chat/completions` liefert `sentiment: {user: {bert,prosody,consensus}, bot: {bert,prosody,consensus}}` ADDITIV — OpenAI-Clients ignorieren das Feld
+- Logging-Tag: `[SENTIMENT-192]`
+
+## Whisper-Endpoint Enrichment (P193)
+- `/v1/audio/transcriptions` Response: `text` bleibt IMMER (Backward-Compat fuer Dictate/SillyTavern/Generic-Clients)|optional `prosody` (P190) und neu `sentiment.bert.{label,score}` + optional `sentiment.consensus.{emoji,incongruent,source}`
+- Backward-Compat-Audit: `response = {"text": cleaned_transcript}` MUSS vor jedem additiven Feld initialisiert sein — Source-Audit-Test in [`test_whisper_enrichment.py`](zerberus/tests/test_whisper_enrichment.py) prueft die Reihenfolge
+- `/nala/voice` JSON-Response identisch erweitert (zusaetzliches `enrichment`-Feld) + SSE-Events `event: prosody` + `event: sentiment` ueber `/nala/events`|Triptychon-Frontend kann sync (JSON) oder async (SSE) konsumieren
+- SSE-Generator in [`nala.py::sse_events`](zerberus/app/routers/nala.py) emittiert named SSE-Events nur fuer `prosody` und `sentiment`|alle anderen Event-Types behalten das default-`data:`-only Format
+- Fail-open: BERT-/Konsens-Fehler erzeugt Logger-Warnung mit Tag `[ENRICHMENT-193]`, `sentiment`-Feld bleibt weg, Endpoint laeuft sauber durch
+- Logging-Tag: `[ENRICHMENT-193]`
+
 ## Auto-TTS (P186)
 - Toggle: `Antworten automatisch vorlesen` im Settings-Tab `Ausdruck`|UNTER Stimmen-Dropdown + Rate-Slider|44px Touch-Target|`id="autoTtsToggle"`
 - localStorage-Key: `nala_auto_tts` ("true"/"false")|Default `false`|Check via `=== 'true'` (alles andere → false)

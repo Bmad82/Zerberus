@@ -4975,3 +4975,45 @@ Worker-Protection-Layer aus [`backlog_SER_prosody.md`](../backlog_SER_prosody.md
 
 *Stand: 2026-05-01, Patch 189-191 — Prosodie-Pipeline komplett: Backend (Gemma 4 E2B via llama.cpp CLI/Server) + Pipeline (Whisper ‖ Gemma) + Consent (Opt-In + Worker-Protection).*
 
+---
+
+## Patch 192 — Sentiment-Triptychon UI (2026-05-01)
+
+### Ziel
+Drei kleine Sentiment-Indikatoren an jeder Chat-Bubble (BERT-Text + Prosodie-Stimme + Konsens), sichtbar per Hover/`:active` analog zum Toolbar-Pattern aus P139. Frontend-Foundation für die Sentiment-Aware-UI: User sieht auf einen Blick, wie der Bot ihn „liest" — und ob Text- und Stimm-Sentiment auseinanderlaufen.
+
+### Was sich geändert hat
+- **Neue Utility [`zerberus/utils/sentiment_display.py`](../zerberus/utils/sentiment_display.py):** `bert_emoji(label, score)`, `prosody_emoji(prosody)`, `consensus_emoji(bert_label, bert_score, prosody)`, `compute_consensus(...)`, `build_sentiment_payload(text, prosody, bert_result)`. BERT-Schwellen: `> 0.7` = 😊/😟 (stark), `<= 0.7` = 🙂/😐 (mild), `neutral` immer 😶. Prosodie-Mood-Mapping mit 10 Werten (happy/excited/calm/sad/angry/stressed/tired/anxious/sarcastic/neutral). Konsens-Logik: Mehrabian-Regel (`confidence > 0.5` → Prosodie dominiert, sonst BERT-Fallback) + Inkongruenz-Erkennung (BERT positiv mit `score > 0.5` UND Prosodie-Valenz `< -0.2` → 🤔 + `incongruent=true`).
+- **Backend-Integration in [`legacy.py`](../zerberus/app/routers/legacy.py):** `ChatCompletionResponse` erweitert um optionales `sentiment: dict | None` (additiv, OpenAI-Schema bleibt formal kompatibel). Im `/v1/chat/completions`-Handler wird BERT auf User- und Bot-Text angewendet, mit optionaler Prosodie aus dem `X-Prosody-Context`-Header für die User-Bubble. Fail-open: jeder Fehler setzt `sentiment_payload = None`, Schema bleibt unverändert.
+- **Frontend in [`nala.py`](../zerberus/app/routers/nala.py):** Neue CSS-Sektion `.sentiment-triptych` mit drei `.sent-chip`-Spans (BERT 📝, Prosodie 🎙️, Konsens 🎯), Sichtbarkeit über `.msg-wrapper:hover` und `.msg-wrapper.actions-visible`-Pattern. User-Bubbles links unten (`flex-start`), Bot-Bubbles rechts unten (`flex-end`). Inkongruenz-Marker `.sent-incongruent` färbt den Konsens-Chip gold. 44px Touch-Targets im Mobile-Media-Query. JS-Funktionen `_applyTriptychBlock(triptychEl, block)` und `applySentimentToLastBubbles(sentimentBlock)` füllen die Emojis nach Eingang der Chat-Response. Triptych-Cache in `window.__nalaTriptychs[]` (analog zum SSE-Watchdog-Pattern).
+- **`addMessage()` erweitert:** Jede Bubble bekommt jetzt einen Triptychon-Block (Default 😶 BERT, — Prosodie inaktiv, 😶 Konsens), der nach Eingang der Response per `applySentimentToLastBubbles(data.sentiment)` aktualisiert wird.
+
+### Tests
+22 Tests in [`test_sentiment_triptych.py`](../zerberus/tests/test_sentiment_triptych.py): BERT-Emoji-Mapping (6), Prosodie-Emoji-Mapping mit Parametrize (12), Konsens-Logik (6), `build_sentiment_payload` (3), Frontend-Source-Audit (10 — Klassen, Chips, User/Bot-Side, inactive-Klasse, Apply-Function, data.sentiment, 44px-Targets, Logging-Tag, incongruent-Marker), Backend-Source-Audit (3).
+
+### Logging-Tag
+- `[SENTIMENT-192]` — INFO-Log pro Chat-Antwort mit user/bot Konsens-Emoji.
+
+---
+
+## Patch 193 — Whisper-Endpoint Prosodie/Sentiment-Enrichment (2026-05-01)
+
+### Ziel
+`/v1/audio/transcriptions`-Response für externe Clients (Dictate-Tastatur, SillyTavern, eigene Scripts) erweitern: Prosodie-Daten + BERT-Sentiment + Konsens als optionale Felder, Backward-Compat für Clients die nur `text` lesen. Außerdem named SSE-Events `event: prosody` und `event: sentiment` über `/nala/events` für das Triptychon-Frontend.
+
+### Was sich geändert hat
+- **`/v1/audio/transcriptions` in [`legacy.py`](../zerberus/app/routers/legacy.py):** `text`-Feld bleibt IMMER (Backward-Compat-Audit prüft die Reihenfolge). Optional: `prosody` (P190-Schema) + `sentiment.bert.{label,score}` + (wenn Prosodie da) `sentiment.consensus.{emoji,incongruent,source}`. Fail-open: BERT-/Konsens-Fehler erzeugt nur Logger-Warnung mit Tag `[ENRICHMENT-193]`, das `sentiment`-Feld bleibt einfach weg.
+- **`/nala/voice` in [`nala.py`](../zerberus/app/routers/nala.py):** JSON-Response identisch erweitert (zusätzliches `enrichment`-Feld neben dem bestehenden `prosody`). Zusätzlich publisht der Voice-Handler bei vorhandenen Daten zwei Events an den Event-Bus: `Event(type="prosody", data=...)` und `Event(type="sentiment", data=...)`. Beide Events landen via SSE-Generator als named SSE-Events (`event: prosody\ndata: {json}\n\n`) im `/nala/events`-Stream — Triptychon-Frontend kann sync (JSON) ODER async (SSE) konsumieren.
+- **SSE-Generator in [`nala.py::sse_events`](../zerberus/app/routers/nala.py):** zwei neue Branches für `event.type == "prosody"` und `event.type == "sentiment"` emittieren named SSE-Events. Alle anderen Event-Types behalten das default-`data:`-only Format.
+- **Backward-Compat-Garantie:** Source-Audit-Test [`test_backward_compat_text_only_client`](../zerberus/tests/test_whisper_enrichment.py) prüft, dass `response = {"text": ...}` VOR jedem additiven Feld initialisiert ist. Dictate-App liest nur `text`, bleibt unverändert funktional.
+
+### Tests
+16 Tests in [`test_whisper_enrichment.py`](../zerberus/tests/test_whisper_enrichment.py): Konsens-Logik (2), Source-Audit `/v1/audio/transcriptions` (7 — text-Init, prosody-Stub-Gate, BERT-Import, compute_consensus, Logging-Tag, sentiment-Feld, Backward-Compat-Reihenfolge), Source-Audit `/nala/voice` + SSE (7 — analyze_sentiment, compute_consensus, Logging-Tag, `event: prosody`, `event: sentiment`, `type="prosody"` publish, `type="sentiment"` publish).
+
+### Logging-Tag
+- `[ENRICHMENT-193]` — INFO-Log pro Audio-Transkript mit BERT-Label/Score + Prosodie-Vorhanden-Flag.
+
+---
+
+*Stand: 2026-05-01, Patch 192-193 — Sentiment-Triptychon UI (Frontend) + Whisper-Endpoint Enrichment (Backend, additiv, backward-compat). Phase 4 ist damit abgeschlossen. Phase 5 (Nala-Projekte) startet ab P194 — siehe [`HANDOVER_PHASE_5.md`](HANDOVER_PHASE_5.md).*
+

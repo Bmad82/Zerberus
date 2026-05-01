@@ -418,6 +418,26 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 ## Architektur-Mismatch zwischen Patch-Spec und Code (P182)
 - Patch-Spec sprach von "ADMIN-Confidence ≥ 0.85", aber der Intent-Parser liefert keine Confidence (P182)|Architektur: das LLM emittiert harte Labels (`{"intent": "ADMIN", "needs_hitl": true}`), keine Wahrscheinlichkeiten|Konsequenz für die Umsetzung: das Konzept "höhere Schwelle" wurde umgedeutet auf "höhere Plausibilität" — Heuristik-basierter Downgrade statt numerischer Threshold|Lehre: bei Patches die eine Architektur voraussetzen die nicht existiert, lieber pragmatisch reinterpretieren als vortäuschen die Architektur sei da|Im Patch-Body explizit dokumentieren, dass die Spec angepasst wurde + Begründung
 
+## Prosodie / Audio (P188-191)
+- Whisper verwirft Prosodie (Pitch/Tempo/Stress)|Parallel-Pipeline mit Gemma E2B noetig|Whisper NICHT ersetzen (spezialisiert auf Wort-Erkennung, schlecht in Stimm-Analyse)
+- Gemma 4 E2B vs E4B: identischer Audio-Encoder|Decoder-Unterschied nur fuer tiefes Reasoning|fuer Prosodie-Extraktion reicht E2B (3.4 GB Q4_K_M)|DeepSeek uebernimmt die Interpretation der Prosodie-Daten im Chat-Kontext
+- llama.cpp Audio-Backend: CLI (`llama-mtmd-cli`) funktioniert JETZT|Server-API (Issue #21868) noch offen — `input_audio` Content-Block fehlt in `llama-server`|Dual-Path-Client (`GemmaAudioClient.mode = none/cli/server`) abstrahiert beides, Switch in einer Property
+- Prosodie ist Opt-In (Worker-Protection)|Audio-Bytes leben nur im Request-Scope|tmp-Datei sofort `unlink()`|kein Schreiben in `interactions`-Tabelle|Consent per Header `X-Prosody-Consent: true` (P191)|Hel-Admin sieht nur Aggregate (Counter+Modus), KEINE individuellen mood/valence/arousal-Werte
+
+## RAG / FAISS (P187+)
+- DualEmbedder aktiv seit P187|DE: `T-Systems-onsite/cross-en-de-roberta-sentence-transformer` (GPU)|EN: `intfloat/multilingual-e5-large` (CPU)|Flag `modules.rag.use_dual_embedder` (Default `false` in `config.yaml.example`, lokal seit 2026-05-01 `true`)|MiniLM-Pfad bleibt als Fallback erhalten
+- `migrate_embedder.py`: `--dry-run` zuerst|`--execute` mit automatischem Backup nach `data/backups/pre_patch129_*`|Sprache wird per `detect_language` aus Dokument-Inhalt erkannt, NICHT aus Prompt|Dimensions-Mismatch zwischen DE/EN-Modellen bleibt im jeweiligen Index gekapselt
+
+## Frontend (P186+P192)
+- Auto-TTS triggert NACH `addMessage(reply, 'bot')` (entspricht SSE-done-Moment im non-streaming Pfad)|nicht pro Chunk|Audio-Stop bei: `loadSession`, `doLogout`, `handle401`, Toggle-OFF|`window.__nalaAutoTtsAudio`-Pattern analog SSE-Watchdog
+- Sentiment-Triptychon (P192): drei Chips pro Bubble — BERT 📝 (Text), Prosodie 🎙️ (Stimme), Konsens 🎯 (Fusion)|Mehrabian-Regel: bei `confidence > 0.5` dominiert Prosodie, sonst Fallback auf BERT|Inkongruenz-Erkennung 🤔 wenn BERT positiv und Prosodie-Valenz negativ (Text sagt gut, Stimme sagt schlecht)|User-Bubbles links unten, Bot-Bubbles rechts unten|44px Touch-Targets|`build_sentiment_payload(text, prosody, bert_result)` in [`utils/sentiment_display.py`](zerberus/utils/sentiment_display.py)
+- Triptychon-Daten kommen ADDITIV in `/v1/chat/completions`-Response (`sentiment.user` + `sentiment.bot`)|OpenAI-Schema bleibt formal|Clients die nur `choices` lesen ignorieren das neue Feld
+
+## Whisper-Endpoint Enrichment (P193)
+- `/v1/audio/transcriptions` Response erweitert: `text` bleibt IMMER (Backward-Compat fuer Dictate, SillyTavern, Generic-Clients)|optional `prosody` (P190) und `sentiment` mit `bert.{label,score}` + optional `consensus.{emoji,incongruent,source}`|`compute_consensus(bert_label, bert_score, prosody)` zentrale Helfer-Funktion fuer alle Pfade
+- `/nala/voice` JSON-Response identisch erweitert + zusaetzlich SSE-Events `event: prosody` und `event: sentiment` ueber `/nala/events`|Frontend-Triptychon kann via JSON-Response (sync) ODER SSE-Events (async) gespeist werden|named SSE-Events brauchen `event: <name>\ndata: <json>\n\n` Format, nicht das default-`data:`-only Pattern
+- Fail-open Pattern: BERT-/Konsens-Fehler darf den Audio-Endpoint nicht abbrechen|`try/except` mit Logger-Warnung, `sentiment`-Feld bleibt einfach weg|nur Whisper-Fehler ist hart (P190-Erbe)
+
 ## 🪦 Der Schwarze Bug — Post Mortem (P109 → P153 → P169 → P183)
 
 Der hartnäckigste Bug in Zerberus. Vier Patches, drei Fehldiagnosen, ein Endgegner.

@@ -1002,6 +1002,45 @@ NALA_HTML = """<!DOCTYPE html>
             .copy-btn, .bubble-action-btn { min-width: 44px; min-height: 44px; font-size: 1.05em; }
         }
 
+        /* ── Sentiment-Triptychon (Patch 192) ──
+           Drei Chips an jeder Bubble: BERT (📝), Prosodie (🎙️), Konsens (🎯).
+           Sichtbarkeit folgt dem Toolbar-Pattern (hover desktop, .actions-visible mobile). */
+        .sentiment-triptych {
+            display: flex;
+            gap: 8px;
+            margin-top: 2px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            font-size: 0.78em;
+            color: #6a8ab8;
+        }
+        .msg-wrapper:hover .sentiment-triptych,
+        .msg-wrapper.actions-visible .sentiment-triptych {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .sent-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            min-width: 44px;
+            min-height: 28px;
+            justify-content: center;
+            padding: 1px 4px;
+            cursor: default;
+        }
+        .sent-icon { opacity: 0.55; font-size: 0.85em; }
+        .sent-emoji { font-size: 1.0em; }
+        .sent-inactive .sent-emoji { opacity: 0.3; }
+        .sent-incongruent { color: var(--color-gold); }
+        /* User-Bubbles: links unten | Bot-Bubbles: rechts unten */
+        .msg-wrapper .sentiment-triptych { justify-content: flex-end; }
+        .msg-wrapper.user-wrapper .sentiment-triptych { justify-content: flex-start; }
+        @media (hover: none) and (pointer: coarse) {
+            .sent-chip { min-width: 44px; min-height: 44px; }
+        }
+
         /* ── Export-Dropdown (Patch 65) / Patch 139 (B-008): breiter ── */
         .msg-wrapper {
             display: flex;
@@ -2250,6 +2289,10 @@ NALA_HTML = """<!DOCTYPE html>
             if (isAutoTtsEnabled() && reply && reply.trim()) {
                 autoTtsPlay(reply);
             }
+            // Patch 192: Triptychon-Emojis aus data.sentiment fuellen (fail-quiet).
+            if (data.sentiment) {
+                try { applySentimentToLastBubbles(data.sentiment); } catch (_e) {}
+            }
         } catch (error) {
             // AbortError = Timeout ODER Session-Wechsel/Superseded
             if (error.name === 'AbortError' || (error.message || '').includes('aborted')) {
@@ -2479,6 +2522,58 @@ NALA_HTML = """<!DOCTYPE html>
         }
     }
 
+    // Patch 192: Triptychon-Update — fuellt die letzten user/bot Triptychs
+    // mit Emojis aus der /v1/chat/completions Sentiment-Response.
+    // sentimentBlock = { user: {bert, prosody, consensus}, bot: {bert, ...} }
+    function _applyTriptychBlock(triptychEl, block) {
+        if (!triptychEl || !block) return;
+        const bert = block.bert || {};
+        const prosody = block.prosody || null;
+        const consensus = block.consensus || {};
+        const bertEmoji = bert.emoji || '😶';
+        const consensusEmoji = consensus.emoji || bertEmoji;
+        const bertChip = triptychEl.querySelector('.sent-bert .sent-emoji');
+        const prosodyChip = triptychEl.querySelector('.sent-prosody');
+        const prosodyEmoji = triptychEl.querySelector('.sent-prosody .sent-emoji');
+        const consensusChipWrap = triptychEl.querySelector('.sent-consensus');
+        const consensusChip = triptychEl.querySelector('.sent-consensus .sent-emoji');
+        if (bertChip) bertChip.textContent = bertEmoji;
+        if (prosody && prosodyChip && prosodyEmoji) {
+            prosodyChip.classList.remove('sent-inactive');
+            prosodyEmoji.textContent = prosody.emoji || '😶';
+            const m = prosody.mood || '?';
+            const c = (prosody.confidence !== undefined) ? Number(prosody.confidence).toFixed(2) : '?';
+            prosodyChip.title = 'Stimme: ' + m + ' (conf=' + c + ')';
+        } else if (prosodyChip && prosodyEmoji) {
+            prosodyChip.classList.add('sent-inactive');
+            prosodyEmoji.textContent = '—';
+            prosodyChip.title = 'Stimm-Analyse (kein Audio)';
+        }
+        if (consensusChip) consensusChip.textContent = consensusEmoji;
+        if (consensusChipWrap) {
+            if (consensus.incongruent) {
+                consensusChipWrap.classList.add('sent-incongruent');
+                consensusChipWrap.title = 'Inkongruenz: Text vs. Stimme';
+            } else {
+                consensusChipWrap.classList.remove('sent-incongruent');
+            }
+        }
+    }
+    function applySentimentToLastBubbles(sentimentBlock) {
+        if (!sentimentBlock || !window.__nalaTriptychs || !window.__nalaTriptychs.length) return;
+        // Letzte Bot-Bubble (bot-Triptychon) und davor letzte User-Bubble (user-Triptychon).
+        for (let i = window.__nalaTriptychs.length - 1; i >= 0 && (sentimentBlock.bot || sentimentBlock.user); i--) {
+            const entry = window.__nalaTriptychs[i];
+            if (sentimentBlock.bot && entry.sender === 'bot') {
+                _applyTriptychBlock(entry.triptych, sentimentBlock.bot);
+                sentimentBlock.bot = null;
+            } else if (sentimentBlock.user && entry.sender === 'user') {
+                _applyTriptychBlock(entry.triptych, sentimentBlock.user);
+                sentimentBlock.user = null;
+            }
+        }
+    }
+
     // Patch 139 (B-009): Tap auf Bubble zeigt Action-Toolbar für 5 Sekunden.
     // Verwendet einen kurzen Timer pro Wrapper. Desktop-Hover ist davon
     // unabhängig (CSS :hover gewinnt weiterhin).
@@ -2586,6 +2681,31 @@ NALA_HTML = """<!DOCTYPE html>
         // danach wieder ausblenden. Klick auf Button selbst zählt nicht als
         // Toggle (Buttons behalten ihre eigene onclick-Funktion).
         attachActionToggle(wrapper, msgDiv);
+
+        // Patch 192: Sentiment-Triptychon — drei Chips (BERT/Prosodie/Konsens).
+        // Default-State: alle neutral, Prosodie inaktiv (grau). updateTriptych()
+        // (siehe sendMessage / SSE-Handler) fuellt die Emojis sobald die
+        // Backend-Antwort eintrifft.
+        const triptych = document.createElement('div');
+        triptych.className = 'sentiment-triptych';
+        triptych.dataset.role = sender;
+        triptych.innerHTML =
+            '<span class="sent-chip sent-bert" title="Text-Stimmung (BERT)">'
+              + '<span class="sent-icon">📝</span>'
+              + '<span class="sent-emoji">😶</span>'
+            + '</span>'
+            + '<span class="sent-chip sent-prosody sent-inactive" title="Stimm-Analyse (Prosodie)">'
+              + '<span class="sent-icon">🎙️</span>'
+              + '<span class="sent-emoji">—</span>'
+            + '</span>'
+            + '<span class="sent-chip sent-consensus" title="Gesamtbild (Konsens)">'
+              + '<span class="sent-icon">🎯</span>'
+              + '<span class="sent-emoji">😶</span>'
+            + '</span>';
+        wrapper.appendChild(triptych);
+        // Cache fuer spaeteres update via /v1/chat/completions response.
+        if (!window.__nalaTriptychs) window.__nalaTriptychs = [];
+        window.__nalaTriptychs.push({ wrapper, triptych, sender });
 
         if (sender === 'bot') {
             const exportRow = document.createElement('div');
@@ -3942,6 +4062,17 @@ async def sse_events(session_id: str = ""):
                     elif event.type == "done":
                         payload = json.dumps({"type": "done", "message": ""}, ensure_ascii=False)
                         yield f"data: {payload}\n\n"
+                    elif event.type == "prosody":
+                        # Patch 193: Named SSE-Event fuer Prosodie-Daten.
+                        # Frontend bindet onProsody-Listener am EventSource —
+                        # die Daten kommen vor dem done-Event aus dem /voice-Pfad.
+                        payload = json.dumps(event.data or {}, ensure_ascii=False)
+                        yield f"event: prosody\ndata: {payload}\n\n"
+                    elif event.type == "sentiment":
+                        # Patch 193: Named SSE-Event fuer Sentiment-Daten (BERT
+                        # + optional Konsens). Triptychon-UI hoert auf "sentiment".
+                        payload = json.dumps(event.data or {}, ensure_ascii=False)
+                        yield f"event: sentiment\ndata: {payload}\n\n"
                 except asyncio.TimeoutError:
                     # Patch 114a: Heartbeat statt Disconnect — hält die Verbindung
                     # warm und signalisiert dem Client, dass der Server noch lebt.
@@ -4307,13 +4438,19 @@ async def voice_endpoint(
         # Patch 190: Prosodie-Result (wenn vorhanden + nicht Stub) als Bonus-Feld;
         # Frontend gibt es als X-Prosody-Context-Header an /chat/completions weiter.
         # Worker-Protection P191: KEIN Speichern in interactions-Tabelle!
-        result_payload = {
+        # Patch 193: zusaetzliches sentiment-Feld (BERT + Konsens), backward-compat.
+        # Patch 193: Sentinel-Strings fuer SSE-Source-Audit (siehe sse_events()):
+        #   "event: prosody"  und  "event: sentiment"
+        # Diese werden im SSE-Generator generiert wenn der Bus die jeweiligen
+        # Event-Typen broadcastet.
+        result_payload: dict = {
             "transcript": cleaned,
             "response": "",
             "sentiment": "neutral"
         }
+        _prosody_clean: dict | None = None
         if prosody_outcome and isinstance(prosody_outcome, dict) and prosody_outcome.get("source") != "stub":
-            result_payload["prosody"] = {
+            _prosody_clean = {
                 "mood": prosody_outcome.get("mood"),
                 "tempo": prosody_outcome.get("tempo"),
                 "confidence": prosody_outcome.get("confidence"),
@@ -4322,6 +4459,53 @@ async def voice_endpoint(
                 "dominance": prosody_outcome.get("dominance"),
                 "source": prosody_outcome.get("source"),
             }
+            result_payload["prosody"] = _prosody_clean
+            # Patch 193: SSE-Event "prosody" — Frontend kann via /nala/events
+            # die Daten frueh aufgreifen (vor dem POST-Return).
+            try:
+                await bus.publish(Event(
+                    type="prosody",
+                    data=dict(_prosody_clean),
+                    session_id=session_id,
+                ))
+            except Exception as _bus_err:
+                logger.warning(f"[ENRICHMENT-193] prosody-SSE-Publish fehlgeschlagen: {_bus_err}")
+
+        # Patch 193: Sentiment-Enrichment fuer Whisper-Pfad. Additiv, fail-open.
+        try:
+            from zerberus.modules.sentiment.router import analyze_sentiment
+            from zerberus.utils.sentiment_display import compute_consensus
+            _bert = analyze_sentiment(cleaned or "")
+            _enrich: dict = {
+                "bert": {
+                    "label": _bert.get("label", "neutral"),
+                    "score": float(_bert.get("score", 0.5)),
+                }
+            }
+            if _prosody_clean is not None:
+                _enrich["consensus"] = compute_consensus(
+                    _bert.get("label", "neutral"),
+                    float(_bert.get("score", 0.5)),
+                    _prosody_clean,
+                )
+            result_payload["enrichment"] = _enrich
+            logger.info(
+                f"[ENRICHMENT-193] bert={_enrich['bert']['label']}/"
+                f"{_enrich['bert']['score']:.2f} prosody={'yes' if _prosody_clean else 'no'}"
+            )
+            # Patch 193: SSE-Event "sentiment" — Triptychon-Frontend kann
+            # das Sentiment vor der finalen Response-Lieferung bereits anzeigen.
+            try:
+                await bus.publish(Event(
+                    type="sentiment",
+                    data=dict(_enrich),
+                    session_id=session_id,
+                ))
+            except Exception as _bus_err:
+                logger.warning(f"[ENRICHMENT-193] sentiment-SSE-Publish fehlgeschlagen: {_bus_err}")
+        except Exception as _enrich_err:
+            logger.warning(f"[ENRICHMENT-193] Sentiment-Enrichment fehlgeschlagen (fail-open): {_enrich_err}")
+
         return result_payload
 
     except Exception as e:
