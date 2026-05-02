@@ -237,4 +237,22 @@ async def materialize_template(
                 f"slug={slug} path={rel}: {rag_err}"
             )
 
+        # Patch 203a (Phase 5a #5, Vorbereitung): Template-File in den
+        # Workspace spiegeln. Best-Effort: Hardlink/Copy-Fehler brechen
+        # die Materialisierung NICHT ab — Source-of-Truth ist der
+        # SHA-Storage + DB-Eintrag.
+        try:
+            from zerberus.core import projects_workspace
+
+            await projects_workspace.materialize_file_async(
+                project_id=project_id,
+                file_id=registered["id"],
+                base_dir=base_dir,
+            )
+        except Exception as ws_err:
+            logger.warning(
+                f"[WORKSPACE-203] materialize_file_async fuer Template-File "
+                f"fehlgeschlagen slug={slug} path={rel}: {ws_err}"
+            )
+
     return created

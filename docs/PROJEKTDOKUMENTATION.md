@@ -5703,3 +5703,91 @@ In WORKFLOW.md als #38–#41 eingetragen:
 
 *Stand: 2026-05-02, Patch 202 — PWA-Auth-Hotfix: Hel zeigt wieder Basic-Auth-Prompt. 1602 passed, 0 neue Failures.*
 
+---
+
+## Patch 203a — Project-Workspace-Layout (Phase 5a #5 Vorbereitung)
+
+**Datum:** 2026-05-02
+**Phase:** 5a — Nala-Projekte
+**Ziel-Mapping:** #5 (Code wird ausgeführt) — Vorbereitungs-Sub-Patch
+
+### Worum geht's
+
+Phase-5a-Ziel #5 ("Code wird ausgeführt — vom Chat zur Docker-Sandbox und zurück") ist groß: Workspace-Layout + Sandbox-Mount + LLM-Tool-Use-Pfad + Frontend-Render von Code-/Output-Blöcken. Coda hat das aufgeteilt in drei Sub-Patches:
+
+- **P203a (heute):** Project-Workspace-Layout. Pro Projekt entsteht beim Upload und beim Template-Materialize ein echter Working-Tree unter `<data_dir>/projects/<slug>/_workspace/`. Die `project_files`-Einträge werden dort an ihrem `relative_path` materialisiert — entweder per Hardlink (gleiche Inode wie der SHA-Storage, kein Plattenplatz-Verbrauch) oder via Copy-Fallback. Damit liegt das Fundament: ohne dieses Layout kann die Sandbox nichts sinnvoll mounten, weil der SHA-Storage Files unter Hash-Pfaden ablegt, nicht unter ihrem lesbaren Namen.
+- **P203b (nächster Patch):** Sandbox-Workspace-Mount. `SandboxManager` (P171) bekommt einen optionalen `workspace_mount: Optional[Path]`-Parameter, mit dem der Workspace per `-v <abs>:/workspace[:ro]` an den Container durchgereicht wird. Read-Only-Default, Read-Write nur explizit. Außerdem eine `execute_in_workspace`-Convenience.
+- **P203c (Patch danach):** LLM-Tool-Use-Pfad + Output-Synthese + Frontend-Render. Schließt das Ziel ab.
+
+### Architektur
+
+**Hardlink primär, Copy als Fallback.** Der Helper `materialize_file(workspace_root, relative_path, source_path)` versucht zuerst `os.link(source_path, target)` — Hardlinks sind atomar, nehmen keinen extra Plattenplatz und teilen sich die Inode mit dem SHA-Storage. Wenn `os.link` mit `OSError` scheitert (cross-FS, FAT32, NTFS-without-dev-mode, Permission-Denied), fällt der Helper auf `shutil.copy2`. Die gewählte Methode wird im Return ausgewiesen (`"hardlink"` / `"copy"` / `None`-bei-noop) und im Log — auf Windows-Test-Maschinen ohne dev-mode wird der Copy-Pfad damit live mitgetestet (Monkeypatch-Test simuliert `os.link`-Failure).
+
+**Atomic via Tempfile + os.replace.** Auch im Workspace, nicht nur im SHA-Storage. Grund: parallele Sandbox-Reads (P203b) dürfen nie ein halb-geschriebenes Workspace-File sehen. Schreibt erst `<dir>/.ws_XXXX.tmp` mit Hardlink/Copy, dann `os.replace` auf den Ziel-Pfad. Pattern bewusst dupliziert (statt Import aus hel.py), weil das Workspace-Modul auch ohne FastAPI-Stack importierbar bleiben muss (Tests, künftige CLI).
+
+**Pfad-Sicherheit zwei-stufig.** `is_inside_workspace(target, root)` resolved beide Pfade (`Path.resolve(strict=False)`) und prüft `relative_to`. Schützt gegen `../../etc/passwd`-style relative_paths aus alten Datenbanken oder Migrations. Zusätzlich: `wipe_workspace(workspace_root)` lehnt jeden Pfad ab, der nicht auf `_workspace` endet — verhindert ein versehentliches `wipe_workspace(Path("/"))` bei Slug-Manipulation oder leeren Variablen.
+
+**Idempotenz im `materialize_file`.** Existierendes Target hat dieselbe Inode wie der Source (Hardlink-Fall) → no-op. Im Copy-Fall reicht ein Size-Match (SHA-Adressierung garantiert Inhalts-Konsistenz auf Storage-Ebene — ein anderer Inhalt bekommt zwingend einen anderen Storage-Pfad). Returnt `None` ohne Schreiboperation. Caller müssen kein Wissen über Hardlink/Copy haben.
+
+**Best-Effort-Verdrahtung in vier Trigger-Punkten.** Alle mit Lazy-Import + try/except, Hauptpfad bleibt grün auch wenn Hardlink/Copy scheitert (Source-of-Truth ist der SHA-Storage + DB):
+
+1. `upload_project_file_endpoint` (in `hel.py`) — nach `register_file` und nach RAG-Index. Workspace-Materialize per `materialize_file_async(project_id, file_id, base_dir)`.
+2. `delete_project_file_endpoint` (in `hel.py`) — nach `delete_file`. Vorher wird der Slug über einen extra `get_project`-Call gemerkt, weil `file_meta` keinen Slug enthält und der DB-Eintrag bei `remove_file_async` bereits weg ist.
+3. `delete_project_endpoint` (in `hel.py`) — nach `delete_project`. `wipe_workspace(workspace_root_for(slug, base))`. Nutzt das bereits vorhandene `project_pre`-Memorize aus dem RAG-Pfad (P199).
+4. `materialize_template` (in `projects_template.py`) — nach jedem `register_file` in der Schleife, analog zur P199-RAG-Verdrahtung.
+
+**`sync_workspace` als Komplett-Resync.** Materialisiert alle DB-Files, entfernt Orphans (Files im Workspace, die nicht mehr in der DB sind). Idempotent — zweiter Aufruf liefert `{materialized:0, removed:0, skipped:N}`. Nicht in den Endpoints verdrahtet (Single-File-Trigger reichen), aber als Recovery-API für künftige CLI/Reindex-Endpoint vorhanden — Pre-P203a-Files können damit in den Workspace nachgezogen werden.
+
+### Code-Änderungen
+
+- **Neu: [`projects_workspace.py`](../zerberus/core/projects_workspace.py)** — Pure-Function-Schicht (`workspace_root_for`, `is_inside_workspace`), Sync-FS-Schicht (`materialize_file`, `remove_file`, `wipe_workspace` plus die internen `_hardlink_or_copy`, `_atomic_replace`, `_iter_files`), async DB-Schicht (`materialize_file_async`, `remove_file_async`, `sync_workspace`). Konstante `WORKSPACE_DIRNAME = "_workspace"`. Logging-Tag `[WORKSPACE-203]`.
+- **[`config.py::ProjectsConfig`](../zerberus/core/config.py)** — neuer Flag `workspace_enabled: bool = True`. Default an, Tests können abschalten.
+- **[`hel.py::upload_project_file_endpoint`](../zerberus/app/routers/hel.py)** — nach RAG-Index ein neuer try/except-Block, der `materialize_file_async` aufruft, wenn `workspace_enabled`.
+- **[`hel.py::delete_project_file_endpoint`](../zerberus/app/routers/hel.py)** — neuer `project_pre = await projects_repo.get_project(project_id)`-Call vor dem `delete_file`. Nach RAG-Removal: `remove_file_async(slug, relative_path, base)`.
+- **[`hel.py::delete_project_endpoint`](../zerberus/app/routers/hel.py)** — nach RAG-Index-Removal: `wipe_workspace(workspace_root_for(slug, base))`.
+- **[`projects_template.py::materialize_template`](../zerberus/core/projects_template.py)** — nach RAG-Indexing in derselben Schleife: `materialize_file_async(project_id, file_id, base_dir)`.
+
+### Tests
+
+36 neue Tests in [`test_projects_workspace.py`](../zerberus/tests/test_projects_workspace.py):
+
+- `TestPureFunctions` (4): Layout, no-IO-bei-Pure-Call, Traversal-Reject, Root-itself-allowed.
+- `TestMaterializeFile` (6): create-target, nested-dirs, idempotent-second-call (Inode-Match), traversal-rejected, missing-source-returns-none, copy-fallback (via monkeypatched `os.link`).
+- `TestRemoveFile` (5): removes-existing, cleans-empty-parents-up-to-root, keeps-non-empty-parent, missing-returns-false, traversal-rejected.
+- `TestWipeWorkspace` (3): removes-existing, idempotent-when-missing, rejects-wrong-dirname (Sicherheits-Check).
+- `TestSyncWorkspace` (4): unknown-project-zeros, materializes-all-files, idempotent-second-call (skipped+0+0), removes-orphans.
+- `TestAsyncWrappers` (3): materialize_file_async, unknown-file-returns-none, remove_file_async.
+- `TestEndpointIntegration` (4): upload-endpoint-materializes-workspace, delete-file-endpoint-removes-workspace-file, delete-project-endpoint-wipes-workspace, template-materialize-creates-workspace-files.
+- `TestWorkspaceDisabled` (1): upload-skips-workspace-when-disabled (Source-Audit-Pfad).
+- `TestSourceAudit` (5): hel-upload-calls-workspace-helper, hel-delete-file-calls-remove, hel-delete-project-calls-wipe, template-calls-workspace, workspace-module-uses-WORKSPACE_DIRNAME-≥2x (Min-Count-Konstanten-Audit).
+
+**Teststand:** lokal 1599 baseline → **1635 passed** (+36), 4 xfailed pre-existing, 2 failed pre-existing aus Schuldenliste (`edge-tts` + `test_rag_dual_switch.test_fallback_logic`, beide nicht blockierend), 0 neue Failures.
+
+### Manuelle Tests (Chris)
+
+In WORKFLOW.md als #42–#45 eingetragen:
+
+- **#42** git push + sync_repos.ps1 für P203a
+- **#43** Workspace-Materialize live: Hel → Projekt anlegen → Datei hochladen → in `data/projects/<slug>/_workspace/` muss die Datei am `relative_path` liegen. `ls -la` (Unix) oder `Get-Item` (Windows) prüfen ob es ein Hardlink ist (`st_nlink` ≥ 2 vs. SHA-Storage). Server-Log: `[WORKSPACE-203] materialized path=... via=hardlink|copy`
+- **#44** Hardlink-vs-Copy auf Chris' FS: Auf NTFS sollten `via=hardlink`-Logs erscheinen. Volumen-Check: `du -sh data/projects/<slug>/_workspace/` ~0 (Hardlinks belegen keinen extra Platz). Bei `via=copy` ist das ein Indiz für cross-FS — nachdenken ob das gewollt ist
+- **#45** Wipe-bei-Delete-Project verifizieren: Projekt mit Dateien anlegen, in `_workspace/` mehrere Files präsent, Hel → Projekt löschen → Ordner ist weg. Server-Log: `[WORKSPACE-203] wiped workspace_root=...`. Plus Delete-Single-File: einzelner Eintrag verschwindet, leere Eltern werden mit aufgeräumt, andere Files bleiben
+
+### Lessons Learned
+
+In `lessons.md` unter `## Project-Workspace-Layout (P203a)` festgehalten:
+
+- **Hardlink-primary + Copy-Fallback** ist das richtige Pattern für FS-Spiegelung von SHA-Storage in begehbares Layout. Methode IM RETURN ausweisen — Tests können verifizieren WELCHER Pfad lief.
+- **`Path.resolve(strict=False).relative_to(root)`** ist die saubere Pfad-Traversal-Sperre. Funktioniert auch für Schreibziele die noch nicht existieren.
+- **Sicherheits-Reject auf Wrong-Dirname VOR `shutil.rmtree`** — wenn ein Helper destruktiv ist, prüfe IMMER den letzten Pfad-Segment-Namen.
+- **Idempotenz im FS-Spiegel via Inode-Vergleich + Size-Check** — Hardlink-Fall: Same-Inode = no-op. Copy-Fall: Size-Match reicht (SHA-Adressierung garantiert Inhalts-Konsistenz).
+- **Atomic-Write-Pattern auch für Workspace-Spiegelung** — parallele Reader (Sandbox, RAG-Indexer) dürfen nie ein halb-geschriebenes File sehen.
+- **Best-Effort + Lazy-Import in Multi-Trigger-Side-Effects** — wenn N Endpoints denselben Side-Effect triggern, wickle JEDEN in try/except mit `logger.exception`.
+- **Pure-Schicht vs. Async-DB-Schicht trennen** — `materialize_file(root, rel, src)` testbar ohne tmp_db, `materialize_file_async(project_id, file_id)` testet die DB-Lookup-Logik.
+- **Slug VOR DB-Delete merken**, wenn Side-Effects nach dem Delete den Slug brauchen.
+- **`_workspace`-Suffix als Konstante** + Konstanten-Audit per Test (`src.count("WORKSPACE_DIRNAME") >= 2`) fängt zukünftige Refactorings ab.
+- **Sandbox-Mount NICHT in der Workspace-Schicht ankoppeln** — eigene Architektur-Entscheidung (P203b), die Mount-Read-Only-vs-Read-Write-Trade-offs macht. Workspace-Schicht stellt nur die Pfad-Bereitstellung.
+
+---
+
+*Stand: 2026-05-02, Patch 203a — Project-Workspace-Layout (Phase 5a #5 Vorbereitung). 1635 passed (+36), 0 neue Failures.*
+

@@ -177,6 +177,13 @@ class ProjectsConfig(BaseModel):
     rag_enabled: bool = True
     rag_top_k: int = 5
     rag_max_file_bytes: int = 5 * 1024 * 1024  # 5 MB — drueber: skip beim Indexen
+    # Patch 203a (Phase 5a #5, Vorbereitung): Workspace-Layout
+    # ``<data_dir>/projects/<slug>/_workspace/`` mit ``relative_path``-
+    # gespiegelten Hardlinks/Copies des SHA-Storage. Vorbereitung fuer die
+    # Code-Execution-Pipeline (P203b/c) — Sandbox braucht echten
+    # Mount-Pfad. Tests koennen das Flag abschalten, wenn der
+    # Hardlink-Pfad in CI-Sandboxen Probleme macht.
+    workspace_enabled: bool = True
 
 
 class SandboxConfig(BaseModel):

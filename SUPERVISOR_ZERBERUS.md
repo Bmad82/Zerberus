@@ -1,10 +1,42 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 202 (2026-05-02) – PWA-Auth-Hotfix: Hel zeigt wieder Basic-Auth-Prompt*
+*Letzte Aktualisierung: Patch 203a (2026-05-02) – Project-Workspace-Layout (Phase 5a #5 Vorbereitung)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 203a** — Project-Workspace-Layout (Phase 5a #5, Vorbereitung) (2026-05-02)
+
+Eigenständige Aufteilung von P203 (Code-Execution-Pipeline, Phase-5a-Ziel #5) durch Coda: Das Original-Ziel ist groß (Workspace + Sandbox-Mount + Tool-Use-LLM + UI-Synthese), wird in drei Sub-Patches zerlegt. P203a legt heute das Workspace-Layout — die Sandbox kann Dateien später nur dann sinnvoll mounten, wenn sie an ihrem `relative_path` (statt unter den SHA-Hash-Pfaden) im Filesystem stehen. Pro Projekt entsteht beim Upload/Template-Materialize ein echter Working-Tree unter `<data_dir>/projects/<slug>/_workspace/`.
+
+Architektur-Entscheidung: **Hardlink primär (`os.link`), Copy als Fallback (`shutil.copy2`).** Hardlinks haben gleiche Inode wie der SHA-Storage — kein Plattenplatz-Verbrauch, instantan, atomar. Bei `OSError` (cross-FS, NTFS-without-dev-mode, FAT32, Permission) fällt der Helper auf `shutil.copy2`. Die gewählte Methode wird im Return ausgewiesen (`"hardlink"` / `"copy"` / `None`-bei-noop) und geloggt — auf Windows-Test-Maschinen ohne dev-mode wird damit auch der Copy-Pfad live mitgetestet (Monkeypatch-Test simuliert `os.link`-Failure).
+
+**Atomic via Tempfile + os.replace.** Auch im Workspace, nicht nur im SHA-Storage. Grund: parallele Sandbox-Reads (P203b) dürfen nie ein halb-geschriebenes Workspace-File sehen. Pattern dupliziert (statt Import aus hel.py), weil das Workspace-Modul auch ohne FastAPI-Stack importierbar bleiben muss (Tests, künftige CLI).
+
+**Pfad-Sicherheit zwei-stufig.** `is_inside_workspace(target, root)` resolved beide Pfade und prüft `relative_to` — schützt gegen `../../etc/passwd`-style relative_paths aus alten Datenbanken oder Migrations. Plus: `wipe_workspace` lehnt jeden Pfad ab, der nicht auf `_workspace` endet — verhindert ein versehentliches `wipe_workspace(Path("/"))` bei Slug-Manipulation.
+
+**Best-Effort-Verdrahtung in vier Trigger-Punkten.** Upload-Endpoint (nach `register_file` + nach RAG-Index), Delete-File-Endpoint (nach `delete_file`, mit Slug aus extra `get_project`-Call vor dem DB-Delete), Delete-Project-Endpoint (`wipe_workspace` nach `delete_project`), `materialize_template` (nach jedem `register_file`). Alle vier wickeln den Workspace-Call in try/except — Hauptpfad bleibt grün auch wenn Hardlink/Copy scheitert. Lazy-Import (`from zerberus.core import projects_workspace` im try-Block) wie bei RAG, damit der Helper nicht beim Import-Time geladen wird.
+
+**`sync_workspace` als Komplett-Resync.** Materialisiert alle DB-Files, entfernt Orphans (Files im Workspace, die nicht mehr in der DB sind). Idempotent. Nicht in den Endpoints verdrahtet (Single-File-Trigger reichen), aber als Recovery-API für künftige CLI/Reindex-Endpoint vorhanden — Pre-P203a-Files können damit in den Workspace nachgezogen werden.
+
+**Was P203a bewusst NICHT macht** (kommt mit P203b/c):
+
+- Sandbox-Mount auf den Workspace-Ordner — der bestehende `SandboxManager` (P171) verbietet Volume-Mount explizit ("Kein Volume-Mount vom Host"). P203b muss entweder eine Erweiterung (`workspace_mount: Optional[Path]`) oder eine Schwester-Klasse bauen. Empfehlung: Erweiterung mit Read-Only-Mount per Default, Read-Write nur explizit.
+- LLM-Tool-Use-Pfad für Code-Generation — kommt mit P203c.
+- Frontend-Render von Code+Output-Blöcken — kommt mit P203c.
+
+- **Pure-Function-Schicht:** [`projects_workspace.py::workspace_root_for`](zerberus/core/projects_workspace.py) + `is_inside_workspace` — keine I/O, deterministisch, Pfad-Sicherheits-Check. Verwendbar in P203b für Mount-Source-Validation.
+- **Sync-FS-Schicht:** `materialize_file` (mit Hardlink-primary + Copy-Fallback + Idempotenz via Inode/Size-Check), `remove_file` (räumt leere Eltern bis Workspace-Root), `wipe_workspace` (Sicherheits-Reject auf Wrong-Dirname). Pure-Aber-Mit-FS-I/O.
+- **Async DB-Schicht:** `materialize_file_async`, `remove_file_async`, `sync_workspace` — DB-Lookup + Schicht-Wrapper.
+- **Verdrahtung:** [`hel.py::upload_project_file_endpoint`](zerberus/app/routers/hel.py), [`hel.py::delete_project_file_endpoint`](zerberus/app/routers/hel.py), [`hel.py::delete_project_endpoint`](zerberus/app/routers/hel.py), [`projects_template.py::materialize_template`](zerberus/core/projects_template.py) — alle Best-Effort mit Lazy-Import.
+- **Config-Flag:** [`config.py::ProjectsConfig.workspace_enabled`](zerberus/core/config.py) — Default `True`. Tests können abschalten (siehe `TestWorkspaceDisabled`-Klasse).
+- **Logging-Tag:** `[WORKSPACE-203]` — Materialize, Wipe, Sync.
+- **Tests:** 36 in [`test_projects_workspace.py`](zerberus/tests/test_projects_workspace.py) (4 Pure-Function inkl. Traversal-Reject + No-IO; 6 materialize_file inkl. nested-dirs + idempotent + missing-source + Copy-Fallback via monkeypatched `os.link`; 5 remove_file inkl. cleans-empty-parents + keeps-non-empty + traversal-reject; 3 wipe_workspace inkl. rejects-wrong-dirname; 4 sync_workspace inkl. removes-orphans; 3 async-Wrapper; 4 Endpoint-Integration mit echten Hel-Endpoints; 1 workspace_disabled-Pfad; 5 Source-Audit-Tests für die vier Verdrahtungs-Stellen).
+- **Teststand:** lokal 1599 baseline → **1635 passed** (+36), 4 xfailed pre-existing, 2 failed pre-existing aus Schuldenliste (`edge-tts` + `test_rag_dual_switch.test_fallback_logic`, beide nicht blockierend).
+- **Effekt für die nächste Coda-Session:** P203b kann sofort starten — `workspace_root_for(slug, base_dir)` liefert den Mount-Pfad, `is_inside_workspace` validiert User-Inputs, `sync_workspace` ist Recovery-API. P203b's Job ist nur noch: `SandboxManager.execute` um `workspace_mount` erweitern + `execute_in_workspace`-Convenience + Tests.
+
+---
 
 **Patch 202** — PWA-Auth-Hotfix: SW-Navigation-Skip + Cache-v2 (2026-05-02)
 

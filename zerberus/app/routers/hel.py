@@ -3937,6 +3937,23 @@ async def delete_project_endpoint(project_id: int):
             logger.exception(
                 f"[RAG-199] remove_project_index failed slug={project_pre['slug']}: {rag_err}"
             )
+    # Patch 203a: Workspace-Ordner mitkippen — wipe_workspace ist
+    # idempotent, falls workspace_enabled erst spaeter aktiviert wurde
+    # und der Ordner gar nicht existiert. Sicherheits-Check (Pfad endet
+    # auf ``_workspace``) liegt im Helper.
+    if project_pre and get_settings().projects.workspace_enabled:
+        try:
+            from zerberus.core import projects_workspace
+
+            projects_workspace.wipe_workspace(
+                projects_workspace.workspace_root_for(
+                    project_pre["slug"], _projects_storage_base()
+                )
+            )
+        except Exception as ws_err:
+            logger.exception(
+                f"[WORKSPACE-203] wipe_workspace failed slug={project_pre['slug']}: {ws_err}"
+            )
     return {"status": "ok"}
 
 
@@ -4092,6 +4109,25 @@ async def upload_project_file_endpoint(project_id: int, file: UploadFile = File(
             )
             rag_status = {"chunks": 0, "skipped": True, "reason": "exception"}
 
+    # Patch 203a (Phase 5a #5, Vorbereitung): Datei in den Projekt-Workspace
+    # spiegeln (Hardlink mit Copy-Fallback). Vorbereitung fuer die Code-
+    # Execution-Pipeline. Best-Effort: Workspace-Fehler brechen den Upload
+    # nicht ab — Source-of-Truth ist der SHA-Storage + DB.
+    if settings.projects.workspace_enabled:
+        try:
+            from zerberus.core import projects_workspace
+
+            await projects_workspace.materialize_file_async(
+                project_id=project_id,
+                file_id=registered["id"],
+                base_dir=base,
+            )
+        except Exception as ws_err:
+            logger.exception(
+                f"[WORKSPACE-203] materialize_file_async failed slug={project['slug']} "
+                f"file_id={registered['id']}: {ws_err}"
+            )
+
     return {"status": "ok", "file": registered, "rag": rag_status}
 
 
@@ -4106,6 +4142,10 @@ async def delete_project_file_endpoint(project_id: int, file_id: int):
     file_meta = await projects_repo.get_file(file_id)
     if file_meta is None or file_meta["project_id"] != project_id:
         raise HTTPException(404, "Datei nicht gefunden")
+
+    # Patch 203a: Slug VOR dem DB-Delete merken — wird unten fuer den
+    # Workspace-Remove gebraucht (Workspace-Pfad ist slug-keyed).
+    project_pre = await projects_repo.get_project(project_id)
 
     other_refs = await projects_repo.count_sha_references(
         file_meta["sha256"], exclude_file_id=file_id
@@ -4137,6 +4177,24 @@ async def delete_project_file_endpoint(project_id: int, file_id: int):
             logger.exception(
                 f"[RAG-199] remove_file_from_index failed project_id={project_id} "
                 f"file_id={file_id}: {rag_err}"
+            )
+
+    # Patch 203a: Workspace-Eintrag entfernen, damit der naechste Sandbox-
+    # Run keine geloeschte Datei mehr sieht. Best-Effort: Fehler werden
+    # geloggt, Status bleibt 200.
+    if settings.projects.workspace_enabled and project_pre is not None:
+        try:
+            from zerberus.core import projects_workspace
+
+            await projects_workspace.remove_file_async(
+                project_slug=project_pre["slug"],
+                relative_path=file_meta["relative_path"],
+                base_dir=_projects_storage_base(),
+            )
+        except Exception as ws_err:
+            logger.exception(
+                f"[WORKSPACE-203] remove_file_async failed project_id={project_id} "
+                f"file_id={file_id}: {ws_err}"
             )
 
     return {
