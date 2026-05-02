@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P203b — Hel-UI-Hotfix (kaputtes Quote-Escaping → Event-Delegation)
 **Tests:** 1645 passed (+10), 4 xfailed (pre-existing), 2 failed (pre-existing aus Schuldenliste: edge-tts + dual-rag)
-**Commit:** _wird beim Push nachgetragen_
-**Repos synchron:** _wird beim Push nachgetragen_
+**Commit:** 40f2a0e — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
