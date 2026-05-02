@@ -2,85 +2,98 @@
 > Wird von jeder Coda-Instanz am Session-Ende überschrieben.
 
 **Datum:** 2026-05-02
-**Letzter Patch:** P198 — Phase 5a #2: Template-Generierung beim Anlegen
-**Tests:** 1487 passed (+23), 4 xfailed (pre-existing), 2 pre-existing Failures (unrelated)
-**Commit:** d6889cb — gepusht zu origin/main
-**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
+**Letzter Patch:** P199 — Phase 5a #3: Projekt-RAG-Index
+**Tests:** 1533 passed (+46), 4 xfailed (pre-existing), 2 pre-existing Failures (unrelated)
+**Commit:** _wird beim Push gefüllt_
+**Repos synchron:** _wird nach `verify_sync.ps1` gefüllt_
 
 ---
 
 ## Zuletzt passiert
-P198 ausgeliefert: Phase 5a Ziel #2 ("Projekte haben Struktur") abgeschlossen. Ein neu angelegtes Projekt startet nicht mehr leer, sondern bekommt zwei Skelett-Files: `ZERBERUS_<SLUG>.md` (Projekt-Bibel mit den fünf Standard-Sektionen "Ziel", "Stack", "Offene Entscheidungen", "Dateien", "Letzter Stand" — analog `ZERBERUS_MARATHON_WORKFLOW.md`) und `README.md` (kurze Prosa mit Name + Description). Inhalt rendert die Project-Daten ein.
+P199 ausgeliefert: Phase 5a Ziel #3 ("Projekte haben eigenes Wissen") abgeschlossen. Jedes Projekt bekommt einen eigenen, isolierten Vektor-Index unter `data/projects/<slug>/_rag/{vectors.npy, meta.json}` — der globale RAG-Index in `modules/rag/router.py` bleibt unberührt. Damit kann das LLM beim aktiven Projekt (P197 `X-Active-Project-Id`-Header) auf Inhalte aus den Projektdateien zugreifen, ohne dass projekt-spezifische Chunks den globalen Memory-Index verschmutzen.
 
-Neuer Helper [`zerberus/core/projects_template.py`](zerberus/core/projects_template.py): `render_project_bible(project, *, now=None)` + `render_readme(project)` als Pure-Functions (synchron, deterministisch via `now`-Parameter — kein `datetime.utcnow()`-Drift in Tests). `template_files_for(project, *, now=None)` als Komposit liefert Liste `[{relative_path, content, mime_type}]`. `materialize_template(project, base_dir, *, dry_run=False, now=None)` als async DB+Storage-Schicht schreibt Bytes atomar via `_write_atomic` (lokale Kopie aus `hel._store_uploaded_bytes` — Helper soll auch ohne FastAPI-Stack laufen können, z.B. CLI-Migrations).
+Neuer Helper [`zerberus/core/projects_rag.py`](zerberus/core/projects_rag.py) ist mehrschichtig: Pure-Functions (`_split_prose`, `chunk_file_content`, `top_k_indices`, `format_rag_block`) + File-I/O (`load_index`, `save_index`, `remove_project_index`) + Embedder-Wrapper (`_embed_text` lazy-loaded MiniLM-L6-v2) + async DB-Schicht (`index_project_file`, `remove_file_from_index`, `query_project_rag`). Strikte Trennung der Schichten macht jede einzeln testbar — der echte SentenceTransformer wird in Unit-Tests nie geladen, der `fake_embedder`-Fixture monkeypatcht `_embed_text` mit einem Hash-basierten 8-dim-Pseudo-Embedder.
 
-Templates landen im SHA-Storage (`<projects.data_dir>/projects/<slug>/<sha[:2]>/<sha>` — gleiche Konvention wie P196-Uploads), DB-Eintrag in `project_files` mit lesbarem `relative_path`. Damit erscheinen sie nahtlos in der Hel-Datei-Liste, im RAG-Index (P199) und in der Code-Execution-Pipeline (P200) — ohne Sonderpfad. Alternative wäre ein separater `_template/`-Pfad gewesen, hätte aber zwei Persistenz-Schichten und Drift-Risiko erzeugt.
+**Architektur-Entscheidung Pure-Numpy statt FAISS.** Per-Projekt-Indizes sind klein (typisch 10–2000 Chunks). Ein `argpartition` auf `(N, 384)` schlägt den FAISS-Setup-Overhead, und Tests laufen dependency-frei. Persistierung als `vectors.npy` + `meta.json` mit identischer Reihenfolge, atomar via `tempfile.mkstemp` + `os.replace`. Falls Projekte später signifikant >10k Chunks bekommen: trivialer Tausch zu FAISS — nur `top_k_indices` + `load_index`/`save_index` ändern, Public API bleibt.
 
-**Idempotenz** via Existenz-Check vor Schreiben: `materialize_template` ruft `list_files(project_id)` ab und überspringt Pfade, die schon existieren. User-Inhalte bleiben unangetastet — wenn der User in einer früheren Session schon eine eigene README hochgeladen hat, kommt nur die fehlende Bibel neu dazu. Helper liefert nur die TATSÄCHLICH neu angelegten Files zurück (leer, wenn alles existiert). Test deckt das Szenario ab.
+**Chunker-Reuse:** Code-Files (.py/.js/.ts/.html/.css/.json/.yaml/.sql) via `code_chunker.chunk_code` (P122 AST/Regex). Prosa (.md/.txt/Default) via lokalem Para-Splitter mit weichen Absatz-Grenzen (max 1500 Zeichen, snap an Doppel-Newline, Sentence-Split-Fallback für überlange Absätze, hartes Char-Slice als letzter Fallback). Bei Python-SyntaxError → automatischer Fallback auf Prose-Splitter, damit kaputte Dateien trotzdem indexiert werden.
 
-Verdrahtung in [`hel.py::create_project_endpoint`](zerberus/app/routers/hel.py): NACH `projects_repo.create_project()`, mit `await materialize_template(project, _projects_storage_base())`. Best-Effort: Fehler beim Materialisieren brechen das Anlegen NICHT ab (Projekt-Eintrag steht, Templates lassen sich notfalls nachgenerieren oder per Hand anlegen). Crash-Path mit Source-Audit-Test verifiziert (`monkeypatch.setattr(projects_template, "materialize_template", boom)` → `res["status"] == "ok"`). Response-Feld `template_files` listet die neu angelegten Einträge.
+**Idempotenz:** Pro `file_id` höchstens ein Chunk-Set im Index. Beim Re-Index wird der alte Block für die file_id zuerst entfernt. Gleicher `sha256` ergibt funktional dasselbe Ergebnis (deterministischer Embedder), anderer `sha256` ersetzt den alten Block — vermeidet Doubletten beim Re-Upload mit gleichem `relative_path`.
 
-**Feature-Flag** `ProjectsConfig.auto_template: bool = True` (Default `True`, Default IM Pydantic-Modell weil `config.yaml` gitignored). Kann für Migrations-Tests/Bulk-Imports abgeschaltet werden.
+**Trigger-Punkte:** (a) [`hel.py::upload_project_file_endpoint`](zerberus/app/routers/hel.py) NACH `register_file` — Response erweitert um `rag: {chunks, skipped, reason}`. (b) [`projects_template.py::materialize_template`](zerberus/core/projects_template.py) ruft am Ende JEDES erfolgreichen `register_file` `index_project_file` auf — frisch materialisierte Skelett-Files sind sofort retrievbar. (c) [`hel.py::delete_project_file_endpoint`](zerberus/app/routers/hel.py) ruft `remove_file_from_index` NACH dem DB-Delete — Response erweitert um `rag_chunks_removed`. (d) [`hel.py::delete_project_endpoint`](zerberus/app/routers/hel.py) merkt den Slug VOR dem `delete_project()`-Call und ruft `remove_project_index(slug)` danach. Alle Trigger sind Best-Effort: Indexing-Fehler brechen den Hauptpfad NICHT ab; der Eintrag steht in der DB, der Index lässt sich später nachziehen.
 
-**Git-Init bewusst weggelassen.** Im P198-Plan stand "Optional Git-Init", aber: SHA-Storage ist kein Working-Tree (Bytes liegen unter Hash-Pfaden, nicht unter `relative_path`). `git init` ergibt erst Sinn mit einem echten `_workspace/`-Layout, das mit der Code-Execution-Pipeline (P200, Phase 5a #5) kommt — dort wird ein Workspace-Mount gebraucht, in dem Code laufen kann. Bis dahin: kein halbgares Git-Init.
+**Wirkung im Chat:** [`legacy.py::chat_completions`](zerberus/app/routers/legacy.py) — Block hängt sich NACH P197 (`merge_persona`), NACH P184 (`_wrap_persona`), NACH P185 (`append_runtime_info`), NACH P118a (Decision-Box-Hint) und NACH P190 (Prosodie) an den `sys_prompt`, aber VOR `messages.insert(0, Message(role="system", ...))`. Marker `[PROJEKT-RAG — Kontext aus Projektdateien]` + Anweisung an das LLM + Top-K Hits als Markdown-Sektionen pro File mit `relevance=<score>`. Source-Audit-Test verifiziert die Reihenfolge per Substring-Position (`merge_pos < rag_pos < insert_pos`). Pro Chat-Request höchstens ein Embed-Call (User-Query) plus ein Linearscan über den Projekt-Index — typisch ~10ms.
 
-23 neue Tests in [`test_projects_template.py`](zerberus/tests/test_projects_template.py): 6 Pure-Function-Edge-Cases (Slug-Uppercase im Filename, Anlegedatum eingerendert, alle 5 Sektionen, Description in Ziel-Block, leere Description → Placeholder, fehlende Project-Keys → Defaults), 2 README-Tests, 3 `template_files_for`-Komposit-Tests, 6 Materialize-Tests via `tmp_db` + `tmp_path` (Two-Files, SHA-Storage-Pfad, Idempotenz, User-Content-Schutz, Dry-Run-no-side-effect, Content-Render), 3 End-to-End über `create_project_endpoint` (Flag-on, Flag-off, Crash-Resilienz), 3 Source-Audit (Imports, Flag-Honor, Konstanten). `disable_auto_template`-Autouse-Fixture in `test_projects_endpoints.py` + `test_projects_files_upload.py` hält deren File-Counts stabil. Teststand 1464 → **1487 passed**.
+**Feature-Flags** in `ProjectsConfig` (alle Defaults im Pydantic-Modell, weil `config.yaml` gitignored): `rag_enabled: bool = True` (Tests + Setups ohne `sentence-transformers` schalten den Pfad ab), `rag_top_k: int = 5` (max Anzahl Chunks pro Chat-Query), `rag_max_file_bytes: int = 5 * 1024 * 1024` (drüber: skip beim Indexen, weil typisch Bilder/Archive).
 
-Logging-Tag `[TEMPLATE-198]` zeigt `slug`/`path`/`size`/`sha[:8]` pro neu angelegter Datei + `skip slug=... path=... (already exists)` bei Idempotenz-Skip. Bei Crash WARNING via `logger.exception` mit Slug.
+**Defensive Behaviors:** leere Datei → `reason="empty"`, binäre Datei (UTF-8-Decode-Fehler) → `reason="binary"`, Datei zu groß → `reason="too_large"`, Bytes nicht im Storage → `reason="bytes_missing"`, Embed-Fehler → `reason="embed_failed"`, Embedder-Dim-Wechsel zwischen Sessions → Index wird beim nächsten Index-Call neu aufgebaut (kein Crash), inkonsistenter Index (nur eine der zwei Dateien existiert) → leere Basis, kaputtes meta.json → leere Basis, Dim-Mismatch im `top_k_indices` → leeres Ergebnis statt Crash.
 
-**Phase 5a Ziel #2 ist damit abgeschlossen.** Ziele #1 (Backend P194 + UI P195 + Datei-Upload P196) und #2 (Templates) sind durch. Decision 3 (Persona-Merge-Layer) seit P197 aktiv.
+46 neue Tests in [`test_projects_rag.py`](zerberus/tests/test_projects_rag.py): 5 Prose-Splitter (Empty/Single-Para/Multi-Para-Merge/Oversized-Split/Single-Para-Sentence-Split), 5 Chunk-File (Empty/Code-Path/Markdown-Prose/Unknown-Extension/SyntaxError-Fallback), 5 Top-K (Empty-Index/k=0/Sortiert/Cap-at-Size/Dim-Mismatch), 4 Save-Load (Missing/Roundtrip/Inconsistent/Corrupted), 2 Remove-Index, 7 Index-File (Markdown/Idempotent/Empty/Binary/Too-Large/Bytes-Missing/Rag-Disabled), 2 Remove-File (selektiv + Drop-Empty-Index), 4 Query (Hit/Empty-Query/Missing-Project/Missing-Index), 2 Format-Block, 3 End-to-End via Upload/Delete-File/Delete-Project, 1 Materialize-Indexes-Templates, 6 Source-Audit (hel.py × 3, projects_template.py, legacy.py-Reihenfolge, config.py). `fake_embedder`-Fixture (Hash-basiert, 8-dim) verhindert echtes Modell-Laden in Unit-Tests. Teststand 1487 → **1533 passed**.
+
+Logging-Tag `[RAG-199]` zeigt `slug`/`file_id`/`path`/`chunks`/`total` beim Indexen, `chunks_used` beim Chat-Query, `chunks_removed` beim Delete. Inkonsistenter/kaputter Index → WARN; Embed/Query-Fehler → WARN mit Exception-Text.
+
+**Phase 5a Ziel #3 ist damit abgeschlossen.** Ziele #1 (Backend P194 + UI P195 + Datei-Upload P196), #2 (Templates P198) und #3 (RAG-Index) sind durch. Decision 3 (Persona-Merge-Layer) seit P197 aktiv. Datei-Upload aus Hel-UI (P196) seit dem auch indexiert.
 
 ## Nächster Schritt — sofort starten
-**P199: Projekt-RAG-Index** — Phase 5a Ziel #3 ("Projekte haben eigenes Wissen"). Jedes Projekt soll einen isolierten FAISS-Index bekommen, der die in P196 hochgeladenen + die in P198 generierten Files indexiert. Code-LLM braucht Projektkontext, ohne dass der globale RAG-Index mit projekt-spezifischen Inhalten verschmutzt wird.
+**P200: Code-Execution-Pipeline** — Phase 5a Ziel #5 ("Code wird ausgeführt"). Vom Chat aus per Intent `PROJECT_CODE` → LLM generiert Code → Docker-Sandbox (P171) führt aus → Ergebnis zurück in den Chat. Mit Workspace-Layout für Git (jetzt sinnvoll, weil P198 die Templates schon im SHA-Storage liegen hat).
 
 Konkret (Coda darf abweichen):
-1. **Index-Schema definieren.** Empfehlung: pro Projekt-Slug ein eigener FAISS-Index unter `data/projects/<slug>/_rag/index.faiss` + `_rag/meta.json`. Dual-Embedder-Setup (P187) übernehmen — DE/EN sprach-spezifisch, oder erstmal nur DE für den Anfang.
-2. **Index-Helper.** Neuer `zerberus/core/projects_rag.py` mit `index_project_file(project_id, file_id)` (chunkt + embedded + persistiert), `query_project_rag(project_id, query, *, k=5)` (lädt Index, Top-K Chunks). Bestehende `chunkers.py` + Embedder-Setup aus `modules/rag/` weiterverwenden.
-3. **Trigger-Punkte.** (a) Beim Upload (`upload_project_file_endpoint` in `hel.py` NACH `register_file`), (b) Beim Materialisieren (P198 — `materialize_template` ruft am Ende `index_project_file` für jede neue Datei), (c) Beim Delete (Index-Eintrag entfernen, sonst stale).
-4. **Wirkung im Chat.** Wenn `X-Active-Project-Id` gesetzt ist und das Projekt einen RAG-Index hat: NACH dem System-Prompt-Build (P197), aber VOR `messages.insert(0, system)`, einen Block "[PROJEKT-RAG]" mit den Top-K Chunks zur User-Frage anhängen. Oder als Tool-Use-Pattern, wenn Code-LLM später aktiviert wird.
-5. **Feature-Flag.** `ProjectsConfig.rag_enabled: bool = True` (oder `auto_index: bool`) — Tests können den Pfad abschalten, lokale Setups ohne FAISS-Dependency auch.
-6. **Tests.** Pure-Function-Tests für Chunking + Embedding-Mock, async DB-Tests für Index-Persistierung, End-to-End über Upload-Endpoint (Datei rein → Index hat Eintrag), Edge-Cases (leere Datei, binäre Datei → skip, Index existiert nicht → on-the-fly bauen).
+1. **Workspace-Layout definieren.** Empfehlung: pro Projekt ein `data/projects/<slug>/_workspace/`-Ordner als echter Working-Tree, in den die `project_files`-Einträge per `relative_path` materialisiert werden (Symlink oder Hardlink auf den SHA-Storage, Linux-fähig; Windows-Fallback per Copy). `git init` erst hier sinnvoll. Bei jedem Upload/Delete/Index-Trigger den Workspace synchronisieren.
+2. **Intent-Erweiterung.** Neuer Intent `PROJECT_CODE` in `intent_parser.py` — Trigger z.B. "lass laufen", "execute", "run python" + aktives Projekt-Header. Ohne `X-Active-Project-Id` → Intent zurückweisen mit "Bitte Projekt auswählen".
+3. **LLM-Code-Generation-Pfad.** Neuer Endpoint oder Sub-Pipeline: Code-Generation-Prompt baut sich aus User-Frage + System-Prompt + RAG-Hits (P199 ist DA, perfekt) + aktuellem Workspace-Tree-Snapshot. LLM bekommt Tool-Use für `execute_python`/`execute_javascript`/`read_file`/`write_file`/`list_files` (alle scoped auf den Projekt-Workspace).
+4. **Sandbox-Verdrahtung.** `modules/sandbox/` (P171) ist bereits da — Workspace als Volume mounten, Read-Write nur innerhalb des Workspaces. Output-Limit (Default 10000 Chars), Timeout (30s), pids/memory/cpu-Limits aus `SandboxConfig`.
+5. **Antwort-Synthese.** LLM-Antwort enthält ggf. Sandbox-Output. Im Chat als spezielle Message-Type rendern (Code-Block + Output-Block, expandierbar).
+6. **HitL-Gate (Phase 5a #6, kommt mit P202).** Vor JEDER Ausführung: Bestätigungs-UI im Chat ("Soll ich das wirklich ausführen?"). Aber das ist P202 — für P200 erstmal direkter Pfad mit Logging, HitL kommt drauf.
+7. **Tests.** Pure-Function-Tests für Workspace-Sync (Files materialisieren, Git-Init), async Tests für Sandbox-Aufruf mit Mock-Subprocess, End-to-End mit Mock-LLM, Edge-Cases (Workspace existiert nicht, Code crasht in Sandbox, Timeout, Output zu groß).
 
 **Reihenfolge-Vorschlag für die nächsten Patches** (Coda darf abweichen):
-- **P199** Projekt-RAG-Index — Phase 5a Ziel #3 (oben beschrieben)
-- **P200** Code-Execution-Pipeline — Ziel #5 (Intent `PROJECT_CODE` → LLM → Sandbox, mit Workspace-Layout für Git)
-- **P201** Nala-Tab "Projekte" + Header-Setter — verdrahtet das Nala-Frontend mit P197 (User wählt aktives Projekt im Chat-UI)
+- **P200** Code-Execution-Pipeline — Ziel #5 (oben beschrieben)
+- **P201** Nala-Tab "Projekte" + Header-Setter — verdrahtet das Nala-Frontend mit P197 (User wählt aktives Projekt im Chat-UI), damit P197+P199 endlich von Nala aus erreichbar werden
 - **P202** HitL-Gate vor Code-Execution — Ziel #6
+- **P203** Diff-View / Snapshots / Rollback — Ziel #9 + #10
+- **P204** Spec-Contract / Ambiguitäts-Check — Ziel #8
 
 ## Vorhandene Bausteine (NICHT neu bauen)
-Docker-Sandbox (P171), HitL (P167), Pipeline-Bus (P174/P177), Guard (P120/P180), Prosodie (P189-191), Triptychon (P192), Whisper-Enrichment (P193), **Projekte-Backend (P194)**, **Projekte-UI (P195)**, **Projekt-Datei-Upload (P196)**, **Persona-Merge-Layer (P197)**, **Projekt-Templates (P198: `projects_template.py` + Endpoint-Verdrahtung + `auto_template`-Flag)**.
+Docker-Sandbox (P171), HitL (P167), Pipeline-Bus (P174/P177), Guard (P120/P180), Prosodie (P189-191), Triptychon (P192), Whisper-Enrichment (P193), **Projekte-Backend (P194)**, **Projekte-UI (P195)**, **Projekt-Datei-Upload (P196)**, **Persona-Merge-Layer (P197)**, **Projekt-Templates (P198)**, **Projekt-RAG-Index (P199: `projects_rag.py` mit Pure-Numpy-Linearscan + MiniLM-Embedder + Code-/Prose-Chunker-Reuse + Best-Effort-Verdrahtung in Hel/Materialize/Chat + `rag_enabled`-Flag)**.
 
-Helper aus P198 die in P199+ direkt nutzbar sind:
-- `projects_template.template_files_for(project)` — wenn ein anderer Code-Pfad die Skelett-Files in-memory braucht (z.B. Migrations-Tool, das alle alten Projekte nachträglich materialisiert), Pure-Function ohne I/O
-- `projects_template.materialize_template(project, base_dir, *, dry_run=False)` — bequeme async-Schnittstelle, idempotent. Mit `dry_run=True` als Inspektions-Modus für CLI-Tools.
-- `projects_template.PROJECT_BIBLE_FILENAME_TEMPLATE` + `README_FILENAME` — Konstanten für andere Module, die Template-Files erkennen müssen (z.B. RAG-Filter, der Template-Inhalte separat gewichten will)
-- `projects_template._write_atomic(target, data)` — atomar schreiben, falls noch andere Helper Bytes ins Storage legen müssen, die nicht den Upload-Endpoint nutzen
+Helper aus P199 die in P200+ direkt nutzbar sind:
+- `projects_rag.query_project_rag(project_id, query, base_dir, *, k=5)` — Top-K-Hits für eine Query, fertig formatiert mit Score und Metadata. Nutzt P200 für den Code-Generation-Prompt (Codebase-Kontext aus dem Projekt) ohne neuen RAG-Layer
+- `projects_rag.format_rag_block(hits, project_slug=None)` — markdown-formatierter Block für System-Prompt-Anhang. Wenn P200 einen separaten "Code-Kontext"-Block brauchen sollte, die gleiche Funktion mit anderem Marker forkbar
+- `projects_rag.chunk_file_content(text, relative_path)` — Pure-Function-Chunker für ein einzelnes File. Wenn P200 das Workspace pro Re-Sync neu indexieren will, ohne über Storage zu gehen, ist das die richtige Schicht
+- `projects_rag.index_project_file(project_id, file_id, base_dir)` — bequeme async-API für Trigger-Punkte. Wenn P200 nach Code-Execution geänderte Files in den Index reinrollt: einmal pro File aufrufen, ist idempotent
+- `projects_rag.remove_file_from_index(project_id, file_id, base_dir)` — Inverse zu obigem; nötig wenn P200 Files aus dem Workspace löschen können soll
+- `projects_rag.PROJECT_RAG_BLOCK_MARKER` + `RAG_SUBDIR` + `VECTORS_FILENAME` + `META_FILENAME` — Konstanten für andere Module die Index-Pfade ansprechen müssen (z.B. ein Reindex-CLI-Tool)
 
-Projekt-Bausteine (P194-P198):
+Projekt-Bausteine (P194-P199):
 - `projects_repo.create_project/get_project/update_project/archive_project/delete_project` — CRUD
 - `projects_repo.register_file/list_files/get_file/delete_file` — Datei-Metadaten
 - `projects_repo.compute_sha256/storage_path_for/sanitize_relative_path/is_extension_blocked/count_sha_references` — Helper
 - `persona_merge.merge_persona/read_active_project_id/resolve_project_overlay` — Persona-Layer (P197)
+- `projects_template.template_files_for/materialize_template` — Skelett-Files (P198)
+- `projects_rag.index_project_file/remove_file_from_index/query_project_rag/format_rag_block` — RAG-Layer (P199)
 - `hel._projects_storage_base()` — Storage-Wurzel-Indirektion (Tests können umbiegen)
 
-Persona-Pipeline-Bausteine (P184/P185/P197):
+Persona-Pipeline-Bausteine (P184/P185/P197/P199):
 - `legacy.load_system_prompt(profile_name)` — User-Persona-Resolver
 - `legacy._wrap_persona(prompt)` — AKTIVE-PERSONA-Marker davor
 - `persona_merge.merge_persona(base, overlay, slug)` — Projekt-Overlay-Block hinten dran (P197)
 - `runtime_info.append_runtime_info(prompt, settings)` — Live-Modell/Sandbox/RAG-Block
 - `prompt_features.append_decision_box_hint(prompt, settings)` — Decision-Box-Syntax-Anweisung
+- `projects_rag.query_project_rag + format_rag_block` — Projekt-RAG-Block hinten dran (P199)
 
 ## Offenes
 - DECISIONS_PENDING leer.
-- Manuelle Tests in WORKFLOW.md offen: #2-4 (Prosodie/Triptychon, pre-P194), #5-7 (P194), #8-10 (P195), #11-16 (P196), #17-18 (P197: Header-Test mit curl, Hel-UI Persona-Overlay-Edit-→-LLM-Wirkung), **#19-21 (P198: Anlegen erzeugt Files, Idempotenz, Edit-Bibel-überlebt-Re-Anlegen)**.
+- Manuelle Tests in WORKFLOW.md offen: #2-4 (Prosodie/Triptychon, pre-P194), #5-7 (P194), #8-10 (P195), #11-16 (P196), #17-18 (P197), #19-21 (P198), **#22-25 (P199: Push, Upload-triggert-Index, Delete-räumt-Index, Chat-Wirkung mit aktivem Projekt)**.
 - Schulden in WORKFLOW.md unten: interactions-User-Spalte (Alembic), 2 pre-existing Test-Failures (4 xfailed sichtbar — nicht blockierend).
-- Storage-GC-Job für verwaiste SHAs nach Projekt-Delete (P194 `delete_project` löscht aktuell nur DB-Cascade, Bytes können verwaisen wenn der SHA nirgends sonst referenziert ist) — low-prio bis Storage-Volumen relevant.
-- **Nala-Frontend setzt `X-Active-Project-Id` noch nicht** — kommt mit dem Nala-Tab "Projekte" (P201-Vorschlag). Bis dahin ist P197 nur über externe Clients (`curl`, SillyTavern, eigene Skripte) nutzbar.
-- **Hel-UI zeigt `template_files` aus der Endpoint-Response noch nicht prominent an** — erscheint nach dem Anlegen ja sowieso in der Datei-Liste, aber ein "Erstellt: 2 Skelett-Files" als Toast wäre nett. Low-prio.
-- **Pre-existing Projekte ohne Templates** — Projekte, die VOR P198 angelegt wurden, haben keine Skelett-Files. Wenn Chris die nachrüsten will: `materialize_template` ist idempotent → einmal pro Projekt aufrufen, fügt nur die fehlenden Files hinzu. Bei Bedarf einen kleinen CLI-Migrations-Befehl bauen, kein eigener Patch nötig.
+- Storage-GC-Job für verwaiste SHAs nach Projekt-Delete (P194 `delete_project` löscht aktuell nur DB-Cascade, Bytes können verwaisen wenn der SHA nirgends sonst referenziert ist) — low-prio bis Storage-Volumen relevant. P199 räumt den Projekt-Slug-spezifischen `_rag/`-Ordner auf, aber NICHT die `<sha[:2]>/<sha>`-Bytes — das ist immer noch der separate Cleanup-Job.
+- **Nala-Frontend setzt `X-Active-Project-Id` noch nicht** — kommt mit dem Nala-Tab "Projekte" (P201-Vorschlag). Bis dahin ist die Kombination P197+P199 nur über externe Clients (`curl`, SillyTavern, eigene Skripte) nutzbar.
+- **Hel-UI zeigt RAG-Status noch nicht prominent an** — Upload-Response enthält `rag.{chunks, skipped, reason}`, aber das Frontend ignoriert das Feld. Ein "Indexiert: 5 Chunks" / "Übersprungen (binär)" als Toast wäre nett. Low-prio.
+- **Pre-existing Files ohne Index** — Files, die VOR P199 hochgeladen oder via P198 materialisiert wurden, sind nicht im Index. Wenn Chris die nachrüsten will: ein Mini-CLI-Skript, das `list_files` für jedes Projekt ruft und `index_project_file` pro Eintrag — `index_project_file` ist idempotent. Ein größerer Reindex-Endpoint (`POST /hel/admin/projects/{id}/reindex`) wäre sauberer, aber eigener Patch.
+- **Lazy-Embedder-Latenz** — der erste `index_project_file`-Call lädt MiniLM-L6-v2 (~80 MB Download beim allerersten Mal, danach Cache). Während Tests via Monkeypatch abgefangen, in Produktion einmal pro Server-Start. Falls das stört: Eager-Init in `main.py` Startup-Hook hinter `rag_enabled`-Flag — kein eigener Patch nötig, ein 3-Zeilen-Diff.
+- **Embedder-Modell hardcoded auf MiniLM-L6-v2** — wenn Chris später auf dual umsteigen will (DE/EN-Trennung wie der globale Index), muss `_embed_text` umgebaut werden. Aktuell ist das wartbar via einer einzigen Funktion — kein Architektur-Schmerz, nur ein Modell-Switch.
 
 ## Stack
-DeepSeek V3.2 (OpenRouter) | Mistral Small 3 Guard | Gemma E2B Prosodie (lokal) | faster-whisper FP16 (Docker :8002) | SQLite WAL | Nala + Hel | Huginn Telegram
+DeepSeek V3.2 (OpenRouter) | Mistral Small 3 Guard | Gemma E2B Prosodie (lokal) | faster-whisper FP16 (Docker :8002) | SQLite WAL | Nala + Hel | Huginn Telegram | MiniLM-L6-v2 für Projekt-RAG (Pure-Numpy-Linearscan)
 
 ## Invarianten (nie brechen)
-/v1/ auth-frei (Dictate-Lane) | Mobile-first 44px | Bibel für LLM-Dateien | Prosa für Menschen | Tests grün vor Commit | Push erst nach `sync_repos.ps1` + `verify_sync.ps1` | Composite-UNIQUE-Constraints IMMER ins Model (`__table_args__`), nicht nur in `init_db` | Slug ist immutable nach Anlage (Rename per Drop+Recreate) | Atomic Write für jeden Upload-Pfad (`tempfile.mkstemp` im Ziel-Ordner + `os.replace`) | SHA-Dedup-Schutz beim Delete von Multi-Owner-Storage (P196) | Persona-Layer-Reihenfolge: User-Persona vor Projekt-Overlay vor `_wrap_persona`-Marker (P197) — Source-Audit-Test verifiziert | Pure-Function vs. DB-Schicht trennen, wenn ein Helper sowohl unit- als auch integration-getestet werden soll | **Templates als reguläre `project_files`-Einträge im SHA-Storage (kein Sonderpfad) — sichtbar in Hel/RAG/Sandbox ohne Spezialfall (P198)** | **Idempotenz-Check VOR Schreiben für jeden Generator, der User-Content-Schutz braucht (P198)** | **Best-Effort-Verdrahtung im Endpoint, wenn der Hauptpfad NICHT vom Nebeneffekt abhängt (Crash beim Materialisieren bricht Anlegen nicht ab — P198)**
+/v1/ auth-frei (Dictate-Lane) | Mobile-first 44px | Bibel für LLM-Dateien | Prosa für Menschen | Tests grün vor Commit | Push erst nach `sync_repos.ps1` + `verify_sync.ps1` | Composite-UNIQUE-Constraints IMMER ins Model (`__table_args__`), nicht nur in `init_db` | Slug ist immutable nach Anlage (Rename per Drop+Recreate) | Atomic Write für jeden Upload-Pfad (`tempfile.mkstemp` im Ziel-Ordner + `os.replace`) | SHA-Dedup-Schutz beim Delete von Multi-Owner-Storage (P196) | Persona-Layer-Reihenfolge: User-Persona vor Projekt-Overlay vor `_wrap_persona`-Marker (P197) — Source-Audit-Test verifiziert | Pure-Function vs. DB-Schicht trennen, wenn ein Helper sowohl unit- als auch integration-getestet werden soll | Templates als reguläre `project_files`-Einträge im SHA-Storage (kein Sonderpfad) — sichtbar in Hel/RAG/Sandbox ohne Spezialfall (P198) | Idempotenz-Check VOR Schreiben für jeden Generator, der User-Content-Schutz braucht (P198) | Best-Effort-Verdrahtung im Endpoint, wenn der Hauptpfad NICHT vom Nebeneffekt abhängt (Crash beim Materialisieren bricht Anlegen nicht ab — P198) | **Per-Projekt-RAG-Index ist isoliert vom globalen Index — projekt-spezifische Inhalte verschmutzen nie den globalen Memory-Layer (P199)** | **Embedder-Wrapper als monkeypatchbare Funktion, niemals als Modul-Singleton ins Test-Setup ziehen — `_embed_text` ist die einzige Stelle, die Tests umlenken müssen (P199)** | **Best-Effort-Indexing: jeder Trigger-Punkt (Upload/Materialize/Delete/Chat-Query) toleriert RAG-Fehler — der Hauptpfad bleibt grün (P199)** | **RAG-Block-Marker `[PROJEKT-RAG — Kontext aus Projektdateien]` ist eindeutig, damit Doppel-Injection-Schutz und Test-Substring-Checks greifen (P199)**

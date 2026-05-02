@@ -5366,3 +5366,141 @@ Teststand 1464 → **1487 passed** (+23). 4 xfailed (pre-existing). 2 pre-existi
 
 *Stand: 2026-05-02, Patch 198 — Phase 5a Ziel #2 abgeschlossen (Templates beim Anlegen). 1487 passed, 0 neue Failures.*
 
+---
+
+## Patch 199 — Phase 5a #3: Projekt-RAG-Index (2026-05-02)
+
+### Warum
+Phase-5a-Ziel #3 ("Projekte haben eigenes Wissen") war seit P194 offen. Ohne projekt-spezifischen Vektor-Index gibt es nur zwei unbefriedigende Optionen: (a) Projekt-Inhalte gehen in den globalen RAG-Index (`modules/rag/router.py`) — das verschmutzt den Memory-Layer mit Inhalten, die nur für ein Projekt relevant sind und in anderen Sessions als "falsche" Treffer auftauchen; (b) das LLM bekommt keinen Projektkontext und muss raten, was in den hochgeladenen Files steht. Beides ist auf die Code-Execution-Pipeline (P200) hin nicht tragfähig — der Code-LLM braucht Codebase-Kontext, der ABSOLUT nichts in der allgemeinen Memory-Suche zu suchen hat. P199 baut die isolierte Schicht: pro Projekt ein eigener Vektor-Store, automatisch gefüttert beim Upload und beim Materialize, automatisch abgefragt beim Chat — aber nur wenn der `X-Active-Project-Id`-Header gesetzt ist.
+
+### Was P199 macht
+Ein neuer Helper `zerberus/core/projects_rag.py` mit vier sauber getrennten Schichten (Pure-Functions, File-I/O, Embedder-Wrapper, async DB+Storage), Verdrahtung an vier Trigger-Punkten (Upload-Endpoint, Materialize, Delete-File, Delete-Project) und im Chat-Endpoint, drei neue Feature-Flags in `ProjectsConfig`, ein neuer INFO-Log-Tag `[RAG-199]`, 46 neue Tests.
+
+Pro Projekt landen Vektoren + Metadaten unter:
+```
+data/projects/<slug>/_rag/
+├── vectors.npy   # numpy float32, shape (N, dim)
+└── meta.json     # JSON-Liste mit N Einträgen, gleiche Reihenfolge
+```
+
+Jeder Meta-Eintrag enthält: `file_id`, `relative_path`, `sha256`, `chunk_id`, `text` (der Chunk-Inhalt), `chunk_type`, `name` (Funktions-/Sektions-Name bei Code), `start_line`/`end_line`, `language`, `indexed_at`. Die Reihenfolge ist synchron zum Vektor-Array — `vectors[i]` gehört zu `meta[i]`.
+
+### Architektur-Entscheidungen
+
+**Pure-Numpy-Linearscan statt FAISS.** Die zentrale Design-Frage war: FAISS-Index pro Projekt (wie der globale Index) oder Pure-Numpy-Lösung. FAISS hätte Konsistenz mit dem globalen Pfad gegeben, aber drei Nachteile: (1) FAISS ist eine schwere Native-Dependency, die Tests-Setup verkompliziert (Mock von `faiss.IndexFlatL2` ist mühsam und fragil); (2) FAISS-Setup-Overhead ist relevant — `IndexFlatL2(dim)` allokiert intern Strukturen, die für 50 Vektoren grotesk overdimensioniert sind; (3) Persistierung zwischen Index-Datei und Numpy-Array sind beides Disk-I/O, der Geschwindigkeitsvorteil von FAISS bei Linearscan auf <10000 Vektoren ist marginal. Numpy-`argpartition(-sims, k-1)[:k]` plus `argsort` gibt exakt das gleiche Top-K wie ein FAISS-FlatL2-Search auf normalisierten Vektoren — und die Tests laufen ohne ein einziges importiertes faiss-Symbol. Falls Projekte signifikant >10k Chunks bekommen, ist der Wechsel zu FAISS trivial: nur `top_k_indices` + `load_index`/`save_index` ändern, die Public-API (`index_project_file`, `query_project_rag`, `format_rag_block`) bleibt identisch.
+
+**Embedder als monkeypatchbare Funktion, nicht als Modul-Singleton.** Tests dürfen niemals einen echten SentenceTransformer laden — das wäre ein 80-MB-Download pro Test-Setup und CI-killing. Lösung: `_embed_text(text: str) -> list[float]` ist die EINZIGE Stelle, die das Modell aufruft. Tests `monkeypatch.setattr(projects_rag, "_embed_text", fake_embed)` und schon ist der Embedder weg. Der Singleton `_embedder_singleton` lebt zwar im Modul, wird aber NIE direkt von der Async-API verwendet — `_get_embedder` ist eine private Hilfs-Funktion, die nur `_embed_text` aufruft. Wer den Embedder austauscht (z.B. später auf Dual-Embedder), tauscht `_embed_text` aus, nicht den Singleton. Dieselbe Test-Trennlinie hat schon bei `merge_persona` (P197) funktioniert.
+
+**MiniLM-L6-v2 als Default, nicht der globale Dual-Embedder.** Der globale RAG-Pfad nutzt seit P187 einen Dual-Embedder (DE/EN sprach-spezifisch). Per-Projekt könnte das gleiche Modell nehmen — aber: (1) Dual-Embedder hat zwei Modelle mit unterschiedlichen Dimensionen (DE 768, EN 1024), das macht das Index-Schema komplizierter; (2) DE-Embedder (`T-Systems-onsite/cross-en-de-roberta-sentence-transformer`) ist GPU-only-Default, was das lazy-loading-Verhalten in CPU-only-Setups (Tests, kleinere Maschinen) bricht; (3) MiniLM-L6-v2 ist 384-dim, schnell, kompatibel mit dem Legacy-Globalpfad und auf jedem Setup ohne extra Config lauffähig. Trade-off: Cross-lingual-Qualität ist schlechter — wenn ein User Code-Dokumentation in EN hochlädt und Fragen auf DE stellt, sind die Hits weniger präzise als mit dem T-Systems-Modell. Für den ersten Wurf akzeptabel; ein späterer Upgrade auf den Dual-Embedder ist eine `_embed_text`-Änderung von ~10 Zeilen.
+
+**Chunker-Reuse: Code-Chunker (P122) für Code-Files, Para-Splitter für Prosa.** Der existierende `code_chunker.chunk_code` (P122) liefert für `.py/.js/.ts/.html/.css/.json/.yaml/.sql` AST/Regex-basierte Chunks mit semantischen Einheiten (Funktionen, Klassen, Imports, Sektionen). Das ist genau das, was wir brauchen — keine Notwendigkeit, einen zweiten Code-Chunker zu bauen. Für Prosa (`.md`, `.txt`, unbekannte Endung) liefert der lokale `_split_prose`: erst Splitten an Doppel-Newline (Absatz-Grenze), dann Merge bis zum Limit (1500 Zeichen), bei überlangen Absätzen Sentence-Split-Fallback (regex `[.!?]\s+[A-Z]`), bei einzelnen Mega-Sätzen hartes Char-Slice. Min-Chunk-Schwelle 64 Zeichen, kleinere Tail-Chunks werden an den Vorgänger angehängt. Bei Python-SyntaxError im Code-Pfad → automatischer Fallback auf Prose-Splitter (kaputte Files werden trotzdem indexiert).
+
+**Idempotenz pro `file_id`, nicht pro `sha256`.** Wenn der User dieselbe Datei mehrfach hochlädt (gleicher `relative_path`, evt. mit anderem Inhalt), bekommt sie eine NEUE `file_id` (wegen UNIQUE-Constraint `(project_id, relative_path)` müsste P196 eigentlich 409 zurückgeben — aber wenn der User VOR dem Re-Upload löscht, dann anlegt, ist die ID neu). Idempotenz pro `sha256` würde dann fehlschlagen. Lösung: vor dem Indexen alte Einträge mit derselben `file_id` rauswerfen, dann neu indexieren. Wenn der `sha256` gleich bleibt → das Ergebnis ist identisch (deterministischer Embedder), kein Schaden. Wenn der `sha256` sich geändert hat → neue Chunks ersetzen alte. Das ist robuster als sha-basierte Idempotenz und passt zur Storage-Konvention (sha-Pfad wird beim P196-Upload via SHA-Dedup geteilt, aber der `project_files`-Eintrag ist pro `(project_id, relative_path)` eindeutig).
+
+**Trigger-Punkte sind Best-Effort.** Vier Stellen rufen die RAG-Schicht: `upload_project_file_endpoint` (P196), `materialize_template` (P198), `delete_project_file_endpoint` (P196), `delete_project_endpoint` (P194). Alle vier sind in `try/except Exception`-Blöcken mit `logger.exception` gekapselt — Indexing-Fehler brechen den Hauptpfad NICHT ab. Begründung: das Hauptergebnis (Datei in DB + Storage, oder Datei aus DB + Storage entfernt) muss konsistent sein, der Index ist Cache. Wenn der Cache-Update fehlschlägt, kann ein späterer Reindex-Call ihn nachziehen. Das ist die gleiche Best-Effort-Pattern wie bei P198-Materialize.
+
+**Position der Chat-Wirkung NACH P190, VOR `messages.insert`.** Die Persona-Pipeline in `legacy.py::chat_completions` ist seit P184/P185/P197 mehrschichtig:
+1. `load_system_prompt(profile_name)` — User-Persona aus JSON-Datei
+2. `merge_persona(sys_prompt, project_overlay, project_slug)` — P197 Projekt-Overlay
+3. `_wrap_persona(sys_prompt)` — P184 AKTIVE-PERSONA-Marker
+4. `append_runtime_info(sys_prompt, settings)` — P185 Modell/RAG/Sandbox-Block
+5. `append_decision_box_hint(sys_prompt, settings)` — P118a
+6. `inject_prosody_context(sys_prompt, prosody_ctx)` — P190
+7. **`format_rag_block(rag_hits, project_slug=...)` an `sys_prompt` anhängen** — NEU P199
+8. `messages.insert(0, Message(role="system", content=sys_prompt))`
+
+Position 7 ist NACH allen anderen Build-Schritten. Begründung: der RAG-Block ist Kontext, keine Persona-Regel — er ändert sich pro Query (jede neue User-Frage liefert andere Hits) und sollte VOR der Modell-Sicht "präsent" sein, ohne die etablierten Persona-/Runtime-/Decision-Box-/Prosodie-Strukturen zu unterbrechen. Source-Audit-Test verifiziert die Reihenfolge per Substring-Position (`merge_pos < rag_pos < insert_pos`). Logging-Tag `[RAG-199]` mit `chunks_used` macht in Bug-Reports nachvollziehbar, ob der Block aktiv war.
+
+**Feature-Flags in Pydantic-Settings, Defaults im Modell.** Drei neue Felder in `ProjectsConfig`:
+- `rag_enabled: bool = True` — der Master-Switch. Tests + Setups ohne `sentence-transformers` schalten ihn ab. Greift sowohl beim Indexen (`index_project_file` returnt `reason="rag_disabled"`) als auch beim Chat-Query (kein Block).
+- `rag_top_k: int = 5` — wie viele Chunks der Chat-Endpoint pro Query nutzt. Der Helper akzeptiert ein `k`-Parameter, das ist die obere Grenze.
+- `rag_max_file_bytes: int = 5 * 1024 * 1024` (5 MB) — alles drüber wird beim Indexen übersprungen mit `reason="too_large"`. Begründung: Files >5 MB sind typisch Bilder, Archive, große Logs — keine sinnvoll chunkbaren Texte, würden den Embedder unnötig auslasten und den Index aufblähen.
+
+Defaults im Pydantic-Modell, weil `config.yaml` gitignored ist. Sonst fehlen die Werte nach `git clone` und der Schutz/das Verhalten ist unklar.
+
+**Defensive Behaviors für jeden Edge-Case.** Statt einer `chunks: list, error: bool`-Schnittstelle ein klares `{"chunks": int, "skipped": bool, "reason": str}`-Status-Dict mit konkretem `reason`-Code:
+- `indexed` — alles gut
+- `empty` — Datei nur Whitespace
+- `binary` — UTF-8-Decode-Fehler
+- `too_large` — Datei > `rag_max_file_bytes`
+- `bytes_missing` — Storage-Datei nicht da (z.B. nach Storage-Restore-Fehler)
+- `no_chunks` — Chunker hat 0 Einträge geliefert (alles weisst, alles unter MIN_CHUNK_CHARS)
+- `file_not_found` / `project_not_found` — DB-Lookup-Miss
+- `embed_failed` — Embedder hat Exception geworfen
+- `rag_disabled` — Master-Switch aus
+
+Tests können pro Edge-Case gezielt prüfen. In Bug-Reports macht der `reason`-Code klar, an welcher Stelle die Pipeline abgebrochen ist.
+
+**Inkonsistenter Index → leere Basis.** Wenn nur `vectors.npy` ODER nur `meta.json` existiert (Crash mitten im `save_index`), liefert `load_index` `(None, [])` und loggt eine WARN-Zeile. Der nächste `index_project_file`-Call baut auf der leeren Basis sauber auf. Alternative wäre, den existierenden Teil zu retten — aber: wenn `meta.json` da ist, aber `vectors.npy` fehlt, sind die Meta-Einträge ohne Vektoren wertlos. Wenn `vectors.npy` da ist, aber `meta.json` fehlt, kennen wir die `text`-Inhalte nicht. Beides ist ohne den anderen Teil unbrauchbar — Reset ist die einzig saubere Antwort.
+
+**Embedder-Dim-Wechsel zwischen Sessions toleriert.** Wenn jemand zwischen Sessions den Embedder tauscht (z.B. von MiniLM 384 auf einen 768-dim-Embedder), bricht der nächste `index_project_file`-Call den vstack-Versuch mit Dim-Mismatch und WARN-Zeile, baut den Index aber neu auf (mit den neuen 768-dim-Vektoren). `top_k_indices` mit Dim-Mismatch liefert leeres Ergebnis statt Crash. Damit ist Embedder-Switch ein Implementation-Detail, kein blocking-Event.
+
+**Atomic Write für `vectors.npy` UND `meta.json`.** Wie bei jedem Storage-Write in Zerberus (P196 Upload, P198 Template-Materialize): `tempfile.mkstemp` im Ziel-Ordner, dann `os.replace` für den Rename. Verhindert halbe Files nach Server-Kill mitten im `save_index`. Wenn der Index partial geschrieben wird (z.B. `vectors.npy` ist neu, `meta.json` noch alt), greift die Inkonsistenz-Erkennung in `load_index` und resettet — kein dauerhafter Schaden.
+
+### Logging
+INFO-Logs auf `[RAG-199]`-Level beim Indexen + Query + Delete:
+```
+[RAG-199] indexed slug=ai-research file_id=42 path=docs/intro.md chunks=5 total=12
+[RAG-199] skip slug=ai-research path=image.png (too_large)
+[RAG-199] removed slug=ai-research file_id=42 chunks_removed=5 remaining=7
+[RAG-199] removed slug=ai-research file_id=43 (index leer)
+[RAG-199] Index entfernt slug=ai-research
+[RAG-199] project_id=7 slug='ai-research' chunks_used=3
+```
+
+WARN-Logs bei Inkonsistenz / Lade-Fehler / Embedder-Fehler:
+```
+[RAG-199] Inkonsistenter Index slug=ai-research: nur eine Datei vorhanden
+[RAG-199] Lade-Fehler slug=ai-research: <exception>
+[RAG-199] Embed-Fehler slug=ai-research path=foo.py chunk=2: <exception>
+[RAG-199] Embedder-Dim-Wechsel slug=ai-research (384 → 768) — Index neu aufgebaut
+[RAG-199] Dim-Mismatch: vectors=(5, 384), query=(8,) → leeres Ergebnis
+```
+
+Bei Bug-Reports zu fehlenden RAG-Hits: erst nach `[RAG-199]` greppen, `chunks_used`-Wert prüfen — wenn 0, dann liegt's am Index (entweder leer oder Query-Embed gescheitert), wenn `[RAG-199]`-Zeile fehlt, dann liegt's am Header (`X-Active-Project-Id` nicht gesetzt) oder am Flag (`rag_enabled: false`).
+
+### Tests
+46 neue Tests in [`zerberus/tests/test_projects_rag.py`](../zerberus/tests/test_projects_rag.py), verteilt auf 12 Test-Klassen:
+
+- **`TestSplitProse`** — 5 Pure-Function-Tests: leerer Text, einzelner kurzer Absatz, mehrere Absätze unter Limit gemerged, übergroße Absätze gesplittet, einzelner überlanger Absatz fällt auf Sentence-Split.
+- **`TestChunkFileContent`** — 5 Tests: Empty, Python-File nutzt Code-Chunker, Markdown nutzt Prose-Chunker, unbekannte Extension wird als Prose behandelt, Python-Datei mit SyntaxError fällt auf Prose-Chunker.
+- **`TestTopKIndices`** — 5 Pure-Function-Tests: leerer Index, k=0, sortierte Top-K-Reihenfolge mit echten Cosinus-Werten, Cap an Index-Größe, Dim-Mismatch liefert leer.
+- **`TestSaveLoadIndex`** — 4 File-I/O-Tests: Load-Missing, Save-Then-Load-Roundtrip, Inkonsistent (nur eine Datei), Corrupted-Meta.
+- **`TestRemoveProjectIndex`** — 2 Tests: Existing entfernt, Missing returnt False.
+- **`TestIndexProjectFile`** — 7 async DB+Storage-Tests via `tmp_db` + `tmp_path` + `fake_embedder`: indexiert eine Markdown-Datei, idempotent (zweiter Call dupliziert nicht), Empty-Datei skipped, Binary-Datei skipped, Too-Large skipped, Bytes-Missing skipped, Rag-Disabled short-circuit.
+- **`TestRemoveFileFromIndex`** — 2 Tests: removes only target file's chunks (mit zwei Files), removing last file drops the whole index dir.
+- **`TestQueryProjectRag`** — 4 Tests: findet relevanten Chunk, leere Query → leer, fehlendes Projekt → leer, fehlender Index → leer.
+- **`TestFormatRagBlock`** — 2 Tests: Empty-Hits → empty string, Block enthält Marker + Slug + Pfade + Texte + Score.
+- **`TestUploadEndpointIndexes`** — 3 End-to-End-Tests via `hel_mod.upload_project_file_endpoint` + `hel_mod.delete_project_file_endpoint` + `hel_mod.delete_project_endpoint`: Upload triggert Index, Delete-File entfernt Index-Einträge, Delete-Project entfernt Index-Ordner.
+- **`TestMaterializeIndexesTemplates`** — 1 Test via `hel_mod.create_project_endpoint`: Template-Files (ZERBERUS_<SLUG>.md + README.md) sind nach Anlegen im Index.
+- **`TestSourceAudit`** — 6 Source-Inspection-Tests: `hel.py` importiert + ruft `index_project_file` auf, `hel.py` ruft `remove_file_from_index` beim Delete-File, `hel.py` ruft `remove_project_index` beim Delete-Project, `projects_template.py` ruft `index_project_file`, `legacy.py` nutzt `query_project_rag` + `format_rag_block` in der korrekten Reihenfolge (NACH P197 `merge_persona`, VOR `messages.insert`), `config.py` hat alle drei `rag_*`-Flags.
+
+`fake_embedder`-Fixture ist der zentrale Trick: ein deterministisches 8-dim-Hash-Embedding (`hashlib.sha256(text)`-basiert) ersetzt `_embed_text` per Monkeypatch. Damit laufen alle Tests dependency-frei (kein `sentence-transformers`-Modell wird geladen) und sind reproduzierbar (gleicher Text → gleiche Vektor → gleiche Ranking).
+
+Teststand 1487 → **1533 passed** (+46). 4 xfailed (pre-existing). 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts) unverändert.
+
+### Was NICHT in P199 passiert ist
+- **Reindex-CLI / Reindex-Endpoint** — pre-existing Files, die VOR P199 hochgeladen oder via P198 materialisiert wurden, sind nicht im Index. Wenn Chris die nachrüsten will: ein Mini-Skript, das `list_files` für jedes Projekt ruft und `index_project_file` pro Eintrag — `index_project_file` ist idempotent, der Aufruf ist sicher. Ein größerer `POST /hel/admin/projects/{id}/reindex`-Endpoint wäre sauberer (User-trigger über Hel-UI), aber eigener Patch.
+- **Hel-UI-Anzeige des RAG-Status** — Upload-Response enthält `rag.{chunks, skipped, reason}`, aber das Frontend zeigt das nicht. Toast "Indexiert: 5 Chunks" oder "Übersprungen (binär)" wäre nett. Low-prio.
+- **Nala-Frontend-Header-Setter** — `X-Active-Project-Id` wird vom Nala-Chat nicht gesendet. Damit bleibt P199 (wie P197) nur über externe Clients (curl, SillyTavern) testbar. Kommt mit P201 (Nala-Tab "Projekte"). Bewusste Auslassung — UI-Patches und Backend-Patches getrennt halten.
+- **Storage-GC für verwaiste SHAs** — aus P196/P197/P198 weiterhin offen. P199 räumt den `_rag/`-Ordner auf, aber NICHT die `<sha[:2]>/<sha>`-Bytes. Separater Cleanup-Job.
+- **Dual-Embedder-Pfad pro Projekt** — Per-Projekt nutzt MiniLM-L6-v2 als einziges Modell. Wenn Chris später sprach-spezifische Indizes pro Projekt will (DE/EN-Split wie der globale Index), ist das ein 10-Zeilen-Diff in `_embed_text` plus Index-Schema-Änderung. Nicht jetzt.
+- **Reranker / Query-Expansion / Category-Boost** — die Goldies aus dem globalen Index (P89/P97/P111) sind hier NICHT übernommen. Begründung: Per-Projekt-Indizes sind klein, Cosinus-Top-K reicht. Wenn Hits später zu rauschen anfangen (z.B. bei Projekten mit 1000+ Files), ist Reranking eine Erweiterung in `query_project_rag`.
+- **Lazy-Embedder-Latenz beim ersten Call** — der erste `index_project_file`-Call lädt MiniLM-L6-v2 (~80 MB Download beim allerersten Mal, danach Cache). In Produktion einmal pro Server-Start. Falls das stört: Eager-Init in `main.py` Startup-Hook hinter `rag_enabled`-Flag, 3-Zeilen-Diff. In Tests via Monkeypatch sowieso abgefangen.
+- **Indexing-Reihenfolge / Priorität** — alle Files werden gleichberechtigt indexiert. Bei großen Projekten (100+ Files) kann der Materialize-Trigger spürbar werden. Wenn das relevant wird: Indexing in einen Background-Task auslagern (`asyncio.create_task` statt `await`), oder per `BackgroundTasks` in FastAPI. Heute kein Bottleneck.
+
+### Lessons (in lessons.md eingetragen, neue Sektion "Per-Projekt-RAG-Index (P199)")
+- Pure-Numpy-Linearscan ist für kleine Per-Projekt-Indizes (≤10k Chunks) FAISS überlegen — schneller, dependency-frei, einfacher.
+- Embedder als monkeypatchbare Funktion (`_embed_text`), nicht als Modul-Singleton — Tests laufen ohne echtes Modell.
+- Per-Projekt-Index isoliert vom globalen Index halten, sonst verschmutzen projekt-spezifische Inhalte den Memory-Layer.
+- Idempotenz pro `file_id`, nicht pro `sha256` — robuster gegen Re-Upload mit gleichem Pfad.
+- Trigger-Punkte als Best-Effort: Indexing-Fehler brechen Hauptpfad NICHT ab.
+- Defensive Behaviors mit konkretem `reason`-Code statt boolean — macht Bug-Reports diagnostizierbar.
+- Inkonsistenter Index → leere Basis ist sauberer als partial-Recovery.
+- RAG-Block-Marker eindeutig wählen (Substring-Check für Tests + Doppel-Injection-Schutz).
+- Position der Chat-Wirkung NACH allen Persona-/Runtime-/Decision-/Prosodie-Schichten, VOR `messages.insert` — pro-Query-Kontext gehört ans Ende des Build-Stacks.
+
+---
+
+*Stand: 2026-05-02, Patch 199 — Phase 5a Ziel #3 abgeschlossen (Projekt-RAG-Index). 1533 passed, 0 neue Failures.*
+

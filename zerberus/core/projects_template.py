@@ -217,4 +217,24 @@ async def materialize_template(
             f"[TEMPLATE-198] created slug={slug} path={rel} size={len(data)} sha={sha256[:8]}"
         )
 
+        # Patch 199 (Phase 5a #3): Frisch materialisierte Datei in den
+        # Projekt-RAG-Index aufnehmen. Best-Effort: Indexing-Fehler brechen
+        # die Materialisierung NICHT ab — die Datei steht trotzdem fuer
+        # Hel/Sandbox bereit, der Index kann via Re-Upload nachgezogen
+        # werden. Lazy-Import, damit der Helper auch ohne installierten
+        # Embedder importierbar bleibt.
+        try:
+            from zerberus.core import projects_rag
+
+            await projects_rag.index_project_file(
+                project_id=project_id,
+                file_id=registered["id"],
+                base_dir=base_dir,
+            )
+        except Exception as rag_err:
+            logger.warning(
+                f"[RAG-199] index_project_file fuer Template-File fehlgeschlagen "
+                f"slug={slug} path={rel}: {rag_err}"
+            )
+
     return created

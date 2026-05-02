@@ -232,6 +232,46 @@ async def chat_completions(
         except (json.JSONDecodeError, ValueError) as _pr_err:
             logger.warning(f"[PROSODY-190] X-Prosody-Context ungültig: {_pr_err}")
 
+    # Patch 199 (Phase 5a #3): Projekt-RAG-Block. Wenn ein aktives Projekt
+    # gesetzt ist (P197) UND der Index Treffer fuer die letzte User-Message
+    # liefert, wird ein "[PROJEKT-RAG]"-Block am Ende des System-Prompts
+    # angehaengt. NACH P197/P184/P185/P118a/P190, damit der Block die
+    # bereits etablierte Persona/Runtime-Schicht nicht stoert. Best-Effort:
+    # jeder Fehler (Embedder fehlt, Index kaputt) → kein Block, Chat laeuft
+    # normal weiter. Archiv-Projekte sind durch ``resolve_project_overlay``
+    # bereits ausgefiltert (project_slug=None, project_overlay=None).
+    rag_chunks_used = 0
+    if (
+        active_project_id is not None
+        and project_slug
+        and last_user_msg
+        and getattr(settings.projects, "rag_enabled", True)
+    ):
+        try:
+            from zerberus.core import projects_rag
+
+            rag_top_k = int(getattr(settings.projects, "rag_top_k", 5))
+            base_dir = Path(settings.projects.data_dir)
+            rag_hits = await projects_rag.query_project_rag(
+                project_id=active_project_id,
+                query=last_user_msg,
+                base_dir=base_dir,
+                k=rag_top_k,
+            )
+            rag_block = projects_rag.format_rag_block(rag_hits, project_slug=project_slug)
+            if rag_block:
+                sys_prompt = (sys_prompt or "") + rag_block
+                rag_chunks_used = len(rag_hits)
+        except Exception as _rag_err:
+            logger.warning(
+                f"[RAG-199] Projekt-RAG-Query fuer slug={project_slug} fehlgeschlagen: {_rag_err}"
+            )
+    if active_project_id is not None:
+        logger.info(
+            f"[RAG-199] project_id={active_project_id} slug={project_slug!r} "
+            f"chunks_used={rag_chunks_used}"
+        )
+
     if sys_prompt and not any(m.role == "system" for m in req.messages):
         req.messages.insert(0, Message(role="system", content=sys_prompt))
 

@@ -168,6 +168,15 @@ class ProjectsConfig(BaseModel):
     # (ZERBERUS_<SLUG>.md + README.md). Kann fuer Migrations-Tests oder
     # Bulk-Imports abgeschaltet werden.
     auto_template: bool = True
+    # Patch 199 (Phase 5a #3): Projekt-spezifischer RAG-Index. Pro Projekt
+    # ein eigener FAISS-aehnlicher Numpy-Store unter
+    # ``<data_dir>/projects/<slug>/_rag/``. Wird beim Upload + bei der
+    # Template-Materialisierung gefuettert; der Chat-Endpoint zieht Top-K
+    # Chunks beim aktiven Projekt. Tests ohne ``sentence-transformers``
+    # koennen das Flag abschalten.
+    rag_enabled: bool = True
+    rag_top_k: int = 5
+    rag_max_file_bytes: int = 5 * 1024 * 1024  # 5 MB — drueber: skip beim Indexen
 
 
 class SandboxConfig(BaseModel):

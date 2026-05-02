@@ -1,10 +1,40 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 198 (2026-05-02) – Phase 5a Ziel #2: Template-Generierung beim Anlegen*
+*Letzte Aktualisierung: Patch 199 (2026-05-02) – Phase 5a Ziel #3: Projekt-RAG-Index*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 199** — Phase 5a #3: Projekt-RAG-Index (2026-05-02)
+
+Schließt Phase-5a-Ziel #3 ("Projekte haben eigenes Wissen") ab. Jedes Projekt bekommt einen eigenen, isolierten Vektor-Index unter `data/projects/<slug>/_rag/{vectors.npy, meta.json}` — der globale RAG-Index in `modules/rag/router.py` bleibt unberührt. Damit kann das LLM beim aktiven Projekt (P197 `X-Active-Project-Id`-Header) auf Inhalte aus den Projektdateien zugreifen, ohne dass projekt-spezifische Chunks den globalen Memory-Index verschmutzen.
+
+Architektur-Entscheidung: **Pure-Numpy-Linearscan statt FAISS.** Per-Projekt-Indizes sind klein (typisch 10–2000 Chunks). Ein `argpartition` auf einem `(N, 384)`-Array ist auf der Größenordnung schneller als FAISS-Setup-Overhead und macht Tests dependency-frei (kein faiss-Mock nötig). Persistenz als `vectors.npy` (float32) + `meta.json` (Liste, gleiche Reihenfolge). Atomare Writes via `tempfile.mkstemp` + `os.replace`. Eine FAISS-Migration ist trivial nachrüstbar, falls Projekte signifikant >10k Chunks bekommen — aber das ist heute nicht der Bottleneck.
+
+Embedder: **MiniLM-L6-v2 (384 dim)** als Default, lazy-loaded — kompatibel mit dem Legacy-Globalpfad und ohne sprach-spezifisches Setup. Tests monkeypatchen `_embed_text` mit einem Hash-basierten 8-dim-Pseudo-Embedder; der echte SentenceTransformer wird in Unit-Tests nie geladen. Wenn der globale Index irgendwann komplett auf Dual umsteigt, kann man den Per-Projekt-Pfad mit demselben Modell betreiben — das ist eine reine Konfig-Änderung im Wrapper.
+
+Chunker-Reuse: Code-Files (.py/.js/.ts/.html/.css/.json/.yaml/.sql) gehen durch den existierenden `code_chunker.chunk_code` (P122 — AST/Regex-basiert). Prosa (.md/.txt/Default) durch einen neuen lokalen Para-Splitter mit weichen Absatz-Grenzen (max 1500 Zeichen, snap an Doppel-Newline, Sentence-Split-Fallback für überlange Absätze). Bei Python-SyntaxError im Code-Pfad: Fallback auf Prose, damit kaputte Dateien trotzdem indexiert werden.
+
+Idempotenz: Pro `file_id` höchstens ein Chunk-Set im Index. Beim Re-Index wird der alte Block für die file_id zuerst entfernt — gleicher `sha256` ergibt funktional dasselbe Ergebnis (Hash-Embedder ist deterministisch), anderer `sha256` ersetzt den alten Block. Das vermeidet Doubletten beim Re-Upload mit gleichem `relative_path`.
+
+Trigger-Punkte: (a) `upload_project_file_endpoint` NACH `register_file` — neuer File wandert direkt in den Index. (b) `materialize_template` ruft am Ende `index_project_file` für jede neu angelegte Skelett-Datei — Template-Inhalte sind sofort retrievbar. (c) `delete_project_file_endpoint` ruft `remove_file_from_index` NACH dem DB-Delete — keine stale Treffer mehr. (d) `delete_project_endpoint` löscht den ganzen `_rag/`-Ordner. Alle Trigger sind Best-Effort: Indexing-Fehler brechen den Hauptpfad NICHT ab; der Eintrag steht in der DB, der Index lässt sich später nachziehen.
+
+Wirkung im Chat: Nach P197 (Persona-Merge), nach P184 (`_wrap_persona`), nach P185 (Runtime-Info), nach P118a (Decision-Box) und nach P190 (Prosodie), aber VOR `messages.insert(0, system)`. Der Block beginnt mit `[PROJEKT-RAG — Kontext aus Projektdateien]` als eindeutigem Marker, gefolgt von einer kurzen Anweisung an das LLM und Top-K Hits in Markdown-Sektionen pro File. Best-Effort: jeder Fehler (Embedder fehlt, Index kaputt) → kein Block, Chat läuft normal weiter. Logging-Tag `[RAG-199]` mit `project_id`/`slug`/`chunks_used`. Pro Chat-Request höchstens ein Embed-Call (User-Query) + ein Linearscan über den Projekt-Index — Latenz ~10ms typisch.
+
+Feature-Flags: `ProjectsConfig.rag_enabled: bool = True` (kann via config.yaml ausgeschaltet werden, nützlich für Tests/Setups ohne `sentence-transformers`). `ProjectsConfig.rag_top_k: int = 5` (max Anzahl Chunks pro Query, vom Chat-Endpoint genutzt). `ProjectsConfig.rag_max_file_bytes: int = 5 * 1024 * 1024` (5 MB — drüber: skip beim Indexen, weil's typisch Bilder/Archive sind).
+
+Defensive Behaviors: leere Datei → skip mit `reason="empty"`, binäre Datei (UTF-8-Decode-Fehler) → skip mit `reason="binary"`, Datei zu groß → skip mit `reason="too_large"`, Bytes nicht im Storage → skip mit `reason="bytes_missing"`, Embed-Fehler → skip mit `reason="embed_failed"`, Embedder-Dim-Wechsel zwischen Sessions → Index wird komplett neu aufgebaut (Dim-Mismatch im `top_k_indices` liefert leere Ergebnisliste statt Crash). Inkonsistenter Index (nur eine der zwei Dateien existiert) → leere Basis, der nächste `index_project_file`-Call baut sauber auf.
+
+- **Neuer Helper:** [`zerberus/core/projects_rag.py`](zerberus/core/projects_rag.py) — Pure-Functions `_split_prose`, `chunk_file_content`, `top_k_indices`, `format_rag_block`. File-I/O `load_index`, `save_index`, `remove_project_index`, `index_paths_for`. Embedder-Wrapper `_embed_text` (lazy MiniLM-L6-v2). Async `index_project_file`, `remove_file_from_index`, `query_project_rag`. Konstanten `RAG_SUBDIR`, `VECTORS_FILENAME`, `META_FILENAME`, `PROJECT_RAG_BLOCK_MARKER`, `DEFAULT_EMBED_MODEL`, `DEFAULT_EMBED_DIM`.
+- **Verdrahtung Hel:** [`hel.py::upload_project_file_endpoint`](zerberus/app/routers/hel.py) ruft NACH `register_file` `await projects_rag.index_project_file(project_id, file_id, base)` auf — Response erweitert um `rag: {chunks, skipped, reason}`. [`hel.py::delete_project_file_endpoint`](zerberus/app/routers/hel.py) ruft `remove_file_from_index` — Response erweitert um `rag_chunks_removed`. [`hel.py::delete_project_endpoint`](zerberus/app/routers/hel.py) merkt den Slug VOR dem Delete und ruft `remove_project_index` danach.
+- **Verdrahtung Materialize:** [`projects_template.py::materialize_template`](zerberus/core/projects_template.py) ruft am Ende JEDES erfolgreichen `register_file` `await projects_rag.index_project_file(project_id, registered_id, base_dir)` auf — frisch materialisierte Skelett-Files sind sofort im Index.
+- **Verdrahtung Chat:** [`legacy.py::chat_completions`](zerberus/app/routers/legacy.py) — nach P190 (Prosodie), VOR `messages.insert(0, system)`: wenn `active_project_id` + `project_slug` + `last_user_msg` + `rag_enabled`, dann `query_project_rag` und `format_rag_block` an den `sys_prompt` anhängen.
+- **Feature-Flags:** `ProjectsConfig.rag_enabled: bool = True`, `rag_top_k: int = 5`, `rag_max_file_bytes: int = 5 * 1024 * 1024` — alle Defaults im Pydantic-Modell (config.yaml gitignored).
+- **Logging:** Neuer `[RAG-199]`-Tag mit `slug`/`file_id`/`path`/`chunks`/`total` beim Indexen, `chunks_used` beim Chat-Query, `chunks_removed` beim Delete. Inkonsistenter/kaputter Index → WARN; Embed/Query-Fehler → WARN mit Exception-Text.
+- **Tests:** 46 neue Tests in [`test_projects_rag.py`](zerberus/tests/test_projects_rag.py) — 5 Prose-Splitter-Edge-Cases, 5 Chunk-File-Cases (Code/Markdown/Unknown-Extension/SyntaxError-Fallback/Empty), 5 Top-K-Cases (leer/k=0/sortiert/cap-at-size/Dim-Mismatch), 4 Save-Load-Roundtrip + Inconsistent + Corrupted, 2 Remove-Index, 7 Index-File-Cases (Markdown/Idempotent/Empty/Binary/Too-Large/Bytes-Missing/Rag-Disabled), 2 Remove-File + Drop-Empty-Index, 4 Query-Cases (Hit/Empty-Query/Missing-Project/Missing-Index), 2 Format-Block, 3 End-to-End via Upload/Delete-File/Delete-Project, 1 Materialize-Indexes-Templates, 6 Source-Audit. `fake_embedder`-Fixture mit Hash-basiertem 8-dim-Pseudo-Embedder verhindert das Laden des echten SentenceTransformer in Unit-Tests.
+- **Teststand:** 1487 → **1533 passed** (+46), 4 xfailed (pre-existing), 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — bekannte Schulden).
+- **Phase 5a Ziel #3:** ✅ Projekte haben eigenes Wissen. Damit sind die Ziele #1 (Backend P194 + UI P195), #2 (Templates P198) und #3 (RAG-Index) durch. Decision 3 (Persona-Merge-Layer) seit P197 aktiv. Datei-Upload aus Hel-UI (P196) seit dem auch indexiert. Nächste sinnvolle Patches: #5 (Code-Execution P200) oder #4 abschließen via Nala-Tab "Projekte" (P201).
 
 **Patch 198** — Phase 5a #2: Template-Generierung beim Anlegen (2026-05-02)
 

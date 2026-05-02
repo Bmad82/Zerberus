@@ -3905,9 +3905,21 @@ async def unarchive_project_endpoint(project_id: int):
 async def delete_project_endpoint(project_id: int):
     """Harte Loeschung — kaskadiert ueber project_files. Nicht reversibel."""
     from zerberus.core import projects_repo
+    # Patch 199 (Phase 5a #3): Slug VOR dem Delete merken, damit wir den
+    # RAG-Index-Ordner danach gezielt entfernen koennen (ohne Slug kein Pfad).
+    project_pre = await projects_repo.get_project(project_id)
     deleted = await projects_repo.delete_project(project_id)
     if not deleted:
         raise HTTPException(404, "Projekt nicht gefunden")
+    if project_pre and get_settings().projects.rag_enabled:
+        try:
+            from zerberus.core import projects_rag
+
+            projects_rag.remove_project_index(project_pre["slug"], _projects_storage_base())
+        except Exception as rag_err:
+            logger.exception(
+                f"[RAG-199] remove_project_index failed slug={project_pre['slug']}: {rag_err}"
+            )
     return {"status": "ok"}
 
 
@@ -4042,7 +4054,28 @@ async def upload_project_file_endpoint(project_id: int, file: UploadFile = File(
             raise HTTPException(409, f"Datei mit Pfad '{relative_path}' existiert bereits")
         raise
 
-    return {"status": "ok", "file": registered}
+    # Patch 199 (Phase 5a #3): Datei in den Projekt-RAG-Index aufnehmen.
+    # Best-Effort: Indexing-Fehler brechen den Upload nicht ab — die Datei
+    # ist in der DB + im Storage, nur der Index-Eintrag fehlt. Kann via
+    # Re-Upload oder kuenftigem Reindex-CLI nachgezogen werden.
+    rag_status: dict = {"chunks": 0, "skipped": True, "reason": "rag_disabled"}
+    if settings.projects.rag_enabled:
+        try:
+            from zerberus.core import projects_rag
+
+            rag_status = await projects_rag.index_project_file(
+                project_id=project_id,
+                file_id=registered["id"],
+                base_dir=base,
+            )
+        except Exception as rag_err:
+            logger.exception(
+                f"[RAG-199] index_project_file failed slug={project['slug']} "
+                f"file_id={registered['id']}: {rag_err}"
+            )
+            rag_status = {"chunks": 0, "skipped": True, "reason": "exception"}
+
+    return {"status": "ok", "file": registered, "rag": rag_status}
 
 
 @router.delete("/admin/projects/{project_id}/files/{file_id}")
@@ -4068,7 +4101,32 @@ async def delete_project_file_endpoint(project_id: int, file_id: int):
         base = _projects_storage_base()
         _cleanup_storage_path(Path(file_meta["storage_path"]), base)
 
-    return {"status": "ok", "bytes_removed": other_refs == 0}
+    # Patch 199 (Phase 5a #3): Index-Eintraege fuer diese Datei rauswerfen,
+    # damit der RAG-Block im Chat keinen "stale"-Treffer liefert. Best-
+    # Effort: Fehler werden geloggt, aber der Delete-Status bleibt 200 —
+    # der DB-Eintrag ist schon weg.
+    rag_removed = 0
+    settings = get_settings()
+    if settings.projects.rag_enabled:
+        try:
+            from zerberus.core import projects_rag
+
+            rag_removed = await projects_rag.remove_file_from_index(
+                project_id=project_id,
+                file_id=file_id,
+                base_dir=_projects_storage_base(),
+            )
+        except Exception as rag_err:
+            logger.exception(
+                f"[RAG-199] remove_file_from_index failed project_id={project_id} "
+                f"file_id={file_id}: {rag_err}"
+            )
+
+    return {
+        "status": "ok",
+        "bytes_removed": other_refs == 0,
+        "rag_chunks_removed": rag_removed,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
