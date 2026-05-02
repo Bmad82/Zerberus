@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P203c — Sandbox-Workspace-Mount + execute_in_workspace (Phase 5a #5 Zwischenschritt)
 **Tests:** 1705 passed (+20), 4 xfailed (pre-existing), 0 neue Failures
-**Commit:** _wird beim Push nachgetragen_
-**Repos synchron:** _wird beim Push nachgetragen_
+**Commit:** 8307f88 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
