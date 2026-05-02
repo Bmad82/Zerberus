@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P201 — Phase 5a #4 komplett abgeschlossen: Nala-Tab "Projekte" + Header-Setter
 **Tests:** 1594 passed (+22), 4 xfailed (pre-existing), 2 pre-existing Failures (unrelated)
-**Commit:** _wird unten nach dem Push nachgetragen_
-**Repos synchron:** _wird unten nach `verify_sync.ps1` nachgetragen_
+**Commit:** f0a586a — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
