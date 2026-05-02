@@ -4,8 +4,8 @@
 **Datum:** 2026-05-03
 **Letzter Patch:** P203d-3 — UI-Render im Nala-Frontend fuer Sandbox-Code-Execution (Phase 5a Ziel #5 ABGESCHLOSSEN)
 **Tests:** 1797 passed (+30 neue P203d-3 aus 1767 baseline), 4 xfailed (pre-existing), 3 failed (alle pre-existing — `edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info.test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`)
-**Commit:** _wird vom Coda-Push nachgetragen_
-**Repos synchron:** _wird vom Coda-Push nachgetragen_
+**Commit:** 8243a37 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude — alle drei gepusht (Ratatoskr `cfc1565`, Claude `6613d83`, 0 unpushed Commits in allen drei). `verify_sync.ps1` meldet Zerberus working-tree dirty: `system_prompt_chris.json` wurde von Hel/Persona-Editor live geaendert (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste). Die Datei ist NICHT Teil von P203d-3 und bleibt unangetastet. Naechster Coda kann sie ggf. via `git checkout system_prompt_chris.json` zuruecksetzen oder via `git rm --cached` + `.gitignore` aus dem Tracking nehmen (analog `.gitignore data/projects/` aus dem letzten Mini-Cleanup `3284760`).
 
 ---
 
