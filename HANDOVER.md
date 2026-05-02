@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P204 — Prosodie-Kontext im LLM (Phase 5a #17 abgeschlossen)
 **Tests:** 1685 passed (+40), 4 xfailed (pre-existing), 2 failed (pre-existing aus Schuldenliste: edge-tts + dual-rag)
-**Commit:** (folgt nach Push)
-**Repos synchron:** (folgt nach sync_repos.ps1 + verify_sync.ps1)
+**Commit:** ab4a426 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
