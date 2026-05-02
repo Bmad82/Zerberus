@@ -5291,5 +5291,78 @@ Teststand 1431 → **1464 passed** (+33). 4 xfailed (pre-existing). 2 pre-existi
 
 ---
 
-*Stand: 2026-05-02, Patch 197 — Phase 5a Decision 3 aktiviert (Persona-Merge-Layer im LLM-Call). 1464 passed, 0 neue Failures.*
+## Patch 198 — Phase 5a #2: Template-Generierung beim Anlegen (2026-05-02)
+
+### Warum
+Phase-5a-Ziel #2 ("Projekte haben Struktur") war seit P194 offen. Ein neu angelegtes Projekt startete leer — der User musste selbst eine README und eine Projekt-Bibel hochladen, bevor das LLM überhaupt etwas Sinnvolles zu lesen hatte. Beim Wechsel zwischen mehreren Projekten ist das ein massiver Reibungsverlust: jedes Mal die gleichen Dateien neu erfinden. P198 generiert beim Anlegen eine Mindest-Skelett-Struktur, die das LLM und der User direkt nutzen können.
+
+### Was P198 macht
+Ein neuer Helper `zerberus/core/projects_template.py` mit Pure-Function-Render-Schicht und async Materialisierungs-Schicht, eine Verdrahtung in `hel.py::create_project_endpoint` (NACH `projects_repo.create_project()`, mit best-effort Try/Except-Block), ein neues Feature-Flag `ProjectsConfig.auto_template: bool = True`, INFO-Logging-Tag `[TEMPLATE-198]`, 23 neue Tests.
+
+Zwei Skelett-Files pro Projekt:
+1. **`ZERBERUS_<SLUG>.md`** — Projekt-Bibel (analog zu `ZERBERUS_MARATHON_WORKFLOW.md`, das User-bekannte Format) mit Sektionen "Ziel", "Stack", "Offene Entscheidungen", "Dateien", "Letzter Stand". Header rendert Project-Daten (Name, Slug, Anlegedatum) ein. Description landet im "Ziel"-Block.
+2. **`README.md`** — kurze Prosa mit Name + Description + Slug-Hinweis. Default-Stub, der User überschreibt ihn typisch sofort mit echter README.
+
+### Architektur-Entscheidungen
+
+**Templates als reguläre `project_files`-Einträge im SHA-Storage.** Bytes liegen unter `<projects.data_dir>/projects/<slug>/<sha[:2]>/<sha>` — gleiche Konvention wie P196-Uploads. DB-Eintrag in `project_files` mit lesbarem `relative_path`. Dadurch erscheinen Templates nahtlos in der Hel-Datei-Liste (`GET /hel/admin/projects/{id}/files`), sind im RAG-Index (P199) indexierbar und in der Code-Execution-Pipeline (P200) sichtbar — ohne Sonderpfad. Alternative wäre ein separater `_template/`-Pfad gewesen, hätte aber zwei Persistenz-Schichten und Drift-Risiko gegen User-Files erzeugt.
+
+**Pure-Python-String-Templates statt Jinja.** Bedarf ist trivial (zwei Files mit drei Variablen: Name, Slug, Description, plus Anlegedatum). Jinja-Dependency rechtfertigt sich nicht — Zerberus hat es nicht im Stack, der Bedarf rechtfertigt keinen neuen. Render-Funktionen sind synchron + I/O-frei → unit-bar ohne `tmp_db`. Deterministisch via `now`-Parameter (kein `datetime.utcnow()`-Drift in Tests, der Tests bei Tag-Wechsel kaputt macht).
+
+**Idempotenz via Existenz-Check vor Schreiben.** `materialize_template` ruft zuerst `list_files(project_id)` ab, dann pro Template-File `if rel in existing_paths: skip`. Das schützt User-Inhalte: Wenn der User in einer früheren Session schon eine eigene README hochgeladen hat, wird sie NICHT überschrieben — nur die fehlende Bibel kommt neu dazu. Helper liefert die Liste der TATSÄCHLICH neu angelegten Files zurück (leer, wenn alles existiert). UNIQUE-Constraint `(project_id, relative_path)` aus P194 wäre der zweite Fallback, aber explizite Prüfung ist klarer und liefert keine `IntegrityError`-Exception.
+
+**Best-Effort-Verdrahtung im Endpoint.** Wenn `materialize_template` crasht (Disk-Full, DB-Lock, korrupter Storage), bricht das Anlegen des Projekts NICHT ab. `try/except Exception` mit `logger.exception` und leerem `template_files`-Feld in der Response. Begründung: Das Projekt ist bereits in der DB, der User hat eine ID, kann manuell Files hochladen — Templates lassen sich notfalls per Hand oder via Re-Migration nachgenerieren. Crash-Path mit Source-Audit-Test verifiziert (`monkeypatch.setattr(projects_template, "materialize_template", boom)` → `res["status"] == "ok"` + `listing["count"] == 1`).
+
+**Feature-Flag in der Pydantic-Settings-Klasse statt If-Statement.** `ProjectsConfig.auto_template: bool = True` — Default-Wert IM Modell, weil `config.yaml` gitignored (sonst fehlt der Default nach `git clone`). Tests können den Flag pro Test umstellen, Migrations-Tools können ihn global abschalten (`auto_template: false` in `config.yaml`). Bestehende File-Count-Tests, die auf `count == N` prüfen, brechen bei automatischer Generierung — Lösung: `disable_auto_template`-Autouse-Fixture in `test_projects_endpoints.py` und `test_projects_files_upload.py` schaltet das Flag global ab. Neue Template-Tests aktivieren es explizit.
+
+**Helper-Modul ohne FastAPI-Import.** `_write_atomic` ist eine lokale Kopie aus `hel._store_uploaded_bytes` (statt Import) — der Template-Helper soll auch ohne FastAPI-Stack laufen können (CLI-Migrations, zukünftige Hintergrund-Jobs). Vorteil: Wer auch immer das Modul später braucht, lädt nicht den ganzen Web-Stack. Duplizierung von ~15 Zeilen ist akzeptabel.
+
+**Git-Init bewusst weggelassen.** Im HANDOVER zu P198 stand "Optional Git-Init", aber: SHA-Storage ist kein Working-Tree. Bytes liegen unter Hash-Pfaden (`<sha[:2]>/<sha>`), nicht unter `relative_path`. `git init` plus `git add ZERBERUS_*.md` würde versuchen, Hash-Pfade zu tracken, was unsinnig ist. Ein echtes `_workspace/`-Layout (mit Files unter ihren `relative_path`s) ergibt erst Sinn, wenn die Code-Execution-Pipeline (P200, Phase 5a #5) gebaut wird — dort wird ein Workspace-Mount gebraucht, in dem Code laufen kann. Bis dahin: kein halbgares Git-Init, das später wieder umgebogen werden müsste. Bewusste Auslassung in HANDOVER + lessons + dieser Doku dokumentiert.
+
+### Logging
+INFO-Logs auf `[TEMPLATE-198]`-Level beim Erfolg + Skip:
+```
+[TEMPLATE-198] created slug=ai-research path=ZERBERUS_AI-RESEARCH.md size=412 sha=a3f1c8d2
+[TEMPLATE-198] created slug=ai-research path=README.md size=187 sha=b09f2e44
+[TEMPLATE-198] skip slug=ai-research path=README.md (already exists)
+```
+
+Bei Crash WARNING via `logger.exception` (volle Exception-Trace im Log):
+```
+[TEMPLATE-198] materialize failed for slug=ai-research: <exception text>
+```
+
+Bei Bug-Reports zu fehlenden Templates: erst nach `[TEMPLATE-198]` greppen, dann entscheiden, ob Materialize gar nicht lief (Flag aus, Endpoint-Crash davor) oder Template-spezifisch fehlgeschlagen ist (Disk-Full, DB-Lock).
+
+### Tests
+23 neue Tests in [`zerberus/tests/test_projects_template.py`](../zerberus/tests/test_projects_template.py), verteilt auf vier Test-Klassen:
+
+- **`TestRenderProjectBible`** — 6 Pure-Function-Tests: Slug-Uppercase im Filename, Anlegedatum eingerendert, alle fünf Sektion-Header vorhanden, Description landet im Ziel-Block, leere Description bekommt Placeholder, fehlende Project-Keys nutzen Defaults (kein KeyError).
+- **`TestRenderReadme`** — 2 Tests: Name + Slug + Description erscheinen, leere Description bekommt Placeholder.
+- **`TestTemplateFilesFor`** — 3 Komposit-Tests: liefert genau zwei Files mit korrekten Pfaden, jeder File hat Content + Mime, Slug ist im Bibel-Filename uppercased.
+- **`TestMaterializeTemplate`** — 6 async DB+Storage-Tests via `tmp_db`-Fixture und `tmp_path`: zwei Files werden erzeugt, Bytes landen im SHA-Storage mit korrekter Pfadkonvention, Idempotenz (zweiter Call gibt leere Liste zurück, keine Doubletten), User-Content wird NICHT überschrieben (User legt eigene README an, Materialize fügt nur Bibel hinzu), Dry-Run schreibt nichts ins Storage und nichts in DB, Content rendert die echten Project-Daten ein.
+- **`TestCreateProjectEndpointMaterializes`** — 3 End-to-End-Tests: Endpoint erzeugt Templates wenn Flag an (Files in Datei-Liste sichtbar), Endpoint überspringt wenn Flag aus, Crash im Materialize bricht Projekt-Anlegen NICHT ab.
+- **`TestSourceAudit`** — 3 Source-Inspection-Tests: `hel.create_project_endpoint` importiert `projects_template` und ruft `materialize_template`, der Code prüft das `auto_template`-Flag, Konstanten (`PROJECT_BIBLE_FILENAME_TEMPLATE` mit `{slug_upper}`-Placeholder, `README_FILENAME = "README.md"`) sind exportiert.
+
+Teststand 1464 → **1487 passed** (+23). 4 xfailed (pre-existing). 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts) unverändert.
+
+### Was NICHT in P198 passiert ist
+- **Git-Init** — siehe Architektur-Begründung. Kommt mit P200 (Code-Execution + Workspace-Layout).
+- **Hel-UI-Checkbox "Template generieren"** — der HANDOVER schlug das optional vor, aber: Default `True` mit Endpoint-Response-Feld `template_files` (sichtbar im Browser-Devtools) reicht im ersten Schritt. Wenn Chris später bewusst leere Projekte will, kann er das Flag in `config.yaml` setzen oder den Test-Pfad nutzen. UI-Checkbox = unnötiger UI-Lärm für einen Edge-Case.
+- **Per-Projekt-Template-Override** — alle Projekte bekommen dieselben zwei Templates. Wenn Chris später projekt-typ-spezifische Templates will (z.B. "Python-Projekt mit `pyproject.toml`-Stub"), kann ein neuer `template_set: str` Feld an `Project` und ein Switch in `template_files_for` das nachrüsten. Niedrige Priorität, kein konkreter Bedarf gesehen.
+- **Storage-GC für verwaiste SHAs nach Projekt-Delete** — aus P196/P197 weiterhin offen. Templates fügen jetzt SHAs hinzu, aber das Delete-Verhalten ist gleich (Bytes bleiben liegen, wenn referenziert, sonst gelöscht). Low-prio bis Storage-Volumen relevant.
+
+### Lessons (in lessons.md eingetragen, neue Sektion "Template-Generierung beim Anlegen (P198)")
+- Templates als reguläre `project_files`-Einträge im SHA-Storage (kein Sonderpfad).
+- Pure-Python-Templates statt Jinja, wenn Bedarf trivial ist.
+- Idempotenz via Existenz-Check vor Schreiben (User-Content-Schutz).
+- Best-Effort-Verdrahtung im Endpoint (Crash bricht Anlegen nicht ab).
+- Feature-Flag in Pydantic-Settings (Default `True`, Default IM Modell weil `config.yaml` gitignored).
+- Bestehende File-Count-Tests via Autouse-Fixture neutralisieren statt aufzuweichen.
+- Helper-Modul ohne FastAPI-Import (Atomic Write als lokale Kopie).
+- Git-Init NICHT halbgar nachrüsten (SHA-Storage ist kein Working-Tree).
+
+---
+
+*Stand: 2026-05-02, Patch 198 — Phase 5a Ziel #2 abgeschlossen (Templates beim Anlegen). 1487 passed, 0 neue Failures.*
 

@@ -1,7 +1,7 @@
 # ZERBERUS_MARATHON_WORKFLOW.md
 
 **Phase:** 5a — Nala-Projekte
-**Letzter Patch:** P197 | **Tests:** 1464 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
+**Letzter Patch:** P198 | **Tests:** 1487 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
 
 ---
 
@@ -65,7 +65,7 @@ Die folgende Liste beschreibt WAS, nicht WIE. Die Architektur ist deine Sache.
 | # | Ziel | Kontext | Braucht | Status |
 |---|------|---------|---------|--------|
 | 1 | **Projekte existieren als Entität** — Persistenz, CRUD, sichtbar in Hel | Fundament für alles | — | ✅ (Backend P194, Hel-UI P195) |
-| 2 | **Projekte haben Struktur** — Template-Dateien, Ordner, optional Git | Damit Projekte nicht leer starten | #1 | ⬜ (P198 als nächstes) |
+| 2 | **Projekte haben Struktur** — Template-Dateien, Ordner, optional Git | Damit Projekte nicht leer starten | #1 | ✅ (Templates P198 — Git-Init verschoben auf P200/Workspace) |
 | 3 | **Projekte haben eigenes Wissen** — isolierter RAG-Index pro Projekt | Code-LLM braucht Projektkontext | #1 | ⬜ |
 | 4 | **Dateien kommen ins Projekt** — Upload in Nala-Chat, Indexierung | Dateien müssen rein | #1 | 🟡 (Hel-Upload P196 ✅, Nala-Upload + RAG-Indexierung offen → P199) |
 | 5 | **Code wird ausgeführt** — vom Chat zur Docker-Sandbox und zurück | Kernfeature | #1, #3 | ⬜ |
@@ -101,6 +101,7 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 **Projekte-UI (P195):** Hel-Tab `📁 Projekte` mit Liste/Form/Persona-Overlay-Editor ✅
 **Projekt-Datei-Upload (P196):** `POST /hel/admin/projects/{id}/files` (Multipart) + `DELETE /hel/admin/projects/{id}/files/{file_id}` mit SHA-Dedup-Schutz, Extension-Blacklist, 50 MB Limit, atomic write via `tempfile + os.replace`, Drop-Zone-UI mit XHR-Progress + Lösch-Button ✅
 **Persona-Merge-Layer (P197):** Header `X-Active-Project-Id: <int>` am `POST /v1/chat/completions` aktiviert das Projekt-Overlay. `zerberus/core/persona_merge.py` mit `merge_persona` (Pure-Function), `read_active_project_id` (Header-Reader mit Lowercase-Fallback), `resolve_project_overlay` (async DB-Schicht). Merge-Reihenfolge System → User → Projekt-Overlay (Decision 3, 2026-05-01). Verdrahtung VOR `_wrap_persona`-Marker, damit AKTIVE-PERSONA-Wrap auch das Overlay umschließt. `[PERSONA-197]`-Logging-Tag. Telegram bewusst ausgeklammert. ✅
+**Projekt-Templates (P198):** `create_project_endpoint` materialisiert `ZERBERUS_<SLUG>.md` (Projekt-Bibel, 5 Sektionen) + `README.md` (kurze Prosa) beim Anlegen. `zerberus/core/projects_template.py` mit Pure-Function-Render-Schicht (`render_project_bible`/`render_readme`/`template_files_for`) und async Materialisierungs-Schicht (`materialize_template`). SHA-Storage wie Uploads, DB-Eintrag in `project_files` mit lesbarem `relative_path`. Idempotenz via Existenz-Check (User-Inhalte werden NICHT überschrieben). Best-Effort: Crash bricht Anlegen nicht ab. Feature-Flag `ProjectsConfig.auto_template: bool = True`. Git-Init bewusst weggelassen (kommt mit Workspace-Layout in P200). `[TEMPLATE-198]`-Logging-Tag. ✅
 
 ---
 
@@ -129,6 +130,9 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 | 16 | iPhone: Drop-Zone und Datei-Liste auf 390x844-Viewport — Drop-Zone ist tap-bar (öffnet File-Picker), Lösch-Button hat 36px+ Touch-Target | P196 | ⬜ | — |
 | 17 | git push + sync_repos.ps1 für P197 | P197 | ⬜ | — |
 | 18 | Header-Test: Projekt mit Persona-Overlay anlegen (Hel-UI), dann `curl -H "Authorization: Bearer <token>" -H "X-Active-Project-Id: <id>" -X POST -d '{"messages":[{"role":"user","content":"hi"}]}' .../v1/chat/completions` → Server-Log nach `[PERSONA-197]` greppen, prüfen dass `project_block_len > 0`. LLM-Antwort sollte den Tonfall aus `tone_hints` widerspiegeln (z.B. wenn `tone_hints=["foermlich"]` → Sie statt du). Optional Kontroll-Test ohne Header → `[PERSONA-197]`-Zeile fehlt im Log | P197 | ⬜ | — |
+| 19 | git push + sync_repos.ps1 für P198 | P198 | ⬜ | — |
+| 20 | Hel-UI: Projekt anlegen → Detail-Card öffnen → Datei-Liste zeigt automatisch `ZERBERUS_<SLUG>.md` + `README.md`. Beide Files anklicken/herunterladen → Bibel hat alle 5 Sektionen mit eingerendertem Slug/Name/Datum, README hat Name + Description. Server-Log nach `[TEMPLATE-198]` greppen → zwei `created`-Zeilen | P198 | ⬜ | — |
+| 21 | Idempotenz-Check: Im Storage-Ordner `data/projects/<slug>/` sind die Bibel-Bytes vorhanden. Manueller Re-Run: in `python -c "import asyncio; from zerberus.core.projects_template import materialize_template; from zerberus.core.projects_repo import get_project; import asyncio; ..."` (oder kurzer CLI-Aufruf) — `materialize_template` ein zweites Mal aufrufen → Rückgabe-Liste ist leer, keine Doubletten in `project_files`-Tabelle. Optional: README löschen, Materialize nochmal → README kommt zurück, Bibel bleibt unverändert | P198 | ⬜ | — |
 
 ---
 

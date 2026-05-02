@@ -3814,7 +3814,7 @@ async def list_projects_endpoint(include_archived: bool = False):
 
 @router.post("/admin/projects")
 async def create_project_endpoint(request: Request):
-    from zerberus.core import projects_repo
+    from zerberus.core import projects_repo, projects_template
     data = await request.json()
     name = str(data.get("name", "")).strip()
     if not name:
@@ -3833,7 +3833,22 @@ async def create_project_endpoint(request: Request):
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"status": "ok", "project": project}
+
+    # Patch 198: Skelett-Files (ZERBERUS_<SLUG>.md + README.md) im Storage
+    # anlegen + als project_files registrieren. Idempotent — vorhandene
+    # Pfade werden nicht ueberschrieben. Best-Effort: Fehler beim
+    # Materialisieren brechen das Anlegen NICHT ab (Projekt-Eintrag steht,
+    # Templates lassen sich notfalls nachgenerieren).
+    settings = get_settings()
+    template_files: list[dict] = []
+    if settings.projects.auto_template:
+        try:
+            template_files = await projects_template.materialize_template(
+                project, _projects_storage_base()
+            )
+        except Exception as e:
+            logger.exception(f"[TEMPLATE-198] materialize failed for slug={project['slug']}: {e}")
+    return {"status": "ok", "project": project, "template_files": template_files}
 
 
 @router.get("/admin/projects/{project_id}")

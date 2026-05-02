@@ -14,6 +14,18 @@
 - Logging-Tag: `[PROJECTS-194]`
 - UI-Tab in Hel folgt in P195 (Backend-Patch bewusst von UI getrennt — Workflow-Regel "lieber 2 saubere Patches als 3 mit halb fertigem dritten")
 
+## Projekt-Templates (P198 — Phase 5a #2)
+- Helper: [`zerberus/core/projects_template.py`](zerberus/core/projects_template.py) — `render_project_bible(project, *, now=None)` + `render_readme(project)` als Pure-Functions (synchron, deterministisch via `now`)|`template_files_for(project, *, now=None)` liefert Liste `[{relative_path, content, mime_type}]`|`materialize_template(project, base_dir, *, dry_run=False, now=None)` als async DB+Storage-Schicht
+- Skelett-Files (zwei pro Projekt): `ZERBERUS_<SLUG>.md` (Projekt-Bibel mit Sektionen "Ziel", "Stack", "Offene Entscheidungen", "Dateien", "Letzter Stand") + `README.md` (kurze Prosa mit Name + Description)|Inhalt rendert Project-Daten ein (Name, Slug, Description, Anlegedatum)
+- Storage: Bytes liegen unter `<projects.data_dir>/projects/<slug>/<sha[:2]>/<sha>` (gleiche Konvention wie P196-Uploads)|DB-Eintrag in `project_files` mit lesbarem `relative_path`|Templates landen damit nahtlos in der Hel-Datei-Liste, im RAG-Index (P199) und in der Code-Execution-Pipeline (P200)
+- Idempotenz: existierende `relative_path`-Eintraege werden NICHT ueberschrieben (User-Inhalte bleiben unangetastet)|Helper liefert nur die TATSAECHLICH neu angelegten Files zurueck
+- Verdrahtung in [`hel.py::create_project_endpoint`](zerberus/app/routers/hel.py): NACH `projects_repo.create_project()`, mit `await materialize_template(project, _projects_storage_base())`|best-effort: Fehler beim Materialisieren brechen das Anlegen NICHT ab (Projekt-Eintrag steht, Templates lassen sich notfalls nachgenerieren)|Response-Feld `template_files` listet die neu angelegten Eintraege
+- Feature-Flag: `ProjectsConfig.auto_template: bool = True` (Default `True`, kann fuer Migrations-Tests/Bulk-Imports abgeschaltet werden)|Flag-Default in `config.py` weil `config.yaml` gitignored
+- Atomic Write: `_write_atomic()` (lokale Kopie aus `hel._store_uploaded_bytes` — der Template-Helper soll auch ohne FastAPI-Stack laufen koennen, z.B. CLI-Migrations)
+- Git-Init bewusst weggelassen: SHA-Storage ist kein Working-Tree (Bytes liegen unter Hash-Pfaden, nicht unter `relative_path`)|`git init` ergibt erst Sinn mit einem echten `_workspace/`-Layout, das mit der Code-Execution-Pipeline (P200) kommt|kein halbgares Git-Init
+- Tests: 23 in [`test_projects_template.py`](zerberus/tests/test_projects_template.py) (6 Pure-Function-Cases, 6 Materialize-Cases inkl. Idempotenz/dry-run/User-Content-Schutz, 3 End-to-End-Cases inkl. Flag-on/off/Crash-Resilienz, 3 Source-Audit-Cases)|`disable_auto_template`-Autouse-Fixture in `test_projects_endpoints.py` + `test_projects_files_upload.py` haelt deren File-Counts stabil
+- Logging-Tag: `[TEMPLATE-198]` zeigt `slug`/`path`/`size`/`sha[:8]` pro neu angelegter Datei + `skip slug=... path=... (already exists)` bei Idempotenz-Skip
+
 ## Sentiment-Triptychon (P192)
 - Modul: [`zerberus/utils/sentiment_display.py`](zerberus/utils/sentiment_display.py) — `bert_emoji()`, `prosody_emoji()`, `consensus_emoji()`, `compute_consensus()`, `build_sentiment_payload()`
 - Drei Kanaele: BERT 📝 (Text-Sentiment), Prosodie 🎙️ (Stimm-Analyse, nur bei Audio), Konsens 🎯 (Fusion)

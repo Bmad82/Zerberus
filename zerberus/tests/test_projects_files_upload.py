@@ -59,6 +59,17 @@ def tmp_storage(monkeypatch, tmp_path):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _disable_auto_template_for_upload_tests(monkeypatch):
+    """Patch 198: Diese Tests pruefen Upload-Verhalten ohne die
+    P198-Template-Files in der Datei-Liste. Flag wird global ausgeschaltet —
+    Template-Tests leben in ``test_projects_template.py``."""
+    from zerberus.core import config as cfg
+
+    s = cfg.get_settings()
+    monkeypatch.setattr(s.projects, "auto_template", False)
+
+
 class _FakeUpload:
     """Duck-Type-Mock fuer ``UploadFile``. Bietet nur das Minimum, das
     der Endpoint braucht (`filename`, `content_type`, `await read()`).

@@ -164,6 +164,10 @@ class ProjectsConfig(BaseModel):
         ".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".scr",
         ".sh", ".ps1", ".vbs", ".jar",
     ]
+    # Patch 198 (Phase 5a #2): Beim Anlegen Skelett-Files generieren
+    # (ZERBERUS_<SLUG>.md + README.md). Kann fuer Migrations-Tests oder
+    # Bulk-Imports abgeschaltet werden.
+    auto_template: bool = True
 
 
 class SandboxConfig(BaseModel):

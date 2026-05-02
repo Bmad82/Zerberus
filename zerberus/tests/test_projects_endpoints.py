@@ -45,6 +45,17 @@ def tmp_db(monkeypatch):
     asyncio.run(engine.dispose())
 
 
+@pytest.fixture(autouse=True)
+def _disable_auto_template_for_endpoint_tests(monkeypatch):
+    """Patch 198: Diese Tests pruefen Project- und File-Counts ohne die
+    P198-Template-Files. Flag wird global ausgeschaltet — neue Template-
+    Tests in ``test_projects_template.py`` aktivieren es selbst."""
+    from zerberus.core import config as cfg
+
+    s = cfg.get_settings()
+    monkeypatch.setattr(s.projects, "auto_template", False)
+
+
 class _FakeRequest:
     def __init__(self, payload: dict):
         self._payload = payload

@@ -1,10 +1,30 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 197 (2026-05-02) – Phase 5a Decision 3: Persona-Merge-Layer aktiviert*
+*Letzte Aktualisierung: Patch 198 (2026-05-02) – Phase 5a Ziel #2: Template-Generierung beim Anlegen*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 198** — Phase 5a #2: Template-Generierung beim Anlegen (2026-05-02)
+
+Schließt Phase-5a-Ziel #2 ("Projekte haben Struktur") ab. Ein neu angelegtes Projekt startete bisher leer — der User mußte selbst eine Struktur hochladen, bevor das LLM überhaupt etwas zu lesen hatte. P198 generiert beim Anlegen zwei Skelett-Dateien: `ZERBERUS_<SLUG>.md` als Projekt-Bibel (analog zu `ZERBERUS_MARATHON_WORKFLOW.md` mit Sektionen "Ziel", "Stack", "Offene Entscheidungen", "Dateien", "Letzter Stand") und ein kurzes `README.md`. Inhalt rendert die Project-Daten ein (Name, Slug, Description, Anlegedatum) — der User hat sofort einen sinnvollen Ausgangspunkt.
+
+Architektur-Entscheidung: Templates landen im SHA-Storage (`data/projects/<slug>/<sha[:2]>/<sha>` — gleiche Konvention wie P196-Uploads), DB-Eintrag in `project_files` mit lesbarem `relative_path`. Damit erscheinen Templates nahtlos in der Hel-Datei-Liste, sind im RAG-Index (P199) indexierbar und in der Code-Execution-Pipeline (P200) sichtbar — ohne Sonderpfad. Pure-Python-String-Templates (kein Jinja, weil das den Stack nicht rechtfertigt). Render-Funktionen sind synchron + I/O-frei und unit-bar; Persistenz liegt separat in der async `materialize_template`.
+
+Idempotenz: Existierende `relative_path`-Einträge werden NICHT überschrieben. Wenn der User in einer früheren Session schon eigene Inhalte angelegt hat, bleiben die unangetastet. Helper liefert nur die TATSÄCHLICH neu angelegten Files zurück — leer, wenn alles schon existiert. Die UNIQUE-Constraint `(project_id, relative_path)` aus P194 wäre der zweite Fallback, aber wir prüfen vorher explizit über `list_files`.
+
+Best-Effort-Verdrahtung: Wenn `materialize_template` crasht (Disk-Full, DB-Lock, was auch immer), bricht das Anlegen NICHT ab. Der Projekt-Eintrag steht, der User sieht eine 200-Antwort, Templates lassen sich notfalls nachgenerieren oder per Hand anlegen. Crash-Path mit Source-Audit-Test verifiziert.
+
+Git-Init bewusst weggelassen: Der SHA-Storage ist kein Working-Tree (Bytes liegen unter Hash-Pfaden, nicht unter `relative_path`). `git init` ergibt erst Sinn mit einem echten `_workspace/`-Layout, das mit der Code-Execution-Pipeline (P200, Phase 5a #5) kommt. Bis dahin: kein halbgares Git-Init, das später wieder umgebogen werden müßte.
+
+- **Neuer Helper:** [`zerberus/core/projects_template.py`](zerberus/core/projects_template.py) — `render_project_bible(project, *, now=None)` + `render_readme(project)` als Pure-Functions, `template_files_for(project, *, now=None)` als Komposit, `materialize_template(project, base_dir, *, dry_run=False, now=None)` als async DB+Storage-Schicht, `_write_atomic()` als lokale Kopie aus `hel._store_uploaded_bytes` (Helper soll auch ohne FastAPI-Stack laufen können). Konstanten `PROJECT_BIBLE_FILENAME_TEMPLATE`, `README_FILENAME` exportiert.
+- **Verdrahtung:** [`hel.py::create_project_endpoint`](zerberus/app/routers/hel.py) ruft NACH `projects_repo.create_project()` `materialize_template(project, _projects_storage_base())` auf; Response-Feld `template_files` listet die neu angelegten Einträge.
+- **Feature-Flag:** `ProjectsConfig.auto_template: bool = True` (Default `True`, Default in `config.py` weil `config.yaml` gitignored). Kann für Migrations-Tests/Bulk-Imports abgeschaltet werden.
+- **Logging:** Neuer `[TEMPLATE-198]`-INFO-Log mit `slug`/`path`/`size`/`sha[:8]` pro neu angelegter Datei + `skip slug=... path=... (already exists)` bei Idempotenz-Skip. Bei Crash WARNING via `logger.exception` mit Slug.
+- **Tests:** 23 neue Tests in [`test_projects_template.py`](zerberus/tests/test_projects_template.py) — 6 Pure-Function-Cases (Slug-Uppercase, Datum, Sektionen, Description-Block, Empty-Description-Placeholder, Missing-Keys-Defaults), 6 Materialize-Cases (Two-Files, SHA-Storage-Pfad, Idempotenz, User-Content-Schutz, Dry-Run-no-side-effect, Content-Render), 3 End-to-End (Flag-on, Flag-off, Crash-Resilienz), 3 Source-Audit (Imports, Flag-Honor, Konstanten). `disable_auto_template`-Autouse-Fixture in `test_projects_endpoints.py` + `test_projects_files_upload.py` hält deren File-Counts stabil.
+- **Teststand:** 1464 → **1487 passed** (+23), 4 xfailed (pre-existing), 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — bekannte Schulden).
+- **Phase 5a Ziel #2:** ✅ Projekte haben Struktur. Damit sind die Ziele #1 (Backend+UI) + #2 (Struktur) abgeschlossen — als nächstes #3 (Projekt-RAG-Index, P199) oder #5 (Code-Execution, P200).
 
 **Patch 197** — Phase 5a Decision 3: Persona-Merge-Layer aktiviert (2026-05-02)
 
