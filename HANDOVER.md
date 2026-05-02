@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P203d-1 — Code-Detection + Sandbox-Roundtrip im Chat-Endpunkt (Phase 5a #5 Backend-Pfad)
 **Tests:** 1720 passed (+19 neue P203d-1 + 4 deselected, weil bestehende Tests in xfailed/skipped umsortiert wurden), 4 xfailed (pre-existing), 3 failed (alle pre-existing — `edge-tts`, `test_rag_dual_switch.test_fallback_logic`, NEU `test_patch185_runtime_info.test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`)
-**Commit:** TODO — wird vom Auto-Push-Workflow nachgetragen
-**Repos synchron:** TODO — wird vom Auto-Push-Workflow nachgetragen
+**Commit:** d1b8ff0 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
