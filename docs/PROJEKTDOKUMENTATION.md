@@ -6032,3 +6032,140 @@ Bei getipptem Text: kein Block, Chat unverändert. Bei deaktiviertem Consent: ke
 
 *Stand: 2026-05-02, Patch 204 — Prosodie-Kontext im LLM (Phase 5a #17 abgeschlossen). 1685 passed (+40), 0 neue Failures, 6 nachgeschärfte Tests in `test_prosody_pipeline.py` (Format-Update).*
 
+## Patch 203c — Sandbox-Workspace-Mount + execute_in_workspace (Phase 5a #5, Zwischenschritt)
+
+**Datum:** 2026-05-02
+
+**Was P203c macht:**
+
+Erweitert die Docker-Sandbox aus P171 um einen kontrollierten Volume-Mount auf den Project-Workspace, den P203a unter `<data_dir>/projects/<slug>/_workspace/` aufgebaut hat. Damit kann ein zukünftiger Code-Generation-Pfad (P203d) generierten Code in der Sandbox laufen lassen, der die echten Projekt-Files unter `/workspace` sieht — read-only per Default, read-write nur explizit. Vorher blockierte P171 Volume-Mounts hart ("Kein Volume-Mount vom Host"), weil der ursprüngliche Use-Case (Huginn-Pipeline) keine Persistenz brauchte und Mount-Source-Validation nicht implementiert war. P203c bricht dieses Verbot kontrolliert auf — mit zwei zusätzlichen Sicherheits-Schichten: Mount-Existence-Validation in `SandboxManager.execute()` und workspace-inside-base_dir-Check in `execute_in_workspace`.
+
+**Architektur-Entscheidungen:**
+
+1. **Read-Only-Default.** `mount_writable=False` ist der konservative Default — der Sandbox-Code kann Files lesen (Source-Trees, Config, Daten), aber das Workspace nicht von innen verändern. P203d-Code-Generation-Pfade müssen `writable=True` ausdrücklich setzen, was dem Caller zwingt sich Gedanken über Sync-Back zu machen (s.u.). Dies passt zur Erfahrung aus dem Industrie-Standard für Container-Mounts: RO ist die Default-Annahme, nicht die Ausnahme.
+2. **Mount-Validation als Early-Reject.** Vor `docker run` prüft `execute()`: `workspace_mount.exists()` UND `workspace_mount.is_dir()`. Bei Fail: `SandboxResult(exit_code=-1, error="...")` ohne docker-Aufruf. Verhindert obskure Docker-Fehlermeldungen ("invalid mount path") und macht die Failure-Mode deterministisch testbar (kein Docker-Daemon-Bedarf für die Test-Suite). Tests prüfen das Failure-Mode mit `tmp_path`-basierten Pfaden.
+3. **Defense-in-Depth gegen Slug-Manipulation.** `execute_in_workspace` validiert `is_inside_workspace(workspace_root, base_dir)` — falls ein entartetes `slug=../etc/passwd` jemals durch den Sanitizer in `projects_repo` rutscht, wird der Aufruf trotzdem abgelehnt (return None). Der Slug-Sanitizer ist die primäre Schutzschicht; der Inside-Check ist Defense-in-Depth (Belt+Suspenders).
+4. **`-v <abs>:/workspace[:ro]` + `--workdir /workspace`.** Mount immer als `/workspace` (fester Pfad im Container), nicht als `/<slug>` o.ä. — damit kann LLM-generierter Code mit einem festen Mental-Modell arbeiten ("ich bin in /workspace, alle Files sind hier"). Pfad-Resolution auf der Host-Seite über `Path.resolve(strict=False)` damit Symlinks / 8.3-Windows-Namen Docker nicht verwirren.
+5. **Convenience-Wrapper liegt in `projects_workspace.py`, nicht in der Sandbox.** Der `SandboxManager` bleibt projekt-agnostisch (kennt keine Slugs, keine `base_dir`-Konvention) — der DB-Lookup + Pfad-Aufbau lebt in der Workspace-Schicht. Damit ist der Sandbox-Manager weiterhin direkt nutzbar für nicht-projekt-gebundene Calls (z.B. Huginn-Code-Snippets im Telegram-Flow).
+6. **Workspace-Anlage on-demand.** `execute_in_workspace` ruft `workspace_root.mkdir(parents=True, exist_ok=True)` vor dem Sandbox-Call. Falls ein Projekt zwar existiert, aber noch keine Files materialisiert wurden (frischer Anlegevorgang), klappt der Aufruf trotzdem. Sonst wäre der Mount-Validation-Path eine Race-Condition.
+
+**Was P203c bewusst NICHT macht:**
+
+- **Kein HitL-Gate.** Phase-5a-Ziel #6 (Mensch-bestätigt-vor-Ausführung) hängt davor, kommt mit P206. P203c läuft direkt durch — RO-Mount + hart-isolierte Sandbox (no-network, read-only-rootfs, no-new-privileges, pids/cpu/memory-limits, Mount nur explizit) halten den Blast-Radius klein. P206 wickelt sich später als zusätzliche Schicht davor.
+- **Kein Tool-Use-LLM-Pfad.** P203d verdrahtet die Chat-Pipeline (Code-Detection im LLM-Output, Sandbox-Roundtrip, Output-Synthese als zweiter LLM-Call, UI-Render mit Code+stdout+stderr-Block).
+- **Kein Sync-After-Write.** Falls jemand `writable=True` ruft und der Sandbox-Code Files erzeugt: P203d muss `await sync_workspace(project_id, base_dir)` hinterher rufen, damit DB + RAG die Änderungen sehen. P203c bietet die Brücke, der Caller die Konsistenz-Logik.
+- **Keine Image-Pull-Logik.** Der Healthcheck aus P171 bleibt unverändert; ist `python:3.12-slim` nicht gepullt, schlägt der Sandbox-Call fehl. Caller muss vorher `manager.healthcheck()` prüfen oder mit dem Fail-Mode umgehen.
+- **Kein Per-Project-Image.** Der Mount ist projekt-spezifisch, das Image bleibt global (`python:3.12-slim` / `node:20-slim`). Falls ein Projekt eigene Dependencies braucht: separates Modell ("Dependencies in requirements.txt + pip-install im Container") oder per Image-Custom (`config.yaml` per-Projekt-Image-Override) — beides außerhalb P203c.
+
+**Verdrahtung:**
+
+```python
+# zerberus/modules/sandbox/manager.py
+async def execute(
+    self,
+    code: str,
+    language: str,
+    timeout: Optional[int] = None,
+    *,
+    workspace_mount: Optional[Path] = None,
+    mount_writable: bool = False,
+) -> Optional[SandboxResult]:
+    ...
+    if workspace_mount is not None:
+        if not workspace_mount.exists():
+            return SandboxResult(..., error=f"workspace_mount existiert nicht: {workspace_mount}")
+        if not workspace_mount.is_dir():
+            return SandboxResult(..., error=f"workspace_mount ist kein Verzeichnis: {workspace_mount}")
+    ...
+
+# In _run_in_container:
+if workspace_mount is not None:
+    host_abs = str(workspace_mount.resolve(strict=False))
+    mount_spec = f"{host_abs}:/workspace"
+    if not mount_writable:
+        mount_spec += ":ro"
+    docker_args.extend(["-v", mount_spec, "--workdir", "/workspace"])
+```
+
+```python
+# zerberus/core/projects_workspace.py
+async def execute_in_workspace(
+    project_id: int, code: str, language: str, base_dir: Path,
+    *, writable: bool = False, timeout: Optional[int] = None,
+) -> Optional[Any]:
+    project = await projects_repo.get_project(project_id)
+    if project is None:
+        return None
+    workspace_root = workspace_root_for(project["slug"], base_dir)
+    if not is_inside_workspace(workspace_root, base_dir):
+        return None  # Defense-in-Depth
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    return await get_sandbox_manager().execute(
+        code=code, language=language, timeout=timeout,
+        workspace_mount=workspace_root, mount_writable=writable,
+    )
+```
+
+**Tests:**
+
+17 in [`test_p203c_sandbox_workspace.py`](zerberus/tests/test_p203c_sandbox_workspace.py):
+
+1. `test_01_no_mount_default_args_unchanged` — ohne Mount: keine `-v` / `--workdir` in den docker-args (Backwards-Compat für Huginn-Pipeline).
+2. `test_02_mount_default_readonly` — mit Mount: `-v <abs>:/workspace:ro` + `--workdir /workspace`.
+3. `test_03_mount_writable_no_ro_suffix` — mit `mount_writable=True`: `-v <abs>:/workspace` (kein `:ro`).
+4. `test_04_mount_nonexistent_returns_error` — Mount existiert nicht → `SandboxResult(exit_code=-1, error="existiert nicht...")`.
+5. `test_05_mount_is_file_returns_error` — Mount ist eine Datei statt Verzeichnis → `error="...kein Verzeichnis..."`.
+6. `test_06_disabled_sandbox_returns_none_even_with_mount` — Sandbox disabled hat Vorrang vor Mount-Validation.
+7. `test_07_blocked_pattern_short_circuits_before_mount` — Blocklist-Pattern hat Vorrang vor Mount-Validation (kein docker-Aufruf bei beidem).
+8. `test_08_execute_in_workspace_unknown_project` — Projekt nicht gefunden → `None`.
+9. `test_09_execute_in_workspace_passes_correct_mount` — Mount-Pfad wird korrekt aus `slug` + `base_dir` gebaut, RO-Default.
+10. `test_10_execute_in_workspace_writable_passthrough` — `writable=True` reicht durch zu `mount_writable`.
+11. `test_11_execute_in_workspace_creates_root_if_missing` — Workspace-Ordner wird angelegt, wenn nicht vorhanden.
+12. `test_12_slug_traversal_rejected` — `slug="../../../../etc"` → `None`, kein docker-Aufruf, keine Mock-Sandbox-Invocation.
+13. `test_13_source_audit_mount_block_in_manager` — Source-Audit: Mount-Block (`workspace_mount`, `/workspace`, `:ro`, `--workdir`, `[SANDBOX-203c]`) in `_run_in_container`.
+14. `test_14_source_audit_execute_in_workspace` — Source-Audit: `is_inside_workspace`, `workspace_root_for`, `get_sandbox_manager`, `[WORKSPACE-203c]` im Wrapper.
+15. `test_15_execute_in_workspace_sandbox_disabled_returns_none` — Disabled-Sandbox → None, durchgereicht.
+16. `test_16_execute_in_workspace_timeout_passthrough` — `timeout=7` reicht durch zur Sandbox.
+17. `test_17_mount_path_is_absolute_resolved` — Mount-Spec nutzt `Path.resolve(strict=False)`, nicht den Roh-Pfad.
+
+**Effekt für die nächste Coda-Session:**
+
+P203d kann sofort starten. Die einzige öffentliche API für Workspace-gebundene Code-Execution ist `execute_in_workspace(project_id, code, language, base_dir, *, writable=False, timeout=None)`. Bei Code-Generation reicht ein Aufruf:
+
+```python
+from zerberus.core.projects_workspace import execute_in_workspace, sync_workspace
+
+result = await execute_in_workspace(
+    project_id=active_pid, code=generated_code, language="python",
+    base_dir=storage_base, writable=False,  # RO für reines Lesen
+)
+if result is not None and result.exit_code == 0:
+    # result.stdout / result.stderr für UI-Synthese
+    ...
+```
+
+Bei Code-Generation mit File-Writes (P203d-Sub-Step):
+
+```python
+result = await execute_in_workspace(..., writable=True)
+if result is not None:
+    # Sandbox hat möglicherweise Files geschrieben — Sync triggern
+    await sync_workspace(active_pid, storage_base)
+    # Re-Index-Triggers laufen automatisch über sync_workspace's
+    # Trigger-Punkte (die existieren in P199/P203a schon).
+```
+
+HitL-Gate kommt mit P206 — wickelt sich vor `execute_in_workspace`.
+
+**Architektur-Lessons (für lessons.md):**
+
+- Container-Mounts: Read-Only ist der konservative Default. Read-Write zwingt den Caller, sich Gedanken über Sync-Back zu machen.
+- Mount-Validation als Early-Reject: `path.exists()` + `path.is_dir()` vor `docker run` — verhindert obskure Docker-Fehler und macht Failure-Mode testbar.
+- Defense-in-Depth: Wenn ein Sanitizer (hier: Slug-Sanitizer) die primäre Schutzschicht ist, baut man eine zweite Schicht im Verbraucher (hier: `is_inside_workspace`-Check vor Mount). Belt+Suspenders.
+- Pfad-Resolution: bei docker-Mounts immer `Path.resolve(strict=False)` verwenden — schützt vor Symlink/8.3/Relative-Path-Verwirrungen.
+- Test ohne Docker-Daemon: `asyncio.create_subprocess_exec` mocken und docker-args inspizieren — schneller als echte Container-Starts und deterministisch reproduzierbar.
+
+---
+
+*Stand: 2026-05-02, Patch 203c — Sandbox-Workspace-Mount + execute_in_workspace. 1705 passed (+20), 0 neue Failures.*
+

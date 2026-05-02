@@ -335,6 +335,78 @@ async def remove_file_async(
     return remove_file(workspace_root_for(project_slug, base_dir), relative_path)
 
 
+async def execute_in_workspace(
+    project_id: int,
+    code: str,
+    language: str,
+    base_dir: Path,
+    *,
+    writable: bool = False,
+    timeout: Optional[int] = None,
+) -> Optional[Any]:
+    """Patch 203c — fuehrt ``code`` in der Sandbox aus, mit dem
+    Workspace des Projekts ``project_id`` als ``/workspace``-Mount.
+
+    Args:
+        writable: Read-Only Mount per Default. Erst wenn der Caller
+            ausdruecklich ``writable=True`` setzt, kann der Sandbox-Code
+            schreiben — dann muss er im Anschluss per
+            ``sync_workspace`` bzw. neu Re-Indexing durch den Caller
+            re-konsolidiert werden. P203d wird das verdrahten.
+        timeout: Optional, default ist die Sandbox-Default-Timeout.
+
+    Returns:
+        Das ``SandboxResult`` von ``SandboxManager.execute``, oder
+        ``None`` wenn:
+
+        - das Projekt nicht existiert (oder archiviert ist), oder
+        - die Sandbox deaktiviert ist (``execute()`` returned None), oder
+        - der Workspace-Pfad-Sicherheits-Check fehlschlaegt (Slug-
+          Manipulation, base_dir versucht zu verlassen).
+
+    Sicherheits-Garantie: der ``workspace_root`` MUSS innerhalb von
+    ``base_dir`` liegen. Wenn ein manipulierter Slug (z.B. ``../../etc``)
+    in der DB landen wuerde, koennte ``workspace_root_for`` einen Pfad
+    ausserhalb ``base_dir`` zurueckliefern — der Check fangt das ab und
+    lehnt die Ausfuehrung ab. Das ist Defense-in-Depth zusaetzlich zum
+    Slug-Sanitizer in ``projects_repo``.
+    """
+    from zerberus.core import projects_repo
+    from zerberus.modules.sandbox.manager import get_sandbox_manager
+
+    project = await projects_repo.get_project(project_id)
+    if project is None:
+        logger.warning(
+            f"[WORKSPACE-203c] execute_in_workspace: project_id={project_id} nicht gefunden"
+        )
+        return None
+
+    slug = project["slug"]
+    workspace_root = workspace_root_for(slug, base_dir)
+
+    # Defense-in-Depth: Mount-Source MUSS innerhalb base_dir liegen.
+    # Slug-Sanitizer in projects_repo ist die primaere Schutzschicht.
+    if not is_inside_workspace(workspace_root, base_dir):
+        logger.warning(
+            f"[WORKSPACE-203c] execute_in_workspace: workspace_root liegt ausserhalb "
+            f"base_dir — abgelehnt. slug={slug!r} workspace_root={workspace_root} base_dir={base_dir}"
+        )
+        return None
+
+    # Workspace-Ordner muss existieren — sync_workspace anlegen lassen,
+    # falls Projekt zwar existiert, aber noch keine Files materialisiert.
+    workspace_root.mkdir(parents=True, exist_ok=True)
+
+    manager = get_sandbox_manager()
+    return await manager.execute(
+        code=code,
+        language=language,
+        timeout=timeout,
+        workspace_mount=workspace_root,
+        mount_writable=writable,
+    )
+
+
 async def sync_workspace(project_id: int, base_dir: Path) -> dict[str, int]:
     """Komplett-Sync: Workspace mit DB-Stand abgleichen.
 

@@ -25,6 +25,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from zerberus.core.config import SandboxConfig
@@ -162,8 +163,21 @@ class SandboxManager:
         code: str,
         language: str,
         timeout: Optional[int] = None,
+        *,
+        workspace_mount: Optional[Path] = None,
+        mount_writable: bool = False,
     ) -> Optional[SandboxResult]:
         """Fuehrt ``code`` in einer ephemeren Docker-Sandbox aus.
+
+        Args:
+            workspace_mount: Optionaler Host-Pfad, der als ``/workspace``
+                in den Container gemountet wird (Patch 203c). Default
+                ``None`` → kein Mount, Pfad bleibt unveraendert wie P171.
+                Der Pfad MUSS existieren und ein Verzeichnis sein.
+            mount_writable: Wenn ``True``, wird der Mount als read-write
+                eingehaengt; sonst (Default) als read-only (``:ro``).
+                Read-only ist die sichere Default — der Sandbox-Code kann
+                Files lesen, aber das Workspace nicht von innen veraendern.
 
         Returns:
             ``None`` wenn Sandbox deaktiviert/disabled ist (Caller sollte
@@ -199,6 +213,27 @@ class SandboxManager:
                 error=f"Blocked pattern: {blocked}",
             )
 
+        # Patch 203c: Mount-Validation. Ein nicht-existenter oder kein
+        # Verzeichnis-Pfad fuehrt zu einem fehlerhaften ``docker run``-
+        # Aufruf — wir fangen das frueh ab.
+        if workspace_mount is not None:
+            if not workspace_mount.exists():
+                logger.warning(
+                    "[SANDBOX-203c] workspace_mount existiert nicht: %s", workspace_mount,
+                )
+                return SandboxResult(
+                    stdout="", stderr="", exit_code=-1, execution_time_ms=0,
+                    error=f"workspace_mount existiert nicht: {workspace_mount}",
+                )
+            if not workspace_mount.is_dir():
+                logger.warning(
+                    "[SANDBOX-203c] workspace_mount ist kein Verzeichnis: %s", workspace_mount,
+                )
+                return SandboxResult(
+                    stdout="", stderr="", exit_code=-1, execution_time_ms=0,
+                    error=f"workspace_mount ist kein Verzeichnis: {workspace_mount}",
+                )
+
         image, run_args = self._image_and_command(lang, code)
         if image is None:
             return SandboxResult(
@@ -218,6 +253,8 @@ class SandboxManager:
             language=lang,
             line_count=len(code.splitlines()),
             timeout_seconds=effective_timeout,
+            workspace_mount=workspace_mount,
+            mount_writable=mount_writable,
         )
 
     # ------------------------------------------------------------------
@@ -239,6 +276,8 @@ class SandboxManager:
         language: str,
         line_count: int,
         timeout_seconds: int,
+        workspace_mount: Optional[Path] = None,
+        mount_writable: bool = False,
     ) -> SandboxResult:
         docker_args = [
             "docker", "run", "--rm",
@@ -250,9 +289,23 @@ class SandboxManager:
             "--tmpfs", f"/tmp:size={self.config.tmpfs_size},exec",
             "--security-opt", "no-new-privileges",
             "--pids-limit", str(self.config.pids_limit),
-            image,
-            *run_args,
         ]
+
+        # Patch 203c: optionaler Workspace-Mount. ``-v <abs>:/workspace[:ro]``
+        # + ``--workdir /workspace`` damit relative Pfade in den Files
+        # naturgemaess innerhalb des Workspaces aufgeloest werden.
+        if workspace_mount is not None:
+            host_abs = str(workspace_mount.resolve(strict=False))
+            mount_spec = f"{host_abs}:/workspace"
+            if not mount_writable:
+                mount_spec += ":ro"
+            docker_args.extend(["-v", mount_spec, "--workdir", "/workspace"])
+            logger.info(
+                "[SANDBOX-203c] mount=%s writable=%s",
+                mount_spec, mount_writable,
+            )
+
+        docker_args.extend([image, *run_args])
 
         start = time.monotonic()
         timed_out = False

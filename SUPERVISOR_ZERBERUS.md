@@ -1,10 +1,36 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 204 (2026-05-02) – Prosodie-Kontext im LLM (Phase 5a #17)*
+*Letzte Aktualisierung: Patch 203c (2026-05-02) – Sandbox-Workspace-Mount (Phase 5a #5)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 203c** — Sandbox-Workspace-Mount + execute_in_workspace (Phase 5a #5, Zwischenschritt) (2026-05-02)
+
+Dritter Sub-Patch der P203-Aufteilung (P203a Workspace-Layout + P203b Hel-Hotfix + P203c Sandbox-Mount). P203a hatte den Working-Tree gelegt (`<data_dir>/projects/<slug>/_workspace/` mit Hardlink+Copy-Fallback) — die Sandbox aus P171 hatte aber explizit "Kein Volume-Mount vom Host" als Sicherheitsregel. P203c erweitert genau diese Stelle um einen kontrollierten Mount-Pfad: `SandboxManager.execute(...)` nimmt jetzt zwei keyword-only Parameter `workspace_mount: Optional[Path] = None` und `mount_writable: bool = False`. Default-Pfad ohne Mount bleibt unverändert (Backwards-Compat für den Huginn-Pipeline-Flow).
+
+**Architektur: Read-Only-Default, Defense-in-Depth zwei-stufig.** Wenn `workspace_mount` gesetzt ist, ergänzt `_run_in_container` die docker-args um `-v <abs>:/workspace[:ro]` plus `--workdir /workspace` — `:ro`-Suffix hängt nur weg, wenn der Caller ausdrücklich `mount_writable=True` setzt. Damit kann der Sandbox-Code Files lesen (Source-Trees, Config, Daten), aber das Workspace nicht von innen verändern, ohne dass die ausführende Schicht das explizit zulässt. P203d wird Read-Write erst bei Code-Generation-Pfaden mit anschließendem `sync_workspace`-Re-Sync nutzen.
+
+**Mount-Validation als Early-Reject.** Vor dem `docker run`-Aufruf prüft `execute()`, dass der Mount-Pfad existiert UND ein Verzeichnis ist — sonst SandboxResult mit `error=...` und Exit-Code -1. Verhindert obskure docker-Fehlermeldungen und macht das Failure-Mode deterministisch testbar (kein Docker-Daemon nötig).
+
+**Convenience-Wrapper `execute_in_workspace` in `projects_workspace.py`.** Der Caller (P203d, künftige CLI) ruft nicht direkt `SandboxManager.execute(workspace_mount=..., ...)`, sondern `execute_in_workspace(project_id, code, language, base_dir, *, writable=False, timeout=None)`. Der Wrapper zieht den Slug aus der DB via `projects_repo.get_project`, baut den Workspace-Pfad via `workspace_root_for(slug, base_dir)`, validiert per `is_inside_workspace(workspace_root, base_dir)` (Defense-in-Depth gegen Slug-Manipulation — falls ein entartetes `slug=../etc` jemals durch den Sanitizer rutscht), legt den Workspace-Ordner an wenn er fehlt (Projekt existiert noch ohne Files), und reicht an `get_sandbox_manager().execute(...)` durch. Returns `None` bei unbekanntem Projekt, deaktivierter Sandbox oder Sicherheits-Reject — damit kann der Caller einheitlich auf `None`-Pfade reagieren (Datei-Fallback wie in P171).
+
+**Was P203c bewusst NICHT macht** (kommt mit P203d/P206):
+- **Kein HitL-Gate.** Die HitL-Bestätigung (Phase-5a #6) hängt davor, kommt mit P206. P203c läuft direkt durch, weil RO-Mount + hart-isolierte Sandbox (no-network, read-only-rootfs, no-new-privileges, pids/cpu/memory-limits, kein Volume-Mount sonst) den blast-radius klein halten.
+- **Kein Tool-Use-LLM-Pfad.** P203d verdrahtet die Chat-Pipeline (Code-Detection im Output, Sandbox-Roundtrip, Output-Synthese, UI-Render).
+- **Kein Sync-After-Write.** Falls jemand `writable=True` aufruft und der Sandbox-Code Files erzeugt: P203d muss `sync_workspace(project_id, base_dir)` hinterher rufen, damit die DB + RAG die Änderungen sehen. P203c liefert nur die Brücke.
+- **Keine Image-Pull-Logik.** Healthcheck (P171) bleibt unverändert — Caller muss vorher prüfen.
+
+- **Pure-Function-Schicht:** [`zerberus/modules/sandbox/manager.py::SandboxManager._run_in_container`](zerberus/modules/sandbox/manager.py) — Mount-Block setzt `-v <abs>:/workspace[:ro]` + `--workdir /workspace`, vor `image, *run_args`. Pfad-Resolution via `workspace_mount.resolve(strict=False)` damit Symlinks/8.3-Windows-Namen Docker nicht verwirren. Logging-Tag `[SANDBOX-203c]` für Mount-Stelle.
+- **Validation-Schicht:** `execute()` checkt `workspace_mount.exists()` + `.is_dir()` vor `_image_and_command`. Fail-Mode: `SandboxResult(exit_code=-1, error=...)` — kein docker-Aufruf.
+- **Convenience:** [`zerberus/core/projects_workspace.py::execute_in_workspace`](zerberus/core/projects_workspace.py) — async, zieht Slug aus DB, validiert workspace_root inside base_dir per `is_inside_workspace`, legt Ordner an, reicht an `get_sandbox_manager().execute(...)` durch. Logging-Tag `[WORKSPACE-203c]`.
+- **Tests:** 17 in [`test_p203c_sandbox_workspace.py`](zerberus/tests/test_p203c_sandbox_workspace.py): docker-args-Audit ohne Mount unverändert (Backwards-Compat), Mount-RO-Default, Mount-Writable, Mount-nonexistent → Error, Mount-is-File → Error, Disabled-Sandbox → None auch mit Mount, Blocked-Pattern-Vorrang, execute_in_workspace mit fehlendem Projekt → None, korrekter Mount-Pfad-Passthrough, writable-Passthrough, Workspace-Anlage on-demand, Slug-Traversal-Reject (Defense-in-Depth), Source-Audit Mount-Stelle, Source-Audit execute_in_workspace, Disabled-Sandbox-Passthrough via Convenience, Timeout-Passthrough, Mount-Pfad-resolve()-stable.
+- **Logging-Tag:** `[SANDBOX-203c]` (Mount-Setup) und `[WORKSPACE-203c]` (Convenience-Reject).
+- **Teststand:** 1685 baseline (P204) → **1705 passed** (+20: 17 neue P203c-Tests + 3 die durch geänderten Default-Pfad jetzt mit gezählt werden), 4 xfailed pre-existing, 0 neue Failures.
+- **Effekt für die nächste Coda-Session:** P203d kann sofort starten — `execute_in_workspace(project_id, code, language, base_dir, *, writable=...)` ist die einzige öffentliche API für Workspace-gebundene Code-Execution. Bei Code-Generation reicht: `result = await execute_in_workspace(...)` mit Projekt-ID aus dem aktiven Chat-Header (P201), `result.stdout`/`result.stderr` für die UI-Synthese, ggf. `await sync_workspace(...)` wenn `writable=True`. HitL-Gate wickelt sich später per P206 davor.
+
+---
 
 **Patch 204** — Prosodie-Kontext im LLM (Phase 5a #17, unabhängig einschiebbar) (2026-05-02)
 
