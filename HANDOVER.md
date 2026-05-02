@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P202 — PWA-Auth-Hotfix: Service-Worker tötet Hel-Login (eingeschoben, Bug-Fix)
 **Tests:** 1602 passed (+8), 4 xfailed (pre-existing)
-**Commit:** _wird beim Push nachgetragen_
-**Repos synchron:** _wird beim verify_sync.ps1 bestätigt_
+**Commit:** c43f230 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
