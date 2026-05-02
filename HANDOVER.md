@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P199 — Phase 5a #3: Projekt-RAG-Index
 **Tests:** 1533 passed (+46), 4 xfailed (pre-existing), 2 pre-existing Failures (unrelated)
-**Commit:** _wird beim Push gefüllt_
-**Repos synchron:** _wird nach `verify_sync.ps1` gefüllt_
+**Commit:** e5e89b1 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
