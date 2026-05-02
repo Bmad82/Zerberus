@@ -28,6 +28,8 @@ data/vectors/
 data/backups/
 # Patch 162: Huginn-Long-Polling Offset (Runtime-State)
 data/huginn_offset.json
+# Patch 194/203: User-Projekt-Daten (SHA-Storage + RAG-Index + Workspace) — lokaler State pro Projekt
+data/projects/
 
 # Huggingface / ML Models
 .cache/
