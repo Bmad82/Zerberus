@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P196 — Phase 5a #4 Datei-Upload-Endpoint + UI (öffnet Ziel #4)
 **Tests:** 1431 passed, 4 xfailed (pre-existing), 2 pre-existing Failures (unrelated)
-**Commit:** _wird nach Push nachgetragen_
-**Repos synchron:** _wird nach `sync_repos.ps1` + `verify_sync.ps1` bestätigt_
+**Commit:** 8d77bba — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
