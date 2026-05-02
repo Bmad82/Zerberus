@@ -5639,5 +5639,67 @@ Teststand 1487 → **1533 passed** (+46). 4 xfailed (pre-existing). 2 pre-existi
 
 ---
 
-*Stand: 2026-05-02, Patch 201 — Phase 5a Ziel #4 komplett abgeschlossen (Nala-Tab "Projekte" + Header-Setter). 1594 passed, 0 neue Failures.*
+## Patch 202 — PWA-Auth-Hotfix: Service-Worker tötet Hel-Login (2026-05-02)
+
+### Problem
+
+Nach P200 (PWA-Verdrahtung) liefert Hel im Browser nur noch `{"detail":"Not authenticated"}` als JSON-Body — kein Basic-Auth-Prompt mehr. Nala (kein Auth) und Huginn (Telegram-Bot, kein Browser-Pfad) sind unauffällig. Reproduktion: `https://localhost:5000/hel/` öffnen → JSON-Response statt Login-Dialog.
+
+### Diagnose
+
+Der von P200 eingeführte Service-Worker `/hel/sw.js` mit Scope `/hel/` interceptet ALLE GET-Requests im Scope — auch die Top-Level-Navigation auf `/hel/`. Der SW macht `event.respondWith(fetch(event.request))`, bekommt vom Server eine korrekte 401-Response mit `WWW-Authenticate: Basic`-Header zurück und reicht sie unverändert an die Page durch.
+
+**Bei SW-vermittelten Responses ignoriert der Browser den `WWW-Authenticate`-Header** und zeigt KEINEN Auth-Prompt — die Response wird stattdessen als JSON-Body an die Page geliefert. Das ist Web-Standard-Verhalten: native Browser-Mechanismen (Auth-Prompt, HTTPS-Indikatoren, Mixed-Content-Warnungen) greifen nur bei Top-Level-Navigation, die NICHT durch einen SW respondWith vermittelt wurde.
+
+Verifikation server-seitig: `verify_admin` ohne Credentials liefert wie erwartet `401 + WWW-Authenticate: Basic` (Test `TestHelBasicAuthHeader::test_dependency_liefert_wwwauth_bei_missing_creds`). Server-Pfad korrekt — das Problem liegt rein im SW.
+
+### Architektur
+
+**Drei Änderungen am Service-Worker:**
+
+1. **Navigation-Requests durchlassen.** `event.request.mode === 'navigate'` returnt früh aus dem fetch-Handler, ohne `respondWith` aufzurufen. Damit landet die Navigation im nativen Browser-Stack, der den `WWW-Authenticate`-Header korrekt interpretiert und den Basic-Auth-Prompt öffnet. Side-Effect: HTML-Reload geht jetzt immer übers Netz (kein Offline-Modus für Hauptseiten). Akzeptabel — ohne laufenden Server gibt's eh keinen sinnvollen Betrieb.
+
+2. **Cache-Name auf `-v2` bumpen.** Der activate-Hook der neuen SW-Version räumt automatisch alle Caches mit anderem Namen. Da der SW selbst per `Cache-Control: no-cache` ausgeliefert wird, bekommt jeder Browser den neuen SW beim nächsten Reload — ohne manuelles Eingreifen. Effekt: alte v1-Caches mit potentiell verseuchten Navigation-Antworten werden geräumt.
+
+3. **APP_SHELL-Listen ohne Root-Pfad.** Vorher enthielt `HEL_SHELL` den Eintrag `"/hel/"` — beim install-Hook versuchte der SW per `cache.addAll(APP_SHELL)` den Hel-Root zu cachen, was wegen Basic-Auth mit 401 fehlschlug. `cache.addAll` nutzt `Promise.all`, also rejected ein einzelnes 401 den ganzen precache. Die `.catch(() => null)`-Klausel im SW swallowt den Fehler still, aber semantisch ist das Müll. Jetzt sind die SHELL-Listen rein statische Public-Assets (`/static/css/...`, `/static/favicon.ico`, `/static/pwa/*.png`), die alle 200 liefern.
+
+### Code-Änderungen
+
+- **[`pwa.py::SW_TEMPLATE`](../zerberus/app/routers/pwa.py)** — drei Zeilen früh-return für `event.request.mode === 'navigate'`, vor dem `respondWith`-Block. Doku-Kommentar erklärt warum.
+- **[`pwa.py::nala_service_worker`](../zerberus/app/routers/pwa.py)** — Cache-Name `nala-shell-v1` → `nala-shell-v2`.
+- **[`pwa.py::hel_service_worker`](../zerberus/app/routers/pwa.py)** — Cache-Name `hel-shell-v1` → `hel-shell-v2`.
+- **[`pwa.py::NALA_SHELL` / `HEL_SHELL`](../zerberus/app/routers/pwa.py)** — Root-Pfad-Einträge entfernt. Beide Listen enthalten nur noch statische Public-Assets.
+
+### Tests
+
+5 neue Tests in [`test_pwa.py`](../zerberus/tests/test_pwa.py) plus 3 angepasste:
+
+- `TestServiceWorkerRender::test_navigation_passes_through` — verifiziert dass `request.mode === 'navigate'` im rendered SW-Body steht
+- `TestShellLists::test_nala_shell_keine_navigation` — `/nala/` (Root) NICHT in `NALA_SHELL`
+- `TestShellLists::test_hel_shell_keine_navigation` — `/hel/` (Root) NICHT in `HEL_SHELL`
+- `TestShellLists::test_shells_haben_static_assets` — Listen sind nicht leer (mind. ein `/static/`-Eintrag)
+- `TestHelBasicAuthHeader::test_dependency_liefert_wwwauth_bei_missing_creds` — `verify_admin` ohne Credentials liefert `401` mit `WWW-Authenticate: Basic` (Schutz gegen zukünftige Server-Auth-Refactorings)
+- Angepasst: `test_nala_sw_endpoint` + `test_hel_sw_endpoint` — Cache-Name `-v2`, Asset-Audit auf `/static/css/shared-design.css` bzw. `/static/pwa/hel-192.png`
+
+**Teststand:** 1594 → **1602 passed** (+8), 4 xfailed pre-existing.
+
+### Manuelle Tests (Chris)
+
+In WORKFLOW.md als #38–#41 eingetragen:
+
+- **#38** git push + sync_repos.ps1 für P202
+- **#39** Hel-Auth-Recovery: `https://localhost:5000/hel/` → nativer Auth-Prompt (kein JSON-Body sichtbar). Bei vorhandener P200-Installation: DevTools → Application → Service Workers → `/hel/sw.js` → Unregister → F5 → neuer v2-SW kommt → Auth-Prompt erscheint
+- **#40** PWA-Roll-Out beider Apps auf iPhone + Android: SW-Update läuft, alter v1-Cache verschwindet (`hel-shell-v2` / `nala-shell-v2` in DevTools-Application sichtbar)
+- **#41** SW-Navigation-Skip live: DevTools → Application → Service Workers → `/hel/sw.js` Source enthält `request.mode === 'navigate'`. Network-Tab zeigt `/hel/`-Reload als Navigation (nicht via SW)
+
+### Lessons Learned
+
+- **SWs dürfen Top-Level-Navigation NICHT abfangen, wenn die Page Basic-Auth (oder allg. WWW-Authenticate) nutzt.** Symptom: User sieht 401-JSON-Body statt nativen Auth-Prompt. Fix: früh-return im fetch-Handler bei `event.request.mode === 'navigate'`.
+- **`cache.addAll` darf KEINE auth-gated Pfade enthalten.** Ein 401 rejected `Promise.all`, der ganze precache schlägt fehl, der `.catch(() => null)` swallow versteckt den Fehler still — aber semantisch Müll. APP_SHELL = nur statische Public-Assets.
+- **Cache-Name versionieren bei SW-Logik-Änderungen** — der activate-Hook der neuen Version räumt automatisch alte Caches, kein User-Eingriff nötig.
+- **PWA-Bug-Diagnose-Reihenfolge** — wenn UI-Verhalten "seit dem PWA-Patch" anders ist: zuerst SW unregistrieren + reload, das reproduziert das Pre-PWA-Verhalten. Wenn das Problem dann weg ist → SW ist schuldig.
+
+---
+
+*Stand: 2026-05-02, Patch 202 — PWA-Auth-Hotfix: Hel zeigt wieder Basic-Auth-Prompt. 1602 passed, 0 neue Failures.*
 

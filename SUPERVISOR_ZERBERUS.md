@@ -1,10 +1,32 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 201 (2026-05-02) – Phase 5a Ziel #4 abgeschlossen: Nala-Tab "Projekte" + Header-Setter*
+*Letzte Aktualisierung: Patch 202 (2026-05-02) – PWA-Auth-Hotfix: Hel zeigt wieder Basic-Auth-Prompt*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 202** — PWA-Auth-Hotfix: SW-Navigation-Skip + Cache-v2 (2026-05-02)
+
+Behebt einen kritischen Bug aus P200: Hel war im Browser nur noch als JSON-Antwort `{"detail":"Not authenticated"}` sichtbar — kein Basic-Auth-Prompt mehr. Nala und Huginn unauffällig. Ursache: Der von P200 eingeführte Service-Worker fängt im Scope `/hel/` ALLE GET-Requests ab und macht `event.respondWith(fetch(event.request))`. Bei navigierenden Top-Level-Anfragen liefert der SW damit die 401-Response unverändert an die Page zurück — und der Browser ignoriert in diesem Fall den `WWW-Authenticate: Basic`-Header, der normalerweise den nativen Auth-Prompt triggert. Ergebnis: User sah JSON statt Login-Dialog.
+
+Architektur-Entscheidung: **Navigation-Requests gar nicht erst abfangen.** Statt nachträglich auf 401 zu reagieren oder Auth-Header zu injecten, returnt der SW jetzt früh wenn `event.request.mode === 'navigate'`. Die Navigation läuft durch den nativen Browser-Stack — inklusive Auth-Prompt, HTTPS-Indikator, Mixed-Content-Warnung, etc. Das ist ohnehin sauberere PWA-Hygiene: SWs cachen statische Assets, nicht HTML-Pages.
+
+**Cache-Versions-Bump auf -v2.** Damit der activate-Hook der neuen SW-Version den verseuchten v1-Cache räumt, der noch /hel/-Navigations-Antworten enthalten könnte. Da der SW selbst per `Cache-Control: no-cache` ausgeliefert wird, bekommt jeder Browser den neuen SW beim nächsten Reload, ohne manuelles Eingreifen — der activate räumt dann automatisch.
+
+**APP_SHELL ohne Root-Pfad.** Vorher enthielt `HEL_SHELL` den Eintrag `"/hel/"` — beim install-Hook versuchte der SW per `cache.addAll(APP_SHELL)` den Hel-Root zu cachen, was wegen Basic-Auth mit 401 fehlschlug. `Promise.all` rejected dann komplett, die `.catch(() => null)`-Klausel im Code swallow den Fehler still, aber semantisch falsch. Jetzt sind die SHELL-Listen rein statische Assets, die alle 200 liefern — der precache läuft sauber durch.
+
+**Side-Effect:** HTML-Reload geht jetzt immer übers Netz (kein Offline-Modus für die Hauptseite). Für den Heimserver-Use-Case akzeptabel — ohne laufenden Server gibt es ohnehin keinen sinnvollen Betrieb (Chat-Endpoints, Whisper, Sandbox sind alle online-only). Wenn später ein echter Offline-Modus gewünscht ist, müsste man den Approach umkrempeln (cache-first für Navigation, mit eigenem Auth-Handling) — aktuell nicht relevant.
+
+- **SW-Template:** [`pwa.py::SW_TEMPLATE`](zerberus/app/routers/pwa.py) — drei Zeilen früh-return für `event.request.mode === 'navigate'`, vor dem `respondWith`-Block.
+- **Cache-Names:** `nala-shell-v1` → `nala-shell-v2`, `hel-shell-v1` → `hel-shell-v2` in den Endpoint-Funktionen `nala_service_worker` + `hel_service_worker`.
+- **APP_SHELL:** `NALA_SHELL` und `HEL_SHELL` ohne Root-Pfad-Eintrag — nur statische Assets (`/static/css/...`, `/static/favicon.ico`, `/static/pwa/*.png`).
+- **Tests:** 5 neue in [`test_pwa.py`](zerberus/tests/test_pwa.py) — Pure-Function-Test für navigation-skip im SW-Body, drei Shell-Lists-Tests (kein Root-Pfad in Nala/Hel), und ein End-to-End-Test mit `TestClient` der `verify_admin` ohne Credentials anpingt und den `WWW-Authenticate: Basic`-Header verifiziert. Plus 3 angepasste bestehende Tests (Cache-Name v2 statt v1, Asset-Audit auf Static-Assets statt Root-Pfad).
+- **Logging:** Kein neuer Tag — die SW-Korrektur ist klein-genug für `[PWA-200]`/`[PWA-202]` als Doku-Hinweis im Quelltext-Header. Kein Server-seitiger Log-Output.
+- **Teststand:** 1594 → **1602 passed** (+8), 4 xfailed pre-existing.
+- **Effekt für den User:** `/hel/` zeigt wieder den nativen Browser-Auth-Prompt. Nach Login funktioniert Hel-UI komplett wie vor P200. Bestehende SW-v1-Installationen werden automatisch auf v2 hochgezogen, sobald der User `/hel/` neu lädt.
+
+---
 
 **Patch 201** — Phase 5a #4: Nala-Tab "Projekte" + Header-Setter (2026-05-02)
 

@@ -78,6 +78,34 @@ class TestServiceWorkerRender:
         # Non-GET-Requests muessen vom Caching ausgenommen sein
         assert "method !== 'GET'" in body
 
+    def test_navigation_passes_through(self):
+        """P202: navigation-mode-Requests duerfen nicht per respondWith
+        abgefangen werden — sonst killt der SW den Browser-Auth-Prompt
+        fuer Hel und der User sieht nur den 401-JSON-Body."""
+        body = pwa.render_service_worker("c1", ["/a"])
+        assert "request.mode === 'navigate'" in body
+
+
+class TestShellLists:
+    """P202: Die App-SHELL-Listen duerfen den Root-Pfad nicht enthalten,
+    weil Navigation-Requests nicht mehr gecached werden und cache.addAll
+    sonst beim Hel-SW (der Root-Pfad ist Basic-Auth-gated) wegen 401
+    rejected. Ohne den Eintrag ist der precache 100% 200er."""
+
+    def test_nala_shell_keine_navigation(self):
+        assert "/nala/" not in pwa.NALA_SHELL
+        assert "/nala" not in pwa.NALA_SHELL
+
+    def test_hel_shell_keine_navigation(self):
+        assert "/hel/" not in pwa.HEL_SHELL
+        assert "/hel" not in pwa.HEL_SHELL
+
+    def test_shells_haben_static_assets(self):
+        # Die Shell-Listen sollen nicht leer sein — mindestens das
+        # gemeinsame Stylesheet muss drin sein.
+        assert any("/static/" in url for url in pwa.NALA_SHELL)
+        assert any("/static/" in url for url in pwa.HEL_SHELL)
+
 
 class TestManifestDicts:
     @pytest.mark.parametrize("manifest,prefix,short", [
@@ -150,8 +178,11 @@ class TestServiceWorkerEndpoints:
         assert res.status_code == 200
         assert res.media_type == "application/javascript"
         body = res.body.decode("utf-8")
-        assert "nala-shell-v1" in body
-        assert "/nala/" in body
+        # P202: Cache-Name auf -v2 (alter -v1 wird beim activate geräumt)
+        assert "nala-shell-v2" in body
+        assert "nala-shell-v1" not in body
+        # Shell-Asset muss drin sein (Pure-Beispiel: das Stylesheet)
+        assert "/static/css/shared-design.css" in body
         assert "Cache-Control" in res.headers
         assert res.headers["Cache-Control"] == "no-cache"
 
@@ -163,8 +194,10 @@ class TestServiceWorkerEndpoints:
         assert res.status_code == 200
         assert res.media_type == "application/javascript"
         body = res.body.decode("utf-8")
-        assert "hel-shell-v1" in body
-        assert "/hel/" in body
+        # P202: Cache-Name auf -v2
+        assert "hel-shell-v2" in body
+        assert "hel-shell-v1" not in body
+        assert "/static/pwa/hel-192.png" in body
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +303,42 @@ class TestRouterOrderInMain:
 
 
 # ---------------------------------------------------------------------------
-# 6) Generator-Skript existiert (fuer Re-Generierung der Icons)
+# 6) P202: Hel-Basic-Auth liefert WWW-Authenticate-Header
+# ---------------------------------------------------------------------------
+#
+# Wenn FastAPI's HTTPBasic-Dependency den `WWW-Authenticate: Basic`-Header
+# nicht liefert, gibt's auch ohne SW keinen nativen Browser-Auth-Prompt.
+# Das ist die andere Halfte der P202-Diagnose: SW raus aus navigation,
+# Server muss korrekt 401+WWWAuth liefern. Beide muessen stimmen.
+
+class TestHelBasicAuthHeader:
+    def test_dependency_liefert_wwwauth_bei_missing_creds(self):
+        """verify_admin ohne Credentials → 401 + WWW-Authenticate: Basic."""
+        from fastapi import FastAPI, Depends
+        from fastapi.testclient import TestClient
+
+        from zerberus.app.routers.hel import verify_admin
+
+        mini_app = FastAPI()
+
+        @mini_app.get("/protected")
+        def _protected(user: str = Depends(verify_admin)):
+            return {"user": user}
+
+        client = TestClient(mini_app)
+        res = client.get("/protected")
+
+        assert res.status_code == 401
+        assert res.json() == {"detail": "Not authenticated"}
+        wwwauth = res.headers.get("www-authenticate", "")
+        assert wwwauth.lower().startswith("basic"), (
+            f"WWW-Authenticate fehlt oder falsch: {wwwauth!r} — "
+            "ohne diesen Header zeigt kein Browser den Basic-Auth-Prompt."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7) Generator-Skript existiert (fuer Re-Generierung der Icons)
 # ---------------------------------------------------------------------------
 
 class TestIconGeneratorScript:
