@@ -5504,3 +5504,69 @@ Teststand 1487 → **1533 passed** (+46). 4 xfailed (pre-existing). 2 pre-existi
 
 *Stand: 2026-05-02, Patch 199 — Phase 5a Ziel #3 abgeschlossen (Projekt-RAG-Index). 1533 passed, 0 neue Failures.*
 
+## Patch 200 — Phase 5a #16: PWA-Installation für Nala + Hel (2026-05-02)
+
+**Ziel:** Beide Web-UIs als installierbare Progressive Web Apps verfügbar machen — auf iPhone (Safari → "Zum Home-Bildschirm") und Android (Chrome → "App installieren") ohne Browser-Chrome, mit Splash-Screen, Theme-Color und eigenem Icon. Unabhängiges Phase-5a-Ziel #16, eingeschoben zwischen P199 (Projekt-RAG) und P201 (Code-Execution-Pipeline).
+
+**Was NICHT gebaut wurde (bewusst):** kein Offline-Modus (Heimserver muss eh laufen, Chat ohne Netz wäre tot), keine Push-Notifications (Huginn-Telegram-Bot besetzt die Push-Schiene), kein Background-Sync. Der Service Worker dient nur der Installierbarkeit + minimalem App-Shell-Cache; alles Dynamische geht weiterhin live.
+
+### Architektur-Entscheidungen
+
+**Eigener Router `pwa.py` statt Erweiterung von `nala.py`/`hel.py`.** Hintergrund: `hel.router` hat eine router-weite Basic-Auth-Dependency (`dependencies=[Depends(verify_admin)]`), die jeden Endpoint im Router gated. Würde man `/hel/manifest.json` und `/hel/sw.js` einfach in `hel.py` definieren, würde der Browser beim Manifest-Fetch eine 401-Auth-Challenge bekommen — der "App installieren"-Prompt würde nie erscheinen. Lösung: separater `pwa.router` ohne Dependencies, in `main.py` VOR `hel.router` eingehängt. FastAPI matcht URL-Pfade global; die Reihenfolge der `include_router`-Calls entscheidet bei Route-Kollisionen. Da `hel.router` keine `/manifest.json`- oder `/sw.js`-Routes definiert, gibt es keinen tatsächlichen Konflikt — die `pwa.router`-Routes gewinnen einfach durch Eindeutigkeit.
+
+**Service-Worker-Scope via Pfad-Konvention.** Der Browser begrenzt den SW-Scope per Default auf das Verzeichnis, von dem die SW-Datei ausgeliefert wird. `/nala/sw.js` → scope `/nala/`, `/hel/sw.js` → scope `/hel/`. Damit braucht es KEINEN `Service-Worker-Allowed`-Header und keine Root-Position für die SW-Datei. Genau die richtige Granularität: die Nala-PWA cacht NUR Nala-URLs, die Hel-PWA NUR Hel-URLs — kein Cross-Contamination zwischen den Apps.
+
+**Per-App-Manifest, nicht Single-Manifest.** Beide Apps brauchen separate Icons, Theme-Colors, Namen. Zwei `manifest.json`-Endpoints sind sauberer als Conditional-Logic in einem Manifest. Apple/Android lesen jeweils EIN Manifest pro Page-Pfad — ein Single-Manifest mit zwei Apps führt zu undefiniertem Verhalten beim Install.
+
+**Deterministische Icon-Generierung via PIL.** Skript `scripts/generate_pwa_icons.py` zeichnet 4 PNGs (Nala 192/512, Hel 192/512). Kintsugi-Stil: dunkler Hintergrund (Nala #0a1628 / Hel #1a1a1a), großer goldener (Nala #f0b429) bzw. roter (Hel #ff6b6b) Initial-Buchstabe, drei dünne Bruchnaht-Adern in der Akzentfarbe. Deterministisch (kein RNG), damit Re-Runs bytes-identische PNGs erzeugen und der Git-Diff sauber bleibt. Font-Suche: Georgia/Times/DejaVuSerif/Arial mit PIL-Default-Font als Fallback. `purpose: "any maskable"` im Manifest macht die Icons Android-Adaptive-Icon-fähig (Android schneidet Kreis/Squircle aus dem Quadrat).
+
+**Service-Worker-Logik minimal.** Install precacht App-Shell-Liste (HTML-Page + shared-design.css + favicon + die zwei App-Icons). Activate räumt Caches mit anderem Versionsschlüssel. Fetch macht network-first mit cache-fallback (Updates kommen direkt durch). Non-GET-Requests passen unverändert durch (kein Cache für POST/PUT/etc.). `skipWaiting()` + `clients.claim()` schalten neue SW-Versionen sofort online ohne Reload-Pflicht.
+
+### Implementierung
+
+- **Neuer Router** [`zerberus/app/routers/pwa.py`](../zerberus/app/routers/pwa.py) — vier Endpoints, keine Auth-Dependencies. Pure-Function-Schicht: `render_service_worker(cache_name, shell)` rendert SW-JS aus Template + Cache-Name + Shell-URL-Liste. Konstanten `NALA_MANIFEST`, `HEL_MANIFEST`, `NALA_SHELL`, `HEL_SHELL`.
+- **Verdrahtung in [`main.py`](../zerberus/main.py):** `from zerberus.app.routers import legacy, nala, orchestrator, hel, archive, pwa`, dann `app.include_router(pwa.router)` als ERSTER `include_router`-Call. Kommentar erklärt warum die Reihenfolge zwingend ist.
+- **HTML-Erweiterung Nala** [`nala.py::NALA_HTML`](../zerberus/app/routers/nala.py): `<head>` um sieben Tags erweitert (Manifest-Link, Theme-Color #0a1628, Apple-Capable yes, Apple-Status-Bar black-translucent, Apple-Title "Nala", zwei Apple-Touch-Icons). SW-Registrierung als 8-Zeilen-Script vor `</body>`.
+- **HTML-Erweiterung Hel** [`hel.py::ADMIN_HTML`](../zerberus/app/routers/hel.py): analog mit Theme-Color #1a1a1a, Apple-Title "Hel", Hel-Icons, SW-Scope `/hel/`.
+- **Generator-Skript** [`scripts/generate_pwa_icons.py`](../scripts/generate_pwa_icons.py) — deterministische PIL-Pipeline. Aufruf: `python scripts/generate_pwa_icons.py`.
+- **Icons** unter `zerberus/static/pwa/{nala,hel}-{192,512}.png` — vier Dateien, ~2-9 KB pro PNG.
+
+### Defensive Behaviors
+
+- SW-Registrierung mit Feature-Detection (`'serviceWorker' in navigator`) — alte Browser ohne SW-Support sehen die Seite ganz normal ohne PWA-Features
+- SW-Fail wirft KEIN UI-Fehler; `.catch()` loggt nur nach `console.warn` mit Tag `[PWA-200]`
+- Manifest-Endpoint liefert `application/manifest+json` (korrekter Media-Type, sonst lehnen manche Browser das Manifest ab)
+- SW-Endpoint liefert `application/javascript` + `Cache-Control: no-cache` (sonst kann der Browser eine alte SW-Version festklemmen)
+- Browser-Default: SW-Scope = Verzeichnis der SW-Datei. `/nala/sw.js` → scope `/nala/`. Damit kann die Nala-SW nichts außerhalb von `/nala/` cachen, selbst wenn jemand `register('/nala/sw.js', { scope: '/' })` aufrufen würde — der Browser würde das ablehnen ohne `Service-Worker-Allowed`-Header
+
+### Tests (39 neu)
+
+- `TestServiceWorkerRender` (5) — Cache-Name + Shell-URLs eingerendert, alle drei Event-Listener (install/activate/fetch), `skipWaiting()` + `clients.claim()`, GET-only-Caching
+- `TestManifestDicts` (6) — Pflichtfelder (name/short_name/start_url/scope/display/theme_color/background_color), beide Apps haben 192- und 512-px-Icons, Themes unterscheiden sich, JSON-serialisierbar
+- `TestManifestEndpoints` + `TestServiceWorkerEndpoints` (4) — direkte Coroutine-Aufrufe, Status 200, korrekte Media-Types, Body-Inhalte plausibel, Cache-Control-Header
+- `TestNalaHtmlPwaTags` + `TestHelHtmlPwaTags` (16) — Source-Audit für Manifest-Link, Theme-Color, alle Apple-Tags, beide Touch-Icons, SW-Registrierung mit korrektem Scope
+- `TestPwaIconsExist` (4) — alle vier PNG-Dateien existieren + PNG-Magic-Bytes (`\x89PNG\r\n\x1a\n`) korrekt
+- `TestRouterOrderInMain` (3) — `pwa`-Import in main.py, `include_router(pwa.router)` vorhanden, Position VOR `include_router(hel.router)` (`pwa_pos < hel_pos`)
+- `TestIconGeneratorScript` (2) — Skript existiert, referenziert beide Themes + beide Größen
+
+**Teststand:** 1533 → **1572 passed** (+39), 4 xfailed pre-existing, 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — bekannte Schulden, unrelated).
+
+### Manuelle Tests (Chris, in WORKFLOW.md eingetragen)
+
+- iPhone Safari → Nala → "Zum Home-Bildschirm" → öffnet standalone, Kintsugi-Gold-Icon
+- iPhone Safari → Hel → "Zum Home-Bildschirm" → eigenes Icon, separat von Nala
+- Android Chrome → Nala → "App installieren" → standalone, Splash mit Theme-Color
+- Android Chrome → Hel → "App installieren" → eigenes Icon
+- Beide Geräte: SW-Registrierung im DevTools-Application-Tab sichtbar
+
+### Lessons Learned
+
+- Router-Level-Dependencies in FastAPI gelten NUR für Routes desselben Routers — wenn ein Endpoint denselben URL-Prefix wie ein auth-gated Router hat aber öffentlich sein muss, muss er in einen separaten `APIRouter()` ohne Dependencies und VOR dem auth-gated Router via `include_router` eingehängt werden
+- Service-Worker-Scope folgt aus dem PFAD der SW-Datei — `/static/sw.js` hat scope `/static/`, kontrolliert NICHT `/nala/`. Lösung: SW unter `/<scope>/sw.js` ausliefern, statt `Service-Worker-Allowed`-Header zu verbiegen
+- Per-App-Manifeste sind sauberer als Single-Manifest mit Conditional-Logic — Apple/Android lesen jeweils EIN Manifest pro Page-Pfad
+- Icon-Generierung deterministisch halten (kein RNG, kein Timestamp im Output) — sonst rauscht jeder Re-Generate-Commit den Git-Diff zu
+
+---
+
+*Stand: 2026-05-02, Patch 200 — Phase 5a Ziel #16 abgeschlossen (PWA für Nala + Hel). 1572 passed, 0 neue Failures.*
+

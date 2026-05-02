@@ -1,10 +1,36 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 199 (2026-05-02) – Phase 5a Ziel #3: Projekt-RAG-Index*
+*Letzte Aktualisierung: Patch 200 (2026-05-02) – Phase 5a Ziel #16: PWA-Installation für Nala + Hel*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 200** — Phase 5a #16: PWA für Nala + Hel (2026-05-02)
+
+Schließt Phase-5a-Ziel #16 ("Nala + Hel als PWA") ab. Beide Web-UIs lassen sich auf iPhone (Safari → "Zum Home-Bildschirm") und Android (Chrome → "App installieren") als eigenständige Apps installieren — Browser-Chrome verschwindet, Splash-Screen + Theme-Color stimmen, Icon im Kintsugi-Stil (Gold auf Blau für Nala, Rot auf Anthrazit für Hel). Kein Offline-Modus, keine Push-Notifications, kein Background-Sync — alles bewusst weggelassen, weil der Heimserver eh laufen muss und Huginn die Push-Schiene besetzt.
+
+Architektur-Entscheidung: **Eigener Router `pwa.py` statt Erweiterung des Hel/Nala-Routers.** Hintergrund: `hel.router` hat router-weite Basic-Auth-Dependency (`dependencies=[Depends(verify_admin)]`), die jeden Endpoint dort gated. Würde man `/hel/manifest.json` und `/hel/sw.js` in `hel.router` definieren, würde der Browser beim Manifest-Fetch eine Auth-Challenge bekommen und der Install-Prompt nie erscheinen. Lösung: separater `pwa.router` ohne Dependencies, in `main.py` VOR `hel.router` eingehängt — gleiche URL-Pfade, aber andere Auth-Policy. FastAPI matcht die URL-Pfade global: weil `hel.router` keine Route für `/manifest.json` oder `/sw.js` definiert, gibt es keinen Konflikt; `pwa.router` gewinnt durch frühere Registrierung trotzdem die Race-Condition für eventuell hinzukommende Routes.
+
+**Service-Worker-Scope-Trick:** Der Browser begrenzt den SW-Scope per Default auf den Pfad, von dem die SW-Datei ausgeliefert wird. `/nala/sw.js` → scope `/nala/`, `/hel/sw.js` → scope `/hel/`. Damit braucht es KEINEN `Service-Worker-Allowed`-Header und keine Root-Position für die SW-Datei. Genau die richtige Granularität: die Nala-PWA cacht nur Nala-URLs, die Hel-PWA nur Hel-URLs.
+
+**Manifeste pro App, nicht ein gemeinsames:** Beide Apps brauchen separate Icons, Theme-Colors, Namen — zwei `manifest.json`-Endpoints sind sauberer als Conditional-Logic in einem Manifest. Konstanten `NALA_MANIFEST` und `HEL_MANIFEST` in `pwa.py` sind Pure-Python-Dicts, direkt als Tests ohne Server konsumierbar.
+
+**Icon-Generierung deterministisch via PIL.** Skript `scripts/generate_pwa_icons.py` zeichnet 4 PNGs (Nala 192/512, Hel 192/512) — dunkler Hintergrund, großer goldener/roter Initial-Buchstabe, drei dünne Kintsugi-Adern in der Akzentfarbe als Bruchnaht-Anspielung. Deterministisch (kein RNG), damit Re-Runs bytes-identische PNGs erzeugen und der Git-Diff sauber bleibt. Fonts werden aus systemweiten Serif-Kandidaten (Georgia/Times/DejaVuSerif/Arial) gesucht, mit PIL-Default-Font als Fallback.
+
+**Service-Worker-Logik minimal:** Install precacht App-Shell-Liste (HTML-Page + shared-design.css + favicon + Icons), Activate räumt alte Caches, Fetch macht network-first mit cache-fallback (damit Updates direkt durchgehen). Non-GET-Requests passen unverändert durch. Kein Background-Sync, kein Push-Listener.
+
+**Wirkung im HTML:** `<head>` beider Templates erweitert um `<link rel="manifest">`, `<meta name="theme-color">`, vier Apple-Mobile-Web-App-Meta-Tags, zwei Apple-Touch-Icons (192/512). Service-Worker-Registrierung als kleines `<script>` vor `</body>`: Feature-Detection, `load`-Listener, `register('/nala/sw.js', { scope: '/nala/' })`, Catch loggt nach Console (kein UI-Block beim SW-Fail).
+
+- **Neuer Router:** [`zerberus/app/routers/pwa.py`](zerberus/app/routers/pwa.py) — vier Endpoints (`/nala/manifest.json`, `/nala/sw.js`, `/hel/manifest.json`, `/hel/sw.js`), keine Auth-Dependencies. Pure-Function-Schicht: `render_service_worker(cache_name, shell)` rendert SW-JS aus Template + Cache-Name + Shell-URL-Liste. Konstanten `NALA_MANIFEST`, `HEL_MANIFEST`, `NALA_SHELL`, `HEL_SHELL`.
+- **Verdrahtung in [`main.py`](zerberus/main.py):** `from zerberus.app.routers import legacy, nala, orchestrator, hel, archive, pwa`, dann `app.include_router(pwa.router)` als ERSTER `include_router`-Call (vor allen anderen). Kommentar erklärt warum die Reihenfolge zwingend ist.
+- **HTML-Verdrahtung Nala:** [`nala.py::NALA_HTML`](zerberus/app/routers/nala.py) `<head>` um sieben Tags erweitert (Manifest-Link, Theme-Color #0a1628, Apple-Capable yes, Apple-Status-Bar black-translucent, Apple-Title "Nala", zwei Apple-Touch-Icons). SW-Registrierung als 8-Zeilen-Script vor `</body>`.
+- **HTML-Verdrahtung Hel:** [`hel.py::ADMIN_HTML`](zerberus/app/routers/hel.py) analog mit Theme-Color #1a1a1a, Apple-Title "Hel", Hel-Icons. SW-Registrierung mit Scope `/hel/`.
+- **Icons:** vier PNGs unter `zerberus/static/pwa/{nala,hel}-{192,512}.png`, generiert via `scripts/generate_pwa_icons.py`. Skript ist Repo-Bestandteil, damit Icons reproduzierbar sind und das Theme später zentral angepasst werden kann.
+- **Logging:** Kein eigener Tag — SW-Fehler landen browser-seitig in `console.warn` mit Tag `[PWA-200]`. Server-seitig sind die Endpoints stumm (Standard-Access-Log reicht).
+- **Tests:** 39 neue Tests in [`test_pwa.py`](zerberus/tests/test_pwa.py) — 5 Pure-Function-Tests für `render_service_worker` (Cache-Name, Shell-URLs, alle drei Event-Listener, skipWaiting/clients.claim, GET-only-Caching), 6 Manifest-Dict-Tests (Pflichtfelder, 192+512-Icons pro App, Themes unterscheiden sich, JSON-serialisierbar), 4 Endpoint-Tests (Status 200, korrekte Media-Types, Body-Inhalte, Cache-Control), 8 Source-Audit-Tests pro HTML (Manifest-Link, Theme-Color, alle Apple-Tags, SW-Registrierung mit korrektem Scope), 4 Icon-Existenz-Tests (PNG-Magic-Bytes), 3 Routing-Order-Tests (pwa-Import, pwa-Include, pwa-VOR-hel), 2 Generator-Skript-Tests.
+- **Teststand:** 1533 → **1572 passed** (+39), 4 xfailed pre-existing, 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — bekannte Schulden).
+- **Phase 5a Ziel #16:** ✅ Nala + Hel als PWA. Unabhängiges Ziel, blockiert nichts. Damit sind die Ziele #1, #2, #3 und #16 durch. Nächste sinnvolle Patches: #5 (Code-Execution P201) oder #4 abschließen via Nala-Tab "Projekte" (P202).
 
 **Patch 199** — Phase 5a #3: Projekt-RAG-Index (2026-05-02)
 

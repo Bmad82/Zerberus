@@ -344,8 +344,12 @@ def create_app() -> FastAPI:
     app.middleware("http")(token_auth_middleware)
     
     # Router einbinden (v1_root deaktiviert)
-    from zerberus.app.routers import legacy, nala, orchestrator, hel, archive
+    # Patch 200: PWA-Router VOR Hel/Nala — /hel/manifest.json und /hel/sw.js
+    # müssen ohne Basic-Auth erreichbar sein, sonst kann der Browser das
+    # Manifest beim Install-Prompt nicht laden.
+    from zerberus.app.routers import legacy, nala, orchestrator, hel, archive, pwa
     # app.include_router(v1_root.router)  # auskommentiert
+    app.include_router(pwa.router)
     app.include_router(legacy.router)
     app.include_router(nala.router)
     app.include_router(orchestrator.router)

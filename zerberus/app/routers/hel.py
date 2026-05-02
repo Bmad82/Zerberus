@@ -169,6 +169,14 @@ ADMIN_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <title>&#9889; Hel – Zerberus Admin</title>
     <link rel="icon" href="/static/favicon.ico">
+    <!-- Patch 200: PWA-Verdrahtung — Manifest, Theme-Color, Apple-Meta, Touch-Icons. -->
+    <link rel="manifest" href="/hel/manifest.json">
+    <meta name="theme-color" content="#1a1a1a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Hel">
+    <link rel="apple-touch-icon" href="/static/pwa/hel-192.png">
+    <link rel="apple-touch-icon" sizes="512x512" href="/static/pwa/hel-512.png">
     <!-- Patch 151 (L-001): Gemeinsame Design-Tokens für Nala UND Hel. -->
     <link rel="stylesheet" href="/static/css/shared-design.css">
     <!-- Patch 91: Chart.js 4.4.7 + Zoom-Plugin + hammerjs (für Touch-Pinch-Zoom) -->
@@ -3403,6 +3411,15 @@ ADMIN_HTML = """<!DOCTYPE html>
             }
         }
         // ==================== /Patch 196 ====================
+    </script>
+    <!-- Patch 200: Service-Worker-Registrierung (PWA App-Shell-Cache). -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function () {
+                navigator.serviceWorker.register('/hel/sw.js', { scope: '/hel/' })
+                    .catch(function (err) { console.warn('[PWA-200] SW-Reg fehlgeschlagen:', err); });
+            });
+        }
     </script>
 </body>
 </html>

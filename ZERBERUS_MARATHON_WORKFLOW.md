@@ -1,7 +1,7 @@
 # ZERBERUS_MARATHON_WORKFLOW.md
 
 **Phase:** 5a — Nala-Projekte
-**Letzter Patch:** P199 | **Tests:** 1533 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
+**Letzter Patch:** P200 | **Tests:** 1572 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
 
 ---
 
@@ -79,13 +79,14 @@ Die folgende Liste beschreibt WAS, nicht WIE. Die Architektur ist deine Sache.
 | 13 | **Sehen was der Agent denkt** — Reasoning-Schritte sichtbar im Chat | Mobile = muss sichtbar sein | #5 | ⬜ |
 | 14 | **Wiederkehrende Jobs** — Scheduler für Projekt-Tasks | "Teste jede Nacht" | #1 | ⬜ |
 | 15 | **Billige Fehler billig fangen** — Validierung vor teuren LLM-Calls | Token sparen | #1 | ⬜ |
+| 16 | **Nala + Hel als PWA** — Manifest, Service Worker, Icons, "Add to Home Screen" auf iPhone + Android | App-Feeling ohne Browser-Chrome (Jojo iPhone, Chris Android) | — | ✅ (PWA-Patch P200 — pwa.router + Per-App-Manifeste + SW-Scope-via-Pfad + Kintsugi-Icons) |
 
 Abhängigkeits-Kurzform:
 - #1 ← fast alles
 - #5 ← #1, #3
 - #6, #7 ← #5
 - #10 ← #9 ← #5
-- #11, #15 ← unabhängig (jederzeit einschiebbar)
+- #11, #15, #16 ← unabhängig (jederzeit einschiebbar)
 
 ---
 
@@ -103,6 +104,7 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 **Persona-Merge-Layer (P197):** Header `X-Active-Project-Id: <int>` am `POST /v1/chat/completions` aktiviert das Projekt-Overlay. `zerberus/core/persona_merge.py` mit `merge_persona` (Pure-Function), `read_active_project_id` (Header-Reader mit Lowercase-Fallback), `resolve_project_overlay` (async DB-Schicht). Merge-Reihenfolge System → User → Projekt-Overlay (Decision 3, 2026-05-01). Verdrahtung VOR `_wrap_persona`-Marker, damit AKTIVE-PERSONA-Wrap auch das Overlay umschließt. `[PERSONA-197]`-Logging-Tag. Telegram bewusst ausgeklammert. ✅
 **Projekt-Templates (P198):** `create_project_endpoint` materialisiert `ZERBERUS_<SLUG>.md` (Projekt-Bibel, 5 Sektionen) + `README.md` (kurze Prosa) beim Anlegen. `zerberus/core/projects_template.py` mit Pure-Function-Render-Schicht (`render_project_bible`/`render_readme`/`template_files_for`) und async Materialisierungs-Schicht (`materialize_template`). SHA-Storage wie Uploads, DB-Eintrag in `project_files` mit lesbarem `relative_path`. Idempotenz via Existenz-Check (User-Inhalte werden NICHT überschrieben). Best-Effort: Crash bricht Anlegen nicht ab. Feature-Flag `ProjectsConfig.auto_template: bool = True`. Git-Init bewusst weggelassen (kommt mit Workspace-Layout in P200). `[TEMPLATE-198]`-Logging-Tag. ✅
 **Projekt-RAG-Index (P199):** Per-Projekt-Vektor-Store unter `data/projects/<slug>/_rag/{vectors.npy, meta.json}`, isoliert vom globalen RAG. `zerberus/core/projects_rag.py` mit Pure-Function-Schicht (Splitter, Chunker-Dispatcher, Top-K, Format-Block), File-I/O-Schicht (load/save/remove + atomic write), Embedder-Wrapper (`_embed_text` lazy MiniLM-L6-v2, monkeypatchbar) und async DB-Schicht (`index_project_file`, `remove_file_from_index`, `query_project_rag`). Pure-Numpy-Linearscan via `argpartition` statt FAISS, weil Per-Projekt-Indizes klein sind (~10-2000 Chunks) und Tests dependency-frei bleiben. Code-Files via `code_chunker.chunk_code` (P122), Prosa via lokalem Para-Splitter mit Sentence-Fallback. Idempotenz pro `file_id`. Trigger: Upload-Endpoint, `materialize_template`, Delete-File, Delete-Projekt — alle Best-Effort. Wirkung im Chat NACH P197/P184/P185/P118a/P190, VOR `messages.insert`, mit Marker `[PROJEKT-RAG — Kontext aus Projektdateien]`. Feature-Flags `rag_enabled`, `rag_top_k`, `rag_max_file_bytes`. `[RAG-199]`-Logging-Tag. ✅
+**PWA-Verdrahtung Nala + Hel (P200):** Eigener Router `zerberus/app/routers/pwa.py` mit vier Endpoints (`/nala/manifest.json`, `/nala/sw.js`, `/hel/manifest.json`, `/hel/sw.js`) ohne Auth-Dependencies. In `main.py` VOR `hel.router` via `include_router(pwa.router)` eingehängt — sonst gated `verify_admin` den Manifest-Fetch und der Install-Prompt erscheint nie. SW-Scope folgt dem Pfad der SW-Datei (`/nala/sw.js` → scope `/nala/`, `/hel/sw.js` → scope `/hel/`) — kein `Service-Worker-Allowed`-Header nötig, jede App cacht NUR ihre eigenen URLs. Per-App-Manifeste mit Theme-Color, Apple-Mobile-Web-App-Meta, zwei Icons (192/512 px, `purpose: "any maskable"` für Android-Adaptive). Icons via `scripts/generate_pwa_icons.py` (PIL, deterministisch) im Kintsugi-Stil. SW-Logik: install precacht App-Shell, activate räumt alte Caches, fetch macht network-first mit cache-fallback, non-GET passt durch. `[PWA-200]`-Logging-Tag (browser-seitig in `console.warn`). ✅
 
 ---
 
@@ -138,6 +140,13 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 | 23 | Hel-UI: Projekt anlegen → in `data/projects/<slug>/_rag/` müssen `vectors.npy` + `meta.json` liegen (durch P199-Verdrahtung in `materialize_template`). Eine Datei via Drop-Zone hochladen → Index wächst (vor/nach mit `python -c "from zerberus.core.projects_rag import load_index; v,m=load_index('<slug>', __import__('pathlib').Path('data')); print(v.shape if v is not None else None, len(m))"` prüfen). Server-Log nach `[RAG-199]` greppen → "indexed slug=... file_id=... chunks=N total=M" | P199 | ⬜ | — |
 | 24 | Datei in der Hel-UI löschen → Index schrumpft (gleicher `load_index`-Check). Server-Log: `[RAG-199] removed slug=... chunks_removed=N`. Dann das ganze Projekt löschen → `data/projects/<slug>/_rag/` Ordner ist weg (`ls data/projects/<slug>/_rag` schlägt fehl). | P199 | ⬜ | — |
 | 25 | Chat-Wirkung: Projekt mit indexierter Datei (Inhalt z.B. ein Markdown mit "Mein Geheimrezept ist Banane mit Senf"). `curl -H "Authorization: Bearer <token>" -H "X-Active-Project-Id: <id>" -X POST -d '{"messages":[{"role":"user","content":"Was ist mein Geheimrezept?"}]}' .../v1/chat/completions` → Antwort sollte "Banane mit Senf" enthalten. Server-Log: `[RAG-199] project_id=... slug=... chunks_used=N` mit N>0. Kontroll-Test ohne `X-Active-Project-Id` → keine `[RAG-199]`-Zeile, LLM kennt das Rezept nicht. | P199 | ⬜ | — |
+| 26 | git push + sync_repos.ps1 für P200 | P200 | ⬜ | — |
+| 27 | iPhone Safari → Nala öffnen → Teilen-Menü → "Zum Home-Bildschirm" → App startet ohne Browser-Leiste (standalone), Icon auf Homescreen ist Kintsugi-Gold-auf-Dunkel, Theme-Color/Statusbar passt | P200 | ⬜ | — |
+| 28 | iPhone Safari → Hel öffnen → "Zum Home-Bildschirm" (separates Icon!) → öffnet standalone, Icon unterscheidbar von Nala | P200 | ⬜ | — |
+| 29 | Android Chrome → Nala öffnen → "App installieren"-Banner oder Menü-Eintrag → installiert standalone, Splash-Screen zeigt Icon + Theme-Color, App im App-Drawer | P200 | ⬜ | — |
+| 30 | Android Chrome → Hel öffnen → "App installieren" → installiert standalone, separates Icon vom Nala-PWA | P200 | ⬜ | — |
+| 31 | Beide Geräte: Service-Worker-Registrierung im DevTools-Application-Tab sichtbar, App-Shell wird gecached, Reload aus dem Cache funktioniert wenn Server steht | P200 | ⬜ | — |
+| 32 | Hel-PWA-Auth: nach Install im standalone-Mode öffnen → Basic-Auth-Prompt erscheint (Hel-Routes sind weiterhin authentifiziert, nur Manifest+SW gehen public). Manifest-Fetch via DevTools-Network: 200 OHNE Auth-Header | P200 | ⬜ | — |
 
 ---
 

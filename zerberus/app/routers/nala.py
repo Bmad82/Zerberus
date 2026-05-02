@@ -108,6 +108,14 @@ NALA_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, interactive-widget=resizes-content">
     <title>Nala – Der Palast</title>
     <link rel="icon" href="/static/favicon.ico">
+    <!-- Patch 200: PWA-Verdrahtung — Manifest, Theme-Color, Apple-Meta, Touch-Icons. -->
+    <link rel="manifest" href="/nala/manifest.json">
+    <meta name="theme-color" content="#0a1628">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Nala">
+    <link rel="apple-touch-icon" href="/static/pwa/nala-192.png">
+    <link rel="apple-touch-icon" sizes="512x512" href="/static/pwa/nala-512.png">
     <!-- Patch 151 (L-001): Gemeinsame Design-Tokens für Nala UND Hel. -->
     <link rel="stylesheet" href="/static/css/shared-design.css">
     <style>
@@ -4005,6 +4013,15 @@ NALA_HTML = """<!DOCTYPE html>
         // Exports für optionale Aufrufer (z.B. Easter Eggs)
         window.__nalaParticles = { spawn, goldRain };
     })();
+</script>
+<!-- Patch 200: Service-Worker-Registrierung (PWA App-Shell-Cache). -->
+<script>
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+            navigator.serviceWorker.register('/nala/sw.js', { scope: '/nala/' })
+                .catch(function (err) { console.warn('[PWA-200] SW-Reg fehlgeschlagen:', err); });
+        });
+    }
 </script>
 </body>
 </html>
