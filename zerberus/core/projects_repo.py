@@ -307,3 +307,66 @@ async def delete_file(file_id: int) -> bool:
         await session.delete(f)
         await session.commit()
         return True
+
+
+# ---------------------------------------------------------------------------
+# Patch 196 (Phase 5a #4) — Datei-Upload-Helper
+# ---------------------------------------------------------------------------
+
+
+async def count_sha_references(sha256: str, exclude_file_id: Optional[int] = None) -> int:
+    """Wie viele ``project_files``-Zeilen referenzieren denselben Inhalt?
+
+    Wird vom Delete-Endpoint benutzt, um zu entscheiden ob die Bytes im
+    Storage entfernt werden duerfen — wenn ein anderes Projekt denselben
+    sha256 referenziert, bleiben die Bytes liegen und nur der DB-Eintrag
+    geht weg.
+
+    ``exclude_file_id`` blendet einen bestimmten Eintrag aus (typisch:
+    den Eintrag, der gerade geloescht werden soll) — sonst muesste der
+    Caller selbst nochmal -1 rechnen.
+    """
+    async with db_mod._async_session_maker() as session:
+        stmt = select(ProjectFile).where(ProjectFile.sha256 == sha256)
+        if exclude_file_id is not None:
+            stmt = stmt.where(ProjectFile.id != exclude_file_id)
+        result = await session.execute(stmt)
+        return len(result.scalars().all())
+
+
+def is_extension_blocked(filename: str, blocked: list[str]) -> bool:
+    """Case-insensitiver Suffix-Check. ``filename`` darf bereits sanitized
+    sein (Pfad-Teile entfernt) — die Funktion guckt nur auf das letzte
+    ``.ext`` und vergleicht mit der Blacklist.
+    """
+    name = filename.lower()
+    for ext in blocked:
+        if name.endswith(ext.lower()):
+            return True
+    return False
+
+
+def sanitize_relative_path(filename: str) -> str:
+    """Macht aus einem hochgeladenen Filename einen sicheren ``relative_path``.
+
+    - Trennzeichen werden auf ``/`` normalisiert
+    - Path-Traversal-Komponenten (``..``, absolute Pfade, leere Segmente
+      durch doppelte Slashes) werden gestrippt
+    - Fuehrende ``/`` weg, Whitespace getrimmt
+    - Leerer/nur-aus-Punkten-bestehender Filename → ``ValueError``
+
+    Wirft bewusst statt einen Default-Namen zu vergeben — der Caller soll
+    400 zurueckgeben und der User soll einen Filename liefern.
+    """
+    if not filename or not filename.strip():
+        raise ValueError("Filename darf nicht leer sein")
+
+    normalized = filename.replace("\\", "/").strip()
+    parts = [p for p in normalized.split("/") if p and p not in (".", "..")]
+    if not parts:
+        raise ValueError(f"Ungueltiger Filename: {filename!r}")
+
+    cleaned = "/".join(parts)
+    if not cleaned or cleaned.replace(".", "") == "":
+        raise ValueError(f"Ungueltiger Filename: {filename!r}")
+    return cleaned

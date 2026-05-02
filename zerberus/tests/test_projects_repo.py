@@ -371,3 +371,120 @@ class TestProjectFiles:
         assert compute_sha256(b"hello") == (
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         )
+
+
+# ----- Patch 196 — Upload-Helper --------------------------------------------
+
+
+class TestSanitizeRelativePath:
+    def test_basic_filename(self):
+        from zerberus.core.projects_repo import sanitize_relative_path
+        assert sanitize_relative_path("README.md") == "README.md"
+
+    def test_subdirectory_kept(self):
+        from zerberus.core.projects_repo import sanitize_relative_path
+        assert sanitize_relative_path("src/main.py") == "src/main.py"
+
+    def test_backslashes_normalized(self):
+        from zerberus.core.projects_repo import sanitize_relative_path
+        assert sanitize_relative_path("src\\main.py") == "src/main.py"
+
+    def test_dotdot_stripped(self):
+        from zerberus.core.projects_repo import sanitize_relative_path
+        assert sanitize_relative_path("../etc/passwd") == "etc/passwd"
+
+    def test_leading_slash_stripped(self):
+        from zerberus.core.projects_repo import sanitize_relative_path
+        assert sanitize_relative_path("/abs/path.txt") == "abs/path.txt"
+
+    def test_double_slash_collapsed(self):
+        from zerberus.core.projects_repo import sanitize_relative_path
+        assert sanitize_relative_path("a//b//c.txt") == "a/b/c.txt"
+
+    def test_empty_raises(self):
+        from zerberus.core.projects_repo import sanitize_relative_path
+        with pytest.raises(ValueError):
+            sanitize_relative_path("")
+        with pytest.raises(ValueError):
+            sanitize_relative_path("   ")
+
+    def test_only_dots_raises(self):
+        from zerberus.core.projects_repo import sanitize_relative_path
+        with pytest.raises(ValueError):
+            sanitize_relative_path("../..")
+        with pytest.raises(ValueError):
+            sanitize_relative_path("./.")
+
+
+class TestIsExtensionBlocked:
+    def test_blocked_extension_lowercase(self):
+        from zerberus.core.projects_repo import is_extension_blocked
+        assert is_extension_blocked("malware.exe", [".exe", ".bat"]) is True
+
+    def test_blocked_case_insensitive(self):
+        from zerberus.core.projects_repo import is_extension_blocked
+        assert is_extension_blocked("BIG.EXE", [".exe"]) is True
+
+    def test_safe_extension(self):
+        from zerberus.core.projects_repo import is_extension_blocked
+        assert is_extension_blocked("README.md", [".exe", ".bat"]) is False
+
+    def test_no_extension(self):
+        from zerberus.core.projects_repo import is_extension_blocked
+        assert is_extension_blocked("Makefile", [".exe"]) is False
+
+    def test_extension_in_path(self):
+        from zerberus.core.projects_repo import is_extension_blocked
+        assert is_extension_blocked("subdir/script.sh", [".sh"]) is True
+
+
+class TestCountShaReferences:
+    def test_zero_refs(self, tmp_db):
+        from zerberus.core import projects_repo
+        assert asyncio.run(projects_repo.count_sha_references("0" * 64)) == 0
+
+    def test_counts_across_projects(self, tmp_db):
+        from zerberus.core import projects_repo
+
+        sha = "1" * 64
+
+        async def run():
+            a = await projects_repo.create_project(name="Ref-A")
+            b = await projects_repo.create_project(name="Ref-B")
+            await projects_repo.register_file(
+                project_id=a["id"], relative_path="x.txt", sha256=sha,
+                size_bytes=10, storage_path="A",
+            )
+            await projects_repo.register_file(
+                project_id=b["id"], relative_path="x.txt", sha256=sha,
+                size_bytes=10, storage_path="B",
+            )
+            return await projects_repo.count_sha_references(sha)
+
+        assert asyncio.run(run()) == 2
+
+    def test_exclude_file_id(self, tmp_db):
+        from zerberus.core import projects_repo
+
+        sha = "2" * 64
+
+        async def run():
+            p = await projects_repo.create_project(name="Excl")
+            f1 = await projects_repo.register_file(
+                project_id=p["id"], relative_path="a.txt", sha256=sha,
+                size_bytes=10, storage_path="A",
+            )
+            f2 = await projects_repo.register_file(
+                project_id=p["id"], relative_path="b.txt", sha256=sha,
+                size_bytes=10, storage_path="B",
+            )
+            return (
+                await projects_repo.count_sha_references(sha),
+                await projects_repo.count_sha_references(sha, exclude_file_id=f1["id"]),
+                await projects_repo.count_sha_references(sha, exclude_file_id=f2["id"]),
+            )
+
+        total, excl_first, excl_second = asyncio.run(run())
+        assert total == 2
+        assert excl_first == 1
+        assert excl_second == 1

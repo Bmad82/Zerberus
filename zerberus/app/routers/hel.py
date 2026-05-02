@@ -1196,7 +1196,15 @@ ADMIN_HTML = """<!DOCTYPE html>
             <!-- Detail-Panel (zeigt Dateien des aktuell gewaehlten Projekts) -->
             <div class="card" id="projectDetailCard" style="display:none;">
                 <h2>&#128196; Dateien <span id="projectDetailName" style="color:#aaa;font-weight:normal;font-size:0.85em;"></span></h2>
-                <p style="color:#888;font-size:0.85em;margin-bottom:8px;">Upload kommt in P196.</p>
+                <!-- Patch 196: Drop-Zone + File-Picker -->
+                <div id="projectDropZone" data-project-id=""
+                     style="border:2px dashed #4ecdc4;border-radius:10px;padding:20px;margin-bottom:12px;text-align:center;color:#aaa;cursor:pointer;transition:background 0.15s;">
+                    <div style="font-size:1.5em;color:#4ecdc4;">&#11014;&#65039;</div>
+                    <div style="margin-top:6px;">Dateien hierher ziehen oder <span style="color:#ffd700;text-decoration:underline;">klicken zum Auswaehlen</span></div>
+                    <div style="margin-top:4px;font-size:0.78em;color:#666;">Max. 50&nbsp;MB pro Datei. Blockiert: .exe, .bat, .sh, ...</div>
+                    <input type="file" id="projectFileInput" multiple style="display:none;">
+                </div>
+                <div id="projectUploadProgress" style="margin-bottom:10px;font-family:monospace;font-size:0.85em;"></div>
                 <div id="projectFilesList" style="font-family:monospace;font-size:0.88em;color:#ddd;"></div>
             </div>
 
@@ -3247,19 +3255,26 @@ ADMIN_HTML = """<!DOCTYPE html>
             card.style.display = 'block';
             nameEl.textContent = project ? '— ' + project.slug : '';
             list.innerHTML = '<span style="color:#888;">Lade...</span>';
+            // Patch 196: Drop-Zone fuer dieses Projekt verdrahten
+            _setupProjectFileDrop(projectId);
             try {
                 const r = await fetch('/hel/admin/projects/' + projectId + '/files');
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 const data = await r.json();
                 const files = data.files || [];
                 if (files.length === 0) {
-                    list.innerHTML = '<span style="color:#888;">Keine Dateien (Upload kommt in P196).</span>';
+                    list.innerHTML = '<span style="color:#888;">Keine Dateien. Drop-Zone oben benutzen.</span>';
                 } else {
                     list.innerHTML = files.map(f => {
                         const kb = (f.size_bytes / 1024).toFixed(1);
-                        return '<div style="padding:4px 0;border-bottom:1px solid #2a2a2a;">'
-                            + '<span style="color:#4ecdc4;">' + _escapeHtml(f.relative_path) + '</span> '
-                            + '<span style="color:#888;">(' + kb + ' KB, ' + _escapeHtml(f.mime_type || 'unknown') + ')</span>'
+                        return '<div style="padding:6px 0;border-bottom:1px solid #2a2a2a;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">'
+                            + '<div style="flex:1;min-width:0;">'
+                                + '<span style="color:#4ecdc4;">' + _escapeHtml(f.relative_path) + '</span> '
+                                + '<span style="color:#888;">(' + kb + ' KB, ' + _escapeHtml(f.mime_type || 'unknown') + ')</span>'
+                            + '</div>'
+                            + '<button onclick="deleteProjectFile(' + projectId + ',' + f.id + ',\'' + _escapeHtml(f.relative_path).replace(/'/g, "\\'") + '\')" '
+                                + 'style="padding:4px 8px;min-height:36px;background:#5c2f2f;color:#f88;border:1px solid #844;border-radius:4px;font-size:0.85em;">'
+                                + '&#128465;&#65039; Loeschen</button>'
                             + '</div>';
                     }).join('');
                 }
@@ -3267,7 +3282,127 @@ ADMIN_HTML = """<!DOCTYPE html>
                 list.innerHTML = '<span style="color:#f88;">Fehler: ' + e.message + '</span>';
             }
         }
+
         // ==================== /Patch 195 ====================
+
+        // ==================== Patch 196 (Phase 5a #4): Datei-Upload-UI ====================
+        let _projectDropWired = false;
+
+        function _setupProjectFileDrop(projectId) {
+            const zone = document.getElementById('projectDropZone');
+            const input = document.getElementById('projectFileInput');
+            if (!zone || !input) return;
+            zone.dataset.projectId = String(projectId);
+            input.dataset.projectId = String(projectId);
+            if (_projectDropWired) return;
+            _projectDropWired = true;
+
+            zone.addEventListener('click', () => input.click());
+            input.addEventListener('change', () => {
+                const pid = parseInt(input.dataset.projectId, 10);
+                if (input.files && input.files.length > 0) {
+                    _uploadProjectFiles(pid, input.files);
+                    input.value = '';
+                }
+            });
+
+            ['dragenter', 'dragover'].forEach(ev => {
+                zone.addEventListener(ev, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    zone.style.background = '#1a3a3a';
+                });
+            });
+            ['dragleave', 'drop'].forEach(ev => {
+                zone.addEventListener(ev, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    zone.style.background = '';
+                });
+            });
+            zone.addEventListener('drop', (e) => {
+                const pid = parseInt(zone.dataset.projectId, 10);
+                if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+                    _uploadProjectFiles(pid, e.dataTransfer.files);
+                }
+            });
+        }
+
+        function _uploadProjectFiles(projectId, fileList) {
+            const progress = document.getElementById('projectUploadProgress');
+            if (!progress) return;
+            const files = Array.from(fileList);
+            let done = 0;
+            progress.innerHTML = files.map((f, i) =>
+                '<div id="proj-up-' + i + '" style="padding:2px 0;color:#aaa;">' + _escapeHtml(f.name) + ' — wartet...</div>'
+            ).join('');
+
+            const uploadOne = (f, idx) => new Promise((resolve) => {
+                const row = document.getElementById('proj-up-' + idx);
+                const fd = new FormData();
+                fd.append('file', f, f.name);
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/hel/admin/projects/' + projectId + '/files', true);
+                xhr.upload.addEventListener('progress', (ev) => {
+                    if (ev.lengthComputable && row) {
+                        const pct = Math.round((ev.loaded / ev.total) * 100);
+                        row.innerHTML = _escapeHtml(f.name) + ' — ' + pct + '%';
+                        row.style.color = '#4ecdc4';
+                    }
+                });
+                xhr.onload = () => {
+                    if (row) {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            row.innerHTML = '&#10004; ' + _escapeHtml(f.name) + ' — fertig';
+                            row.style.color = '#4ecdc4';
+                        } else {
+                            let detail = 'HTTP ' + xhr.status;
+                            try {
+                                const body = JSON.parse(xhr.responseText);
+                                if (body && body.detail) detail = body.detail;
+                            } catch (_) {}
+                            row.innerHTML = '&#10006; ' + _escapeHtml(f.name) + ' — ' + _escapeHtml(detail);
+                            row.style.color = '#f88';
+                        }
+                    }
+                    resolve();
+                };
+                xhr.onerror = () => {
+                    if (row) {
+                        row.innerHTML = '&#10006; ' + _escapeHtml(f.name) + ' — Netzwerk-Fehler';
+                        row.style.color = '#f88';
+                    }
+                    resolve();
+                };
+                xhr.send(fd);
+            });
+
+            // Sequenziell, damit der Server nicht mit parallelen Uploads
+            // ueberrannt wird und die Progress-Anzeige nachvollziehbar bleibt.
+            (async () => {
+                for (let i = 0; i < files.length; i++) {
+                    await uploadOne(files[i], i);
+                    done++;
+                }
+                await loadProjectFiles(projectId);
+            })();
+        }
+
+        async function deleteProjectFile(projectId, fileId, label) {
+            if (!confirm('Datei "' + label + '" loeschen? Bytes werden entfernt, wenn sie nirgends sonst referenziert sind.')) return;
+            try {
+                const r = await fetch('/hel/admin/projects/' + projectId + '/files/' + fileId, { method: 'DELETE' });
+                if (!r.ok) {
+                    const errBody = await r.json().catch(() => ({}));
+                    throw new Error(errBody.detail || ('HTTP ' + r.status));
+                }
+                await loadProjectFiles(projectId);
+            } catch (e) {
+                const list = document.getElementById('projectFilesList');
+                if (list) list.innerHTML = '<span style="color:#f88;">Loeschen fehlgeschlagen: ' + _escapeHtml(e.message) + '</span>';
+            }
+        }
+        // ==================== /Patch 196 ====================
     </script>
 </body>
 </html>
@@ -3769,6 +3904,156 @@ async def list_project_files_endpoint(project_id: int):
         raise HTTPException(404, "Projekt nicht gefunden")
     files = await projects_repo.list_files(project_id)
     return {"files": files, "count": len(files)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Patch 196 (Phase 5a #4): Datei-Upload-Endpoints
+#  Multipart-Upload + Delete mit SHA-Dedup. Bytes liegen unter
+#  ``<projects.data_dir>/projects/<slug>/<sha[:2]>/<sha>`` (Konvention aus
+#  P194). Extension-Blacklist + Max-Size kommen aus ProjectsConfig.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _projects_storage_base() -> Path:
+    """Storage-Wurzel aus den Settings — als Path. Caller liest erst hier,
+    damit ``data_dir`` zur Laufzeit umgebogen werden kann (Tests setzen
+    monkeypatch auf diese Funktion statt auf die Settings).
+    """
+    settings = get_settings()
+    return Path(settings.projects.data_dir)
+
+
+async def _store_uploaded_bytes(target: Path, data: bytes) -> None:
+    """Schreibt ``data`` atomar nach ``target`` — erst tempfile in den
+    Ziel-Ordner, dann ``os.replace``. Verhindert halb-geschriebene Files
+    bei Crash mitten im Schreiben (z.B. Server-Kill).
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix=".upload_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp_path, str(target))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _cleanup_storage_path(path: Path, base: Path) -> None:
+    """Loescht Bytes + leere Parent-Ordner bis zum ``base``-Anker.
+    Best-Effort — Fehler werden geschluckt, weil das Repo-DB-Delete bereits
+    durch ist und der Aufrufer einen 200 sehen soll.
+    """
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        return
+    parent = path.parent
+    try:
+        base_resolved = base.resolve()
+    except OSError:
+        return
+    while True:
+        try:
+            if parent.resolve() == base_resolved:
+                return
+            if not parent.exists():
+                return
+            if any(parent.iterdir()):
+                return
+            parent.rmdir()
+            parent = parent.parent
+        except OSError:
+            return
+
+
+@router.post("/admin/projects/{project_id}/files")
+async def upload_project_file_endpoint(project_id: int, file: UploadFile = File(...)):
+    """Multipart-Upload. SHA256-Dedup: existiert derselbe Inhalt schon im
+    Storage, wird nur der Metadaten-Eintrag neu angelegt — die Bytes
+    werden nicht doppelt geschrieben.
+    """
+    from zerberus.core import projects_repo
+
+    project = await projects_repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(404, "Projekt nicht gefunden")
+
+    raw_filename = file.filename or ""
+    try:
+        relative_path = projects_repo.sanitize_relative_path(raw_filename)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    settings = get_settings()
+    blocked = settings.projects.blocked_extensions
+    if projects_repo.is_extension_blocked(relative_path, blocked):
+        raise HTTPException(400, f"Datei-Endung blockiert: {relative_path}")
+
+    max_bytes = settings.projects.max_upload_bytes
+    data = await file.read()
+    if len(data) == 0:
+        raise HTTPException(400, "Leere Datei abgewiesen")
+    if len(data) > max_bytes:
+        raise HTTPException(
+            413,
+            f"Datei zu gross ({len(data)} bytes > {max_bytes} bytes Limit)",
+        )
+
+    sha256 = projects_repo.compute_sha256(data)
+    base = _projects_storage_base()
+    target = projects_repo.storage_path_for(project["slug"], sha256, base)
+
+    if not target.exists():
+        await _store_uploaded_bytes(target, data)
+
+    try:
+        registered = await projects_repo.register_file(
+            project_id=project_id,
+            relative_path=relative_path,
+            sha256=sha256,
+            size_bytes=len(data),
+            storage_path=str(target),
+            mime_type=file.content_type or None,
+        )
+    except Exception as e:
+        # UNIQUE-Verletzung (selber Pfad bereits im Projekt) → 409
+        msg = str(e).lower()
+        if "unique" in msg or "integrity" in msg:
+            raise HTTPException(409, f"Datei mit Pfad '{relative_path}' existiert bereits")
+        raise
+
+    return {"status": "ok", "file": registered}
+
+
+@router.delete("/admin/projects/{project_id}/files/{file_id}")
+async def delete_project_file_endpoint(project_id: int, file_id: int):
+    """Loescht Metadaten-Eintrag und ggf. Bytes. Bytes bleiben erhalten,
+    wenn ein anderer ``project_files``-Eintrag (auch in einem anderen
+    Projekt) denselben sha256 referenziert.
+    """
+    from zerberus.core import projects_repo
+
+    file_meta = await projects_repo.get_file(file_id)
+    if file_meta is None or file_meta["project_id"] != project_id:
+        raise HTTPException(404, "Datei nicht gefunden")
+
+    other_refs = await projects_repo.count_sha_references(
+        file_meta["sha256"], exclude_file_id=file_id
+    )
+    deleted = await projects_repo.delete_file(file_id)
+    if not deleted:
+        raise HTTPException(404, "Datei nicht gefunden")
+
+    if other_refs == 0 and file_meta.get("storage_path"):
+        base = _projects_storage_base()
+        _cleanup_storage_path(Path(file_meta["storage_path"]), base)
+
+    return {"status": "ok", "bytes_removed": other_refs == 0}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

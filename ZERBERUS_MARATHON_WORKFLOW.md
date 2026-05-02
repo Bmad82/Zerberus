@@ -1,7 +1,7 @@
 # ZERBERUS_MARATHON_WORKFLOW.md
 
 **Phase:** 5a — Nala-Projekte
-**Letzter Patch:** P195 | **Tests:** 1382 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
+**Letzter Patch:** P196 | **Tests:** 1431 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
 
 ---
 
@@ -67,7 +67,7 @@ Die folgende Liste beschreibt WAS, nicht WIE. Die Architektur ist deine Sache.
 | 1 | **Projekte existieren als Entität** — Persistenz, CRUD, sichtbar in Hel | Fundament für alles | — | ✅ (Backend P194, Hel-UI P195) |
 | 2 | **Projekte haben Struktur** — Template-Dateien, Ordner, optional Git | Damit Projekte nicht leer starten | #1 | ⬜ |
 | 3 | **Projekte haben eigenes Wissen** — isolierter RAG-Index pro Projekt | Code-LLM braucht Projektkontext | #1 | ⬜ |
-| 4 | **Dateien kommen ins Projekt** — Upload in Nala-Chat, Indexierung | Dateien müssen rein | #1 | ⬜ |
+| 4 | **Dateien kommen ins Projekt** — Upload in Nala-Chat, Indexierung | Dateien müssen rein | #1 | 🟡 (Hel-Upload P196 ✅, Nala-Upload + RAG-Indexierung offen → P199) |
 | 5 | **Code wird ausgeführt** — vom Chat zur Docker-Sandbox und zurück | Kernfeature | #1, #3 | ⬜ |
 | 6 | **Mensch bestätigt vor Ausführung** — HitL-Gate, One-Click | Sicherheit | #5 | ⬜ |
 | 7 | **Zweite Meinung vor Ausführung** — Veto-Logik, Wandschlag-Erkennung | Schutzschicht | #5 | ⬜ |
@@ -99,6 +99,7 @@ Prosodie Gemma E2B (P189-191) ✅
 Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 **Projekte-Backend (P194):** Tabellen `projects` + `project_files` in `bunker_memory.db`, Repo `zerberus/core/projects_repo.py`, Hel-CRUD `/hel/admin/projects/*` (Basic-Auth) ✅
 **Projekte-UI (P195):** Hel-Tab `📁 Projekte` mit Liste/Form/Persona-Overlay-Editor ✅
+**Projekt-Datei-Upload (P196):** `POST /hel/admin/projects/{id}/files` (Multipart) + `DELETE /hel/admin/projects/{id}/files/{file_id}` mit SHA-Dedup-Schutz, Extension-Blacklist, 50 MB Limit, atomic write via `tempfile + os.replace`, Drop-Zone-UI mit XHR-Progress + Lösch-Button ✅
 
 ---
 
@@ -119,6 +120,12 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 | 8 | Hel öffnen → Tab `📁 Projekte` sichtbar, Liste lädt, "+ Projekt anlegen" funktioniert (Anlegen + Edit + Archive + Delete) | P195 | ⬜ | — |
 | 9 | Hel-Tab `📁 Projekte` auf iPhone: Tabelle scrollbar, Form-Overlay nicht abgeschnitten, Touch-Targets klickbar | P195 | ⬜ | — |
 | 10 | Persona-Overlay-Form: `tone_hints` als Komma-Liste eingeben, Speichern, Edit öffnen → Werte korrekt deserialisiert (kein doppeltes Komma, keine leeren Strings) | P195 | ⬜ | — |
+| 11 | git push + sync_repos.ps1 für P196 | P196 | ⬜ | — |
+| 12 | Projekt anlegen, Detail-Card öffnen → Drop-Zone sichtbar mit Hinweistext "Max. 50 MB". Datei per Drag&Drop + per Klick-Auswahl hochladen → beide Wege funktionieren, Progress läuft, Liste reloaded mit Datei | P196 | ⬜ | — |
+| 13 | Reject-Pfade: `.exe`-Datei droppen → 400 mit "blockiert", 60-MB-Datei droppen → 413 "zu gross". Im Browser-Devtools-Network-Tab Status prüfen | P196 | ⬜ | — |
+| 14 | Datei löschen → Confirm-Dialog. Bestätigen → Datei verschwindet aus Liste. Storage-Ordner `data/projects/<slug>/` prüfen: Datei + leere Sha-Prefix-Ordner sind weg | P196 | ⬜ | — |
+| 15 | SHA-Dedup-Schutz: Dieselbe Datei in zwei Projekten hochladen, in Projekt A löschen → Datei in Projekt B bleibt erhalten (Test deckt das schon, hier nur sanity-check über Hel-UI) | P196 | ⬜ | — |
+| 16 | iPhone: Drop-Zone und Datei-Liste auf 390x844-Viewport — Drop-Zone ist tap-bar (öffnet File-Picker), Lösch-Button hat 36px+ Touch-Target | P196 | ⬜ | — |
 
 ---
 

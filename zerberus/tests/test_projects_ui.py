@@ -80,8 +80,8 @@ class TestSectionBody:
     def test_detail_card_fuer_dateien(self, hel_src):
         assert 'id="projectDetailCard"' in hel_src
         assert 'id="projectFilesList"' in hel_src
-        # Hinweis auf P196
-        assert "P196" in hel_src
+        # Patch 196: Drop-Zone hat den "Upload kommt in P196"-Platzhalter aus P195 abgeloest
+        assert 'id="projectDropZone"' in hel_src
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -163,3 +163,105 @@ class TestMobileFirst:
         assert "min-height:44px" in section
         # Mehrfach (Anlegen + Reload + Form-Felder + Buttons im Form)
         assert section.count("min-height:44px") >= 4
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Patch 196 — Datei-Upload-UI
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestP196DropZone:
+    def test_drop_zone_existiert(self, hel_src):
+        assert 'id="projectDropZone"' in hel_src
+        assert 'id="projectFileInput"' in hel_src
+        # Multiple-Upload erlaubt
+        assert 'id="projectFileInput" multiple' in hel_src
+
+    def test_drop_zone_zeigt_max_size_und_blocklist(self, hel_src):
+        zone_block = hel_src.split('id="projectDropZone"')[1][:1000]
+        assert "MB" in zone_block
+        assert ".exe" in zone_block
+
+    def test_progress_container_existiert(self, hel_src):
+        assert 'id="projectUploadProgress"' in hel_src
+
+    def test_alte_p196_ankuendigung_entfernt(self, hel_src):
+        # Die "Upload kommt in P196." Note aus P195 muss raus sein
+        assert "Upload kommt in P196" not in hel_src
+
+
+class TestP196JsFunctions:
+    def test_setup_drop_function(self, hel_src):
+        assert "function _setupProjectFileDrop(" in hel_src
+
+    def test_upload_function_uses_xhr_progress(self, hel_src):
+        assert "function _uploadProjectFiles(" in hel_src
+        # Progress-Event-Listener fuer den Upload
+        assert "xhr.upload.addEventListener('progress'" in hel_src
+        # FormData fuer Multipart
+        assert "new FormData()" in hel_src
+        # POST auf den richtigen Endpoint
+        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:3000]
+        assert "/hel/admin/projects/" in upload_block
+        assert "/files'" in upload_block
+
+    def test_drag_and_drop_events_wired(self, hel_src):
+        setup_block = hel_src.split("function _setupProjectFileDrop(")[1][:2500]
+        for ev in ("dragenter", "dragover", "dragleave", "drop"):
+            assert ev in setup_block
+
+    def test_load_files_triggers_drop_setup(self, hel_src):
+        # loadProjectFiles muss _setupProjectFileDrop aufrufen, damit die
+        # Drop-Zone an die richtige Projekt-ID gebunden ist
+        load_block = hel_src.split("async function loadProjectFiles(")[1][:2500]
+        assert "_setupProjectFileDrop(projectId)" in load_block
+
+    def test_delete_file_function(self, hel_src):
+        assert "async function deleteProjectFile(" in hel_src
+        del_block = hel_src.split("async function deleteProjectFile(")[1][:1500]
+        assert "'DELETE'" in del_block
+        # Bestaetigungs-Dialog
+        assert "confirm(" in del_block
+        # Ruft Endpoint korrekt
+        assert "/files/' + fileId" in del_block
+
+    def test_file_list_has_delete_button(self, hel_src):
+        load_block = hel_src.split("async function loadProjectFiles(")[1][:3000]
+        assert "deleteProjectFile(" in load_block
+
+    def test_uploads_are_sequential(self, hel_src):
+        # Sequenziell statt Promise.all — Server schonen + saubere Progress
+        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:3000]
+        assert "for (let i = 0; i < files.length" in upload_block
+        # await pro File, nicht Promise.all
+        assert "await uploadOne(" in upload_block
+
+    def test_upload_progress_handles_errors(self, hel_src):
+        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:3000]
+        assert "xhr.onerror" in upload_block
+        # Fehler-Detail aus JSON-Body
+        assert "responseText" in upload_block
+
+
+class TestP196Backend:
+    """Source-Inspection auf den Server-Code — vergewissert, dass der Endpoint
+    existiert und Schluessel-Validierungen drin sind. Funktional kommt der
+    Test ueber ``test_projects_files_upload.py``.
+    """
+
+    def test_upload_endpoint_existiert(self, hel_src):
+        assert 'POST("/admin/projects/{project_id}/files")' in hel_src.replace(".post", "POST")
+        # Function-Definition
+        assert "async def upload_project_file_endpoint" in hel_src
+
+    def test_delete_file_endpoint_existiert(self, hel_src):
+        assert "async def delete_project_file_endpoint" in hel_src
+
+    def test_atomic_write_helper(self, hel_src):
+        # Atomic Write ueber tempfile + os.replace — verhindert halbe Files
+        assert "_store_uploaded_bytes" in hel_src
+        assert "os.replace" in hel_src
+
+    def test_storage_base_funktion(self, hel_src):
+        # Indirektion ueber Funktion — Tests koennen sie monkeypatchen
+        assert "def _projects_storage_base(" in hel_src

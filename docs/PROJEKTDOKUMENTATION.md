@@ -5151,5 +5151,67 @@ Datei-Upload-Endpoint `POST /hel/admin/projects/{id}/files` mit `multipart/form-
 
 ---
 
-*Stand: 2026-05-02, Patch 195 — Phase 5a #1 vollständig abgeschlossen (Backend P194 + UI P195). 1382 passed, 0 neue Failures.*
+## Patch 196 — Phase 5a #4: Datei-Upload-Endpoint + UI (2026-05-02)
+
+### Warum
+Phase-5a-Ziel #4 ("Dateien kommen ins Projekt") öffnet sich. P194 hat das Backend-Fundament gelegt (Tabellen + Repo + Read-Endpoints), P195 die UI-Hülle, in der Detail-Card stand aber nur "Upload kommt in P196". Damit Projekte tatsächlich Inhalte tragen können — Voraussetzung für Ziel #3 (projekt-spezifischer RAG-Index, P199) und Ziel #5 (Code-Sandbox, P200) — braucht es jetzt den Upload-Pfad inklusive Sicherheitsnetz (Extension-Blacklist, Size-Limit, Path-Sanitize) und einen Delete-Pfad, der Cross-Project-Inhaltsverlust verhindert.
+
+### Was P196 macht
+Multipart-Upload-Endpoint, Delete-Endpoint mit SHA-Dedup-Schutz, Drop-Zone in der Detail-Card mit Drag-and-Drop und File-Picker, pro Datei eigene Progress-Zeile, Lösch-Button pro Listeneintrag mit Confirm. Validierung an drei Achsen: Filename (kein Path-Traversal, keine leeren Segmente), Extension (Blacklist `.exe`, `.bat`, `.cmd`, `.com`, `.msi`, `.dll`, `.scr`, `.sh`, `.ps1`, `.vbs`, `.jar`), Größe (Default 50 MB).
+
+### Architektur-Entscheidungen
+
+**Defaults im Pydantic-Modell, nicht in `config.yaml`.** `ProjectsConfig` lebt in `core/config.py` mit Defaults für `data_dir`, `max_upload_bytes`, `blocked_extensions`. Grund: `config.yaml` ist gitignored — wenn Defaults nur dort lägen, hätte ein frisch geklontes Repo plötzlich kein Upload-Limit und keine Extension-Blacklist. Gleiches Pattern wie `OpenRouterConfig`, `WhisperConfig`, `HitlConfig`, `SandboxConfig` aus früheren Patches. Override per `config.yaml` weiterhin möglich.
+
+**Repo-Helper bleiben Pure-Functions auf der DB-Schicht.** Neue Funktionen `count_sha_references(sha256, exclude_file_id=None)`, `is_extension_blocked(filename, blocked)`, `sanitize_relative_path(filename)` gehören ins Repo, weil sie zur Storage-Konvention bzw. zum Schema-Vertrag gehören. Storage-Cleanup (Bytes löschen, leere Parent-Ordner aufräumen) bleibt aber im Endpoint, weil `base_dir` Endpoint-Kontext ist und das Repo dependency-frei (kein Filesystem) bleiben soll.
+
+**Storage-Pfade bleiben pro Slug, nicht global per SHA.** Die Konvention aus P194 ist `<base>/projects/<slug>/<sha[:2]>/<sha>` — derselbe Inhalt in zwei Projekten landet also in zwei verschiedenen Storage-Pfaden, beide unter ihrem Projekt-Slug. Vorteil: Beim harten Projekt-Delete ist der Storage-Tree des Projekts ein abgeschlossener Sub-Baum, einfach `rm -rf <base>/projects/<slug>` möglich. Nachteil: keine Inhalts-Dedup über Projekte hinweg auf Disk-Ebene. Diese Trade-Off-Entscheidung steht damit fest. Innerhalb eines Projekts wird trotzdem dedupliziert (gleicher SHA → kein zweites `os.replace` notwendig).
+
+**Atomic Write per `tempfile.mkstemp` + `os.replace`.** Verhindert halb-geschriebene Dateien bei Server-Kill mitten im Upload. `tempfile.mkstemp` legt das Temp-File im Ziel-Ordner an, damit `os.replace` ein Rename auf demselben Volume macht (atomar) statt einer Cross-Volume-Copy. Im Fehlerfall wird das Temp-File aufgeräumt.
+
+**`_projects_storage_base()` als Funktion, nicht als Modul-Konstante.** Tests können den Pfad per `monkeypatch.setattr(hel_mod, "_projects_storage_base", lambda: tmp_path)` umbiegen, ohne die globalen Settings anzufassen. Sauberer als ein Settings-Override, weil der Settings-Cache (P156: `invalidates_settings`) sonst Tests gegenseitig stören würde.
+
+**Delete mit SHA-Dedup-Schutz.** `count_sha_references(sha256, exclude_file_id=file_id)` prüft VOR dem `delete_file`, ob der Inhalt anderswo (gleiches Projekt, anderes Projekt) noch referenziert wird. Wenn ja: nur DB-Eintrag weg, Bytes bleiben. Wenn nein: Bytes + DB-Eintrag weg, dann werden leere Parent-Ordner bis zum `data_dir`-Anker aufgeräumt (best-effort, OSError wird geschluckt). Schützt gegen versehentliches Löschen geteilter Inhalte. Response-Feld `bytes_removed: bool` macht die Entscheidung für den Client transparent.
+
+**Sequenzielle Uploads im Frontend, nicht `Promise.all`.** Wenn der User 50 Dateien gleichzeitig droppt, würden parallele XHRs den Server überrennen und die Progress-Anzeige unleserlich machen. `for`-Loop mit `await uploadOne(files[i], i)` hält die Reihenfolge stabil und der `xhr.upload.progress`-Event ist pro Datei nachvollziehbar. Trade-Off: 50 Dateien × 100 ms Overhead = 5 s Mehrkosten gegenüber paralleler Variante — akzeptabel für eine Admin-UI.
+
+### HTML-Markup
+
+```html
+<div id="projectDropZone" data-project-id=""
+     style="border:2px dashed #4ecdc4; ...">
+    <div>Dateien hierher ziehen oder klicken zum Auswählen</div>
+    <div>Max. 50 MB pro Datei. Blockiert: .exe, .bat, .sh, ...</div>
+    <input type="file" id="projectFileInput" multiple style="display:none;">
+</div>
+<div id="projectUploadProgress"></div>
+<div id="projectFilesList"></div>
+```
+
+`data-project-id` wird in `loadProjectFiles(projectId)` gesetzt und in `_setupProjectFileDrop(projectId)` ausgelesen. Drop-Zone-Event-Listener werden nur einmal verdrahtet (Flag `_projectDropWired`), damit kein Memory-Leak bei wiederholten Tab-Wechseln entsteht.
+
+### Tests
+49 neue Tests, verteilt auf drei Dateien:
+
+- [`test_projects_files_upload.py`](../zerberus/tests/test_projects_files_upload.py) — 17 funktionale Endpoint-Tests. `_FakeUpload` als Duck-Type-Mock für `UploadFile` (vermeidet FastAPI-Versions-Drift). `tmp_db` (DB-Isolation) + `tmp_storage` (`_projects_storage_base`-Monkeypatch) als Fixtures. Klassen: `TestUploadHappyPath` (Bytes + Metadata, Subdir, Dedup), `TestUploadRejects` (404, 400 Extension, 400 case-insensitive, 400 empty filename, 400 path-traversal-only, 400 empty data, 413 too-large, 409 duplicate-path), `TestDeleteFile` (unique → bytes weg, shared → bytes bleiben, 404 unknown, 404 wrong project), `TestStorageCleanup` (leere Parent-Ordner werden mitentfernt).
+- [`test_projects_repo.py`](../zerberus/tests/test_projects_repo.py) — 21 neue Tests in den Klassen `TestSanitizeRelativePath`, `TestIsExtensionBlocked`, `TestCountShaReferences`. Decken Edge-Cases von Pfad-Sanitierung (Backslash-Normalisierung, `..`-Stripping, leading slash, double slash) und Counter-Logik (Cross-Projects, exclude_file_id).
+- [`test_projects_ui.py`](../zerberus/tests/test_projects_ui.py) — 11 neue Source-Inspection-Tests: `TestP196DropZone` (Markup + Max-Size-Hinweis + Progress-Container + alter P195-Platzhalter weg), `TestP196JsFunctions` (Setup-Fn, XHR-Progress-Listener, Drag-and-Drop-Events, Lazy-Setup-in-loadFiles, Delete-Button + Confirm + DELETE-Method, sequenzielle Uploads, Error-Handling), `TestP196Backend` (Endpoint-Funktionen + atomic-write-Helper + Storage-Base-Funktion existieren).
+
+Teststand 1382 → **1431 passed** (+49). 4 xfailed (pre-existing). 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts) bleiben unverändert.
+
+### Sicherheit
+- **Path-Traversal:** `sanitize_relative_path` strippt `..` und absolute Pfade. Test deckt sowohl partielle (`../../etc/passwd` → `etc/passwd`) als auch nur-`..`-Filenames (`../..` → 400).
+- **Cross-Project-Mutation:** `delete_project_file_endpoint` prüft nicht nur `file_id`, sondern auch `project_id == file_meta["project_id"]`. Datei aus Projekt A lässt sich nicht über Projekt B's URL löschen — verhindert Mutation per ID-Raten.
+- **Atomic Write:** Server-Kill mitten im Upload hinterlässt höchstens ein `.upload_*.tmp`-File im Storage-Ordner, kein halb-geschriebenes Ziel. `os.replace` ist auf POSIX-Filesystems (NTFS, ext4, ZFS) atomar.
+- **Extension-Blacklist** ist Schutz vor versehentlichem Hochladen, nicht Code-Sandbox-Ersatz. Code-Execution läuft separat über die Docker-Sandbox (P171).
+
+### Was NICHT in P196 passiert ist
+- **Persona-Merge-Layer aktivieren** → P197 (Decision 3 aus 2026-05-01: System → User → Projekt-Overlay im LLM-Prompt)
+- **RAG-Index pro Projekt** → P199 (FAISS isoliert, indexiert die hier hochgeladenen Files)
+- **Template-Generierung beim Anlegen** → P198 (`ZERBERUS_X.md`, Ordnerstruktur, optional Git-Init)
+- **Playwright-E2E für die Drop-Zone** — Source-Inspection deckt Markup und JS-Signaturen, aber keine echten Browser-Drag-Drop-Events. Wenn der manuelle iPhone/Desktop-Test Probleme zeigt, ist Loki/Playwright der nächste Schritt.
+
+---
+
+*Stand: 2026-05-02, Patch 196 — Phase 5a Ziel #4 geöffnet (Datei-Upload + Delete + SHA-Dedup-Schutz). 1431 passed, 0 neue Failures.*
 

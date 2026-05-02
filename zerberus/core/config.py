@@ -141,6 +141,31 @@ class HitlConfig(BaseModel):
     sweep_interval_seconds: int = 30  # Sweep-Frequenz
 
 
+class ProjectsConfig(BaseModel):
+    """Patch 196 — Defaults fuer Projekt-Datei-Uploads (Phase 5a #4).
+
+    Defaults sind hier (statt nur in config.yaml) gesetzt, weil
+    ``config.yaml`` gitignored ist — sonst wuerden Storage-Limit und
+    Extension-Blacklist nach ``git clone`` fehlen und der Upload haette
+    keinen Schutz mehr.
+
+    ``data_dir`` ist die Storage-Wurzel; die tatsaechlichen Pfade kommen
+    aus ``projects_repo.storage_path_for(slug, sha, base_dir)`` und sind
+    sha-prefix-fragmentiert (verhindert Hotspot-Ordner).
+
+    Die Extension-Blacklist verhindert versehentliches Hochladen von
+    ausfuehrbaren Dateien — Schutz vor Malware-Mitlieferung, nicht
+    Code-Sandbox-Ersatz. Code-Execution laeuft separat ueber die
+    Docker-Sandbox (P171).
+    """
+    data_dir: str = "data"
+    max_upload_bytes: int = 50 * 1024 * 1024  # 50 MB
+    blocked_extensions: List[str] = [
+        ".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".scr",
+        ".sh", ".ps1", ".vbs", ".jar",
+    ]
+
+
 class SandboxConfig(BaseModel):
     """Patch 171 — Defaults fuer die Docker-Sandbox (Phase D, Block 1).
 
@@ -220,6 +245,7 @@ class Settings(BaseSettings):
     modules: Dict[str, Any] = {}
     profiles: Dict[str, Any] = {}  # Patch 61: ProfileConfig-Einträge (raw Dict, da nala.py direkt yaml liest)
     openrouter: OpenRouterConfig = OpenRouterConfig()  # Patch 63: Provider-Blacklist
+    projects: ProjectsConfig = ProjectsConfig()  # Patch 196: Datei-Upload-Limits + Extension-Blacklist
     features: Dict[str, Any] = {"decision_boxes": True, "whisper_watchdog": True, "hallucination_guard": True}  # Patch 118a/119/120 Feature-Flags (config.yaml gitignored → Default explizit)
 
     class Config:
