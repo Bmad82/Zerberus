@@ -6309,5 +6309,215 @@ Bei Skip-Pfaden eine Zeile mit Grund (`disabled — Code-Detection uebersprungen
 
 ---
 
-*Stand: 2026-05-02, Patch 203d-1 — Code-Detection + Sandbox-Roundtrip im Chat-Endpunkt. 1720 passed (+19), 0 NEUE Failures.*
+## Patch 203d-2 — Output-Synthese für Sandbox-Code-Execution im Chat (Phase 5a #5, Backend-Loop schließt)
+
+**Datum:** 2026-05-03
+**Tests:** 1767 passed (+47 P203d-2 — 8 Trigger-Gate + 5 Truncate + 9 Prompt-Builder + 8 Async-Wrapper + 7 Source-Audit + 10 End-to-End), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 neue Failures
+
+**Was P203d-2 abschließt:**
+
+P203d-1 hat den ersten Loop-Strang geschlossen: aktive-Projekt-Erkennung im Header, Code-Block aus der LLM-Antwort extrahieren, Sandbox-Roundtrip, Result als additives `code_execution`-Feld in die HTTP-Response. Aber der `answer`-String selbst war unverändert — der User las weiterhin den Code-Block, den das LLM produziert hatte, ohne menschenlesbare Erklärung des Outputs. Bei einem `print(2+2)`-Block stand also in der Antwort nur ```python\nprint(2+2)\n``` und der User musste das `stdout`-Feld in der separaten JSON-Response selbst lesen — auf einem Mobile-Frontend ohne UI-Render-Logik (P203d-3 noch offen) ist das unbrauchbar.
+
+P203d-2 schließt diesen zweiten Loop-Strang: nach erfolgreichem Sandbox-Run kommt ein zweiter LLM-Call, der Original-Frage + Code + stdout/stderr in eine zusammenfassende Antwort verwandelt und den `answer` ersetzt. Das `code_execution`-Feld bleibt zusätzlich in der Response, damit das Frontend (P203d-3) den Roh-Output und die Synthese parallel rendern kann.
+
+**Neues Modul [`zerberus/modules/sandbox/synthesis.py`]:**
+
+Pure-Function-Schicht plus Async-Wrapper, Pattern analog zu `prosody/injector.py` (P204) und `persona_merge.py` (P197). Drei Pure-Functions plus eine async Coroutine:
+
+```python
+def should_synthesize(payload: Any) -> bool:
+    """True wenn payload ein Dict mit exit_code != 0 ist (Crash → Erklärung)
+    oder exit_code == 0 mit nicht-leerem stdout (Output → Aufbereitung).
+    False bei None, Non-Dict, fehlendem exit_code oder exit=0 mit leerem stdout.
+    """
+    ...
+
+def _truncate(text: str, limit: int = SYNTH_MAX_OUTPUT_BYTES) -> str:
+    """Bytes-genau truncaten + ASCII-Marker '\n…[gekuerzt]'.
+    UTF-8-encoded vergleichen, NICHT len(text), damit Multi-Byte-Symbole
+    nicht durch's Limit rutschen. Decoder mit errors='ignore' damit ein
+    abgeschnittenes Multi-Byte-Symbol nicht crasht.
+    """
+    ...
+
+def build_synthesis_messages(user_prompt: str, payload: dict) -> list[dict]:
+    """Baut System+User-Messages für den Synthese-LLM-Call.
+    System-Prompt: Faktisch, 'wiederhole den Code nicht stumpf, erkläre
+    Fehler, beziehe dich auf die ursprüngliche Frage'.
+    User-Message: Original-Frage + fenced Code-Block + fenced stdout +
+    fenced stderr, mit Marker '[CODE-EXECUTION — Sprache: ... | exit_code: ...]'
+    und '[/CODE-EXECUTION]' (substring-disjunkt zu PROJEKT-RAG / PROJEKT-
+    KONTEXT / PROSODIE).
+    """
+    ...
+
+async def synthesize_code_output(user_prompt: str, payload: dict,
+                                  llm_service, session_id) -> str | None:
+    """Trigger-Check, dann LLM-Call via LLMService.call(messages, session_id).
+    Returns synthesized text, oder None (skip oder fail-open) — Caller
+    behält den Original-Answer.
+    """
+    ...
+```
+
+**Verdrahtung in [`legacy.py::chat_completions`]:**
+
+Der Synthese-Block kommt direkt nach dem P203d-1-Block (vor dem Sentiment-Triptychon):
+
+```python
+if code_execution_payload is not None:
+    try:
+        from zerberus.modules.sandbox.synthesis import synthesize_code_output
+
+        synthesized = await synthesize_code_output(
+            user_prompt=last_user_msg,
+            payload=code_execution_payload,
+            llm_service=llm_service,
+            session_id=session_id,
+        )
+        if synthesized:
+            answer = synthesized
+    except Exception as _synth_err:
+        logger.warning(f"[SYNTH-203d-2] Pipeline-Fehler (fail-open): {_synth_err}")
+```
+
+Plus ein Reorder von `store_interaction`: in P203d-1 wurde `store_interaction("user", ...)` UND `store_interaction("assistant", answer, ...)` UND `update_interaction()` als Block VOR der Sandbox-Stelle aufgerufen. In P203d-2 wandert der Assistant-Insert ans Ende — nach der Synthese — damit der gespeicherte Text der finale Output ist und nicht der Roh-Output mit Code-Block. Der User-Insert bleibt früh (Eingabe ist endgültig, kann nicht mehr von einem späteren Schritt überschrieben werden):
+
+```python
+# user-Insert: früh
+try:
+    await store_interaction("user", last_user_msg, ...)
+except Exception as e:
+    logger.warning(f"⚠️ store_interaction(user) fehlgeschlagen (non-fatal): {e}")
+
+# ... [SANDBOX-203d] block (P203d-1) ...
+# ... [SYNTH-203d-2] block (P203d-2) → answer = synthesized ...
+
+# assistant-Insert: nach Synthese
+try:
+    await store_interaction("assistant", answer, ...)
+    await update_interaction()
+except Exception as e:
+    logger.warning(f"⚠️ store_interaction(assistant) fehlgeschlagen (non-fatal): {e}")
+```
+
+Damit ist die `interactions`-Tabelle konsistent mit dem, was der User wirklich sieht. Sentiment-Triptychon (P192) liest dann den finalen `answer` — die Bot-Sentiment-Analyse rechnet auf der Synthese, nicht auf dem Roh-Code-Block. Konsistent fürs UI.
+
+**Trigger-Logik (`should_synthesize`):**
+
+Der Synthese-LLM-Call kostet Tokens. Wir wollen ihn nur abfeuern, wenn er einen Mehrwert hat. Drei Fälle:
+
+1. **`exit_code != 0`** (Sandbox crashte): immer triggern, auch wenn stderr leer ist. Sandbox-Timeouts liefern oft keinen stderr, aber der User braucht trotzdem eine Erklärung ("der Code lief in einen Timeout, evtl. Endlos-Schleife in Zeile 4").
+2. **`exit_code == 0` UND nicht-leerer stdout**: triggern. Output braucht Aufbereitung — `42\n` allein im Chat sieht aus wie ein Datenbank-Dump.
+3. **`exit_code == 0` UND leerer stdout**: NICHT triggern. Code lief erfolgreich aber produzierte keine Ausgabe (z.B. eine Variablen-Zuweisung `x = 1`). Da gibt's nichts zu erklären — der Original-Code-Block bleibt im `answer`.
+
+Plus zwei Skip-Fälle: `payload is None` oder kein Dict, `exit_code` fehlt im Dict.
+
+**Truncate (`_truncate`):**
+
+Stdout/stderr können beliebig groß werden — ein einzelner `print(x)` mit einem 50KB-JSON-Dump bläst den Synthese-Prompt auf. Wir schneiden bei 5 KB pro Stream ab. Bytes-genau, NICHT zeichen-genau: ein deutscher Umlaut ist 2 Bytes UTF-8, ein CJK-Char 3 Bytes — ein 5000-Zeichen-Output mit Multi-Byte-Symbolen ist über dem Limit. `text.encode("utf-8")[:limit].decode(errors="ignore")` schneidet sicher an einer Byte-Grenze ab, der Marker `\n…[gekuerzt]` ist ASCII (3 Bytes für `\n` + Ellipsis-Char + ASCII-Worte) und hängt sicher dahinter.
+
+**Marker-Disjunktheit:**
+
+Im Synthese-Prompt nutzen wir `[CODE-EXECUTION — Sprache: python | exit_code: 0]` und `[/CODE-EXECUTION]`. Test verifiziert, dass kein Substring-Match mit anderen Brückenmarkern existiert — `PROJEKT-RAG` (P199), `PROJEKT-KONTEXT` (P197), `PROSODIE` (P204). Damit bleibt die Idempotenz-Logik (Marker im System-Prompt → kein zweiter Block) eindeutig.
+
+**Was P203d-2 BEWUSST nicht macht (alles für nachfolgende Sub-Patches):**
+
+- **Kein UI-Render im Nala-Frontend.** P203d-3 baut die Code-Card + Output-Card unter dem Synthesized-Bubble. Aktuell sieht der User die Synthese im normalen `choices[0].message.content`-Pfad, das `code_execution`-Feld wird ignoriert (wenn das Frontend es noch nicht kennt) — Backwards-Compat.
+- **Kein zweiter `store_interaction`-Eintrag für den Original-Output.** Die `interactions`-Tabelle bekommt nur den finalen `answer`. Wer den Roh-Output braucht, liest das `code_execution`-Feld in der HTTP-Response. Audit-Trail-Tabelle (`code_executions`) ist Phase-5a-Schuld — kommt mit P206/HitL.
+- **Keine Cost-Aggregation in `interactions.cost`.** Der Synthese-Call addiert eigene Tokens, wird aber nicht aufsummiert. Der Erst-Call schreibt seine `cost` über `save_cost(...)`, der Synthese-Call nicht. Sauberer Refactor wäre ein gemeinsamer Cost-Buffer pro Request.
+- **Kein Streaming.** `chat_completions` bleibt synchron. SSE `code_execution`/`synth`-Frames sind P203d-3-Thema.
+- **Keine writable-Mount-Änderung.** P203d-1 forciert weiter `writable=False`. Sync-After-Write kommt mit P207.
+- **Kein eigener Fehler-Markierer im `answer`.** Bei Synthese-Fail bleibt der Roh-Output mit Code-Block — kein "Synthese fehlgeschlagen, hier ist der Roh-Output"-Hinweis. Frontend sieht das implizit am `code_execution`-Feld plus dem Code-Block im `answer`.
+
+**Logging-Tag `[SYNTH-203d-2]`:**
+
+Pro `synthesize_code_output`-Aufruf eine Zeile im erfolgreichen Pfad:
+
+```
+[SYNTH-203d-2] synthesized exit_code=0 raw_output_len=12 synth_len=42
+```
+
+Bei Fail-Open eine Warning-Zeile (`Synthese-LLM crashed (fail-open): ...`). Der Tag ist absichtlich disjunkt von `[SANDBOX-203d]` (P203d-1), damit Operations-Logs den Synthese-Pfad isoliert beobachten können — z.B. um zu monitoren ob der Synthese-LLM-Call Latenz-Probleme macht.
+
+**Tests:** 47 in [`test_p203d2_chat_synthesis.py`].
+
+`TestShouldSynthesize` (8 Tests) — Trigger-Gate Pure-Function:
+
+1. `test_none_returns_false` — payload=None → False.
+2. `test_non_dict_returns_false` — string/int/list → False.
+3. `test_missing_exit_code_returns_false` — `{stdout: "x"}` ohne exit_code → False.
+4. `test_exit_code_none_returns_false` — `{exit_code: None, stdout: "x"}` → False.
+5. `test_exit_zero_with_empty_stdout_returns_false` — `exit=0` + leerer stdout → False (auch Whitespace-only).
+6. `test_exit_zero_with_stdout_returns_true` — `exit=0` + `"42\n"` → True.
+7. `test_exit_nonzero_returns_true_even_with_empty_stderr` — `exit=1` + leer → True (Crash ohne stderr braucht trotzdem Erklärung).
+8. `test_exit_nonzero_with_stderr_returns_true` — `exit=7` + `"ZeroDivisionError"` → True.
+
+`TestTruncate` (5 Tests) — Bytes-genau:
+
+9. `test_short_text_returns_unchanged` — `"hallo"` → `"hallo"`.
+10. `test_empty_text_returns_unchanged` — `""` → `""`.
+11. `test_at_limit_returns_unchanged` — exakt-am-Limit, kein Marker.
+12. `test_over_limit_truncates_with_marker` — über-Limit, Body ≤ Limit, Marker am Ende.
+13. `test_multibyte_truncate_does_not_crash` — CJK-Chars (3-Byte UTF-8), Limit mitten im Char → kein Crash, `errors='ignore'` schneidet sauber.
+
+`TestBuildSynthesisMessages` (9 Tests) — Pure-Function-Prompt-Builder:
+
+14. `test_returns_list_of_two_messages` — System + User.
+15. `test_user_msg_contains_original_prompt` — Original-Frage des Users im User-Msg.
+16. `test_user_msg_contains_code_block` — Fenced-Code im User-Msg.
+17. `test_user_msg_contains_stdout_when_present` — stdout-Sektion vorhanden.
+18. `test_user_msg_omits_stdout_section_when_empty` — bei leerem stdout: nur stderr-Sektion.
+19. `test_user_msg_contains_exit_code_in_marker` — `exit_code: 7` im Marker-Header.
+20. `test_user_msg_marker_disjoint_from_other_bridges` — `[CODE-EXECUTION]` enthält nicht `PROJEKT-RAG`/`PROJEKT-KONTEXT`/`PROSODIE`.
+21. `test_system_prompt_says_no_floskeln` — System-Prompt enthält "wiederhole" und "menschenlesbar".
+22. `test_truncates_huge_stdout` — 10000-Zeichen-stdout wird gekürzt, Marker im Body.
+
+`TestSynthesizeCodeOutput` (8 Tests) — Async-Wrapper:
+
+23. `test_skip_when_payload_is_none` — Trigger-Gate skipt.
+24. `test_skip_when_exit0_and_no_stdout` — Trigger-Gate skipt.
+25. `test_happy_path_returns_synthesized_text` — LLM-Call, Antwort wird durchgereicht, User-Prompt im Messages-Argument.
+26. `test_synthesis_runs_on_nonzero_exit` — Crash-Pfad triggert Synthese.
+27. `test_fail_open_when_llm_raises` — `RuntimeError` im LLM → None.
+28. `test_fail_open_when_llm_returns_empty_string` — leere LLM-Antwort → None.
+29. `test_fail_open_when_llm_returns_whitespace_only` — `"   \n   "` → None.
+30. `test_fail_open_when_llm_returns_non_tuple` — Defense-in-depth: LLM-Service-API ist 5-Tuple, falls jemand das aufweicht → None.
+
+`TestP203d2SourceAudit` (7 Tests) — Verdrahtungs-Schutz:
+
+31. `test_synthesis_module_exists_and_exports_helpers` — Modul + Helper + Logging-Tag-Konstante.
+32. `test_legacy_imports_synthesize_code_output` — Import in legacy.py.
+33. `test_legacy_has_synth_log_tag_for_failopen` — `[SYNTH-203d-2]`-Tag.
+34. `test_legacy_synth_call_passes_user_prompt_and_payload` — alle vier Args (`user_prompt`, `payload`, `llm_service`, `session_id`) im Aufruf-Fenster.
+35. `test_assistant_store_interaction_after_synthesis` — Reihenfolge: `synthesize_code_output(...)` → ... → `store_interaction("assistant", answer, ...)`. Defense gegen "kurz mal hochziehen"-Refactor.
+36. `test_user_store_interaction_before_sandbox_block` — User-Insert ist FRÜH, vor `[SANDBOX-203d]`. Stellt sicher dass auch bei Synthese-Crash die User-Eingabe in der DB landet.
+37. `test_synthesis_module_has_truncate_limit_constant` — `SYNTH_MAX_OUTPUT_BYTES` als Konstante.
+
+`TestE2ESynthesis` (10 Tests) — End-to-End ueber `chat_completions` mit Two-Step-Mock-LLM:
+
+38. `test_synthesis_replaces_answer_when_code_executed` — Erst-Call: Code-Block, Zweit-Call: Synthese. `answer` ist Synthese-Text. Counter zählt 2 LLM-Calls + 1 Sandbox-Call.
+39. `test_synthesis_explains_error_on_nonzero_exit` — `exit_code=1` mit stderr → Synthese erklärt den Fehler.
+40. `test_synthesis_uses_user_prompt` — Zweiter Call (Synthese) hat User-Frage in Messages.
+41. `test_no_synthesis_without_code_block` — Plain-Text → nur 1 LLM-Call, kein Sandbox-Call.
+42. `test_no_synthesis_when_exit0_and_empty_stdout` — Code lief, kein Output → kein Synthese-Call, Original-Code-Block bleibt im `answer`, `code_execution` trotzdem populated.
+43. `test_no_synthesis_when_no_active_project` — Kein Header → kein Sandbox-Pfad → keine Synthese.
+44. `test_no_synthesis_when_sandbox_disabled` — Sandbox-Config disabled → keine Synthese.
+45. `test_synthesis_failure_keeps_original_answer` — Synthese-LLM crasht → Original-Answer (mit Code-Block) bleibt, `code_execution` ist da.
+46. `test_synthesis_returns_empty_keeps_original` — Synthese-LLM gibt `""` zurück → Original bleibt.
+47. `test_choices_field_remains_openai_compatible` — `choices`/`model`/`finish_reason` unangetastet.
+
+**Architektur-Lessons (für lessons.md):**
+
+- **Pure-Function-Schicht plus Async-Wrapper als Standard-Pattern für LLM-Pipelines.** P203d-2 folgt dem Schnittmuster von P204 (`build_prosody_block` + `inject_prosody_context`) und P197 (`merge_persona` + `resolve_project_overlay`): Pure-Functions sind unit-testbar ohne IO/Mocks, der async Wrapper macht dann die LLM-/DB-Calls. 22 von 47 Tests in P203d-2 sind reine Pure-Function-Tests — keine LLM-Mocks, keine DB-Setups. Schnell, deterministisch, spezifisch.
+- **Two-Step-LLM-Mock-Pattern für E2E-Tests:** ein einzelner Counter im Closure-State plus ein Messages-Recorder reicht, um den ersten und zweiten LLM-Call separat zu verifizieren. Pattern: `_make_two_step_llm(answers=[...])` gibt `fake_call` + `counter` zurück, `counter["i"]` zählt Aufrufe, `counter["messages"]` hält die Messages-Listen. Das ersetzt ein generisches `MagicMock` mit klarem Mock-Vertrag und macht Reihenfolge-Asserts möglich.
+- **store_interaction-Reorder in zwei-stufigen Pipelines.** Wenn ein `answer` durch einen späteren Schritt überschrieben werden kann, MUSS `store_interaction("assistant", ...)` nach diesem Schritt passieren — sonst ist die DB-Sicht inkonsistent mit dem User-Output. User-Insert bleibt früh (Eingabe ist endgültig). Source-Audit-Test verifiziert die Reihenfolge per File-Index-Vergleich.
+- **Bytes-genau truncaten für LLM-Prompts.** `len(text)` ist falsch wenn Multi-Byte-UTF-8-Symbole drin sind. Pattern: `text.encode("utf-8")[:limit].decode(errors="ignore") + ASCII_MARKER`. Test mit CJK-Chars (3-Byte UTF-8) und Limit=4 verifiziert dass es nicht crasht.
+- **Marker-Disjunktheit als Test-Garantie.** Jeder LLM-Brückenmarker-Test prüft via Substring-Check gegen alle anderen bekannten Marker. P203d-2 prüft `[CODE-EXECUTION]` gegen `PROJEKT-RAG`/`PROJEKT-KONTEXT`/`PROSODIE`. Wenn jemand einen neuen Marker addiert, fällt eine Kollision sofort auf.
+- **Trigger-Gate als pure Funktion testbar.** `should_synthesize(payload) -> bool` lässt sich isoliert prüfen (8 Tests, alle in <0.01s ohne LLM/IO). Edge-Cases (None, fehlendes Feld, leeres stdout, exit_code=None) sind explizite Tests, kein "behaviorial" Mock.
+- **Fail-Open auf jeder Stufe.** Kein einzelner Crash-Pfad in der Synthese-Pipeline darf den Chat-Endpunkt brechen. Try/except um den ganzen Synthese-Block in legacy.py, plus innerer try/except im `synthesize_code_output`-Wrapper, plus None-Check auf Result-Tuple. Tests verifizieren je: LLM-Crash → Original bleibt, leere Antwort → Original, Non-Tuple-Result → None.
+
+---
+
+*Stand: 2026-05-03, Patch 203d-2 — Output-Synthese im Chat-Endpunkt. 1767 passed (+47), 0 neue Failures.*
 

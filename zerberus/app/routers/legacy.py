@@ -502,12 +502,15 @@ async def chat_completions(
         except Exception as _guard_err:
             logger.warning(f"[GUARD-120] fail-open, Ausnahme wurde ignoriert: {_guard_err}")
 
+    # Patch 203d-2: User-Insert frueh (Eingabe ist endgueltig). Assistant-
+    # Insert wird ans Ende verschoben (nach Synthese), damit der
+    # gespeicherte Text der finale Output ist und nicht der Roh-Output mit
+    # Code-Block. update_interaction wandert mit, damit der Pacemaker den
+    # finalen State sieht.
     try:
         await store_interaction("user", last_user_msg, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
-        await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
-        await update_interaction()
     except Exception as e:
-        logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")
+        logger.warning(f"⚠️ store_interaction(user) fehlgeschlagen (non-fatal): {e}")
 
     # Patch 203d-1 (Phase 5a #5): Code-Detection + Sandbox-Roundtrip im
     # Workspace des aktiven Projekts. Wenn der LLM-Output einen Fenced-
@@ -588,6 +591,43 @@ async def chat_completions(
             logger.warning(
                 f"[SANDBOX-203d] Pipeline-Fehler (fail-open): {_sandbox_err}"
             )
+
+    # Patch 203d-2 (Phase 5a #5): Output-Synthese. Wenn der P203d-1-Pfad
+    # ein ``code_execution_payload`` produziert hat UND der Trigger-Gate
+    # zustimmt (exit_code != 0 ODER stdout nicht leer), ruft ein zweiter
+    # LLM-Call die Synthese auf: Original-Frage + Code + stdout/stderr →
+    # menschenlesbarer Antworttext, der den Roh-Output ersetzt.
+    #
+    # Fail-Open auf jeder Stufe — wenn die Synthese crasht oder leer
+    # zurueckkommt, behaelt der Endpoint die Original-LLM-Antwort (mit
+    # Code-Block); das ``code_execution``-Feld ist trotzdem in der
+    # Response, damit das Frontend den Roh-Output ggf. selbst rendern
+    # kann (P203d-3 UI-Render).
+    if code_execution_payload is not None:
+        try:
+            from zerberus.modules.sandbox.synthesis import synthesize_code_output
+
+            synthesized = await synthesize_code_output(
+                user_prompt=last_user_msg,
+                payload=code_execution_payload,
+                llm_service=llm_service,
+                session_id=session_id,
+            )
+            if synthesized:
+                answer = synthesized
+        except Exception as _synth_err:
+            logger.warning(
+                f"[SYNTH-203d-2] Pipeline-Fehler (fail-open): {_synth_err}"
+            )
+
+    # Patch 203d-2: Assistant-Insert NACH der Synthese, damit ``answer`` der
+    # finale Text ist. Falls Synthese skipte oder fehlschlug, ist es der
+    # Original-LLM-Output (Backwards-Compat zu P203d-1).
+    try:
+        await store_interaction("assistant", answer, session_id=session_id, profile_name=profile_name or "", profile_key=profile_name or None)
+        await update_interaction()
+    except Exception as e:
+        logger.warning(f"⚠️ store_interaction(assistant) fehlgeschlagen (non-fatal): {e}")
 
     # Patch 192: Sentiment-Triptychon — BERT-Analyse fuer User + Bot, Konsens
     # mit optionaler Prosodie aus dem X-Prosody-Context Header (one-shot).

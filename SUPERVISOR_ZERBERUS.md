@@ -1,10 +1,68 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 203c (2026-05-02) – Sandbox-Workspace-Mount (Phase 5a #5)*
+*Letzte Aktualisierung: Patch 203d-2 (2026-05-03) – Output-Synthese im Chat-Endpunkt (Phase 5a #5)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 203d-2** — Output-Synthese fuer Sandbox-Code-Execution im Chat (Phase 5a #5, Backend-Loop schliesst) (2026-05-03)
+
+Zweiter Sub-Patch der P203d-Aufteilung (P203d-1 Backend-Pfad / P203d-2 Output-Synthese / P203d-3 UI). Schliesst den Backend-Loop von Phase-5a-Ziel #5: nach P203d-1 reichte der Chat-Endpunkt den rohen `SandboxResult` (stdout/stderr/exit_code) als additives `code_execution`-Feld durch — der `answer`-String enthielt aber weiter den Original-Code-Block, ohne menschenlesbare Erklaerung des Outputs. P203d-2 fuegt einen zweiten LLM-Call ein, der Original-Frage + Code + stdout/stderr in eine zusammenfassende Antwort verwandelt und damit den `answer` ersetzt.
+
+**Architektur: Pure-Function-Schicht plus Async-Wrapper.** Neues Modul [`zerberus/modules/sandbox/synthesis.py`](zerberus/modules/sandbox/synthesis.py) — Pattern analog zu `prosody/injector.py` (P204) und `persona_merge.py` (P197):
+
+- `should_synthesize(payload) -> bool` — Trigger-Gate. True wenn `exit_code != 0` (Crash → Erklaerung noetig) ODER `exit_code == 0` UND `stdout` nicht leer (Output → Aufbereitung). False bei `payload is None`, fehlendem `exit_code` oder `exit_code == 0` mit leerem stdout (nichts zu sagen).
+- `_truncate(text, limit=5000)` — Bytes-genau truncaten (UTF-8-encoded), ASCII-Marker `\n…[gekuerzt]` am Ende. Multi-Byte-sicher via `decode(errors='ignore')`.
+- `build_synthesis_messages(user_prompt, payload) -> list[dict]` — Pure-Function: System-Prompt ("Fasse menschenlesbar zusammen, wiederhole den Code nicht stumpf, erklaere Fehler") plus User-Message mit Original-Frage, fenced Code-Block, fenced stdout, fenced stderr. Marker `[CODE-EXECUTION — Sprache: ... | exit_code: ...]` und `[/CODE-EXECUTION]` substring-disjunkt zu `[PROJEKT-RAG]` (P199), `[PROJEKT-KONTEXT]` (P197), `[PROSODIE]` (P204).
+- `synthesize_code_output(user_prompt, payload, llm_service, session_id)` — Async-Wrapper. Trigger-Check, dann LLM-Call via `LLMService.call(messages, session_id)`, Result-Validation (Tuple, non-empty string), Logging-Tag `[SYNTH-203d-2]`. Fail-Open: jeder Crash, leere LLM-Antwort, falsches Result-Format → Returns `None` → Caller behaelt Original-Answer.
+
+**Verdrahtung in `legacy.py::chat_completions`.** Direkt nach dem P203d-1-Block (vor dem Sentiment-Triptychon):
+
+```python
+if code_execution_payload is not None:
+    try:
+        synthesized = await synthesize_code_output(
+            user_prompt=last_user_msg,
+            payload=code_execution_payload,
+            llm_service=llm_service,
+            session_id=session_id,
+        )
+        if synthesized:
+            answer = synthesized
+    except Exception as _synth_err:
+        logger.warning(f"[SYNTH-203d-2] Pipeline-Fehler (fail-open): {_synth_err}")
+```
+
+**Reihenfolge-Aenderung — `store_interaction` aufgeteilt.** Vorher (P203d-1): User-Insert + Assistant-Insert + `update_interaction()` als Block VOR der Sandbox-Stelle. Nachher (P203d-2): User-Insert frueh (Eingabe ist endgueltig), Assistant-Insert + `update_interaction()` NACH der Synthese, damit der gespeicherte `answer` der finale Output ist und nicht der Roh-Output mit Code-Block. Falls Synthese skipte oder fehlschlug, ist es der Original-LLM-Output (Backwards-Compat zu P203d-1).
+
+**Was P203d-2 bewusst NICHT macht** (kommt mit P203d-3/P207):
+
+- **Kein UI-Render.** Code-Block + Output-Block in Nala-Frontend ist P203d-3 — separate Endpunkt-Erweiterung mit ggf. SSE-Stream-Frame.
+- **Kein zweiter `store_interaction`-Eintrag fuer den Original-Output.** Die `interactions`-Tabelle bekommt nur den finalen `answer`. Wer den Roh-Output braucht, liest das `code_execution`-Feld in der HTTP-Response.
+- **Keine Cost-Aggregation in `interactions.cost`.** Der Synthese-Call addiert eigene Tokens, wird aber nicht aufsummiert (Schuld vermerkt; HitL-Token-Tracking-Patch wird das adressieren).
+- **Kein Streaming.** `chat_completions` bleibt synchron. SSE `code_execution`/`synth`-Frames sind P203d-3-Thema.
+- **Keine writable-Mount-Aenderung.** P203d-1 forciert weiter `writable=False`. Sync-After-Write kommt mit P207.
+- **Kein eigener Fehler-Markierer im `answer`.** Bei Synthese-Fail bleibt der Roh-Output mit Code-Block — kein Hinweis "Synthese fehlgeschlagen". Frontend sieht das implizit am `code_execution`-Feld.
+
+**Tests:** 47 in [`test_p203d2_chat_synthesis.py`](zerberus/tests/test_p203d2_chat_synthesis.py):
+
+- `TestShouldSynthesize` (8) — Trigger-Gate: None/Non-Dict, exit_code-Varianten, exit=0+leerer stdout vs. exit=0+stdout-da, exit!=0 mit/ohne stderr.
+- `TestTruncate` (5) — Short/empty/at-limit/over-limit, Multi-Byte-UTF-8-safe.
+- `TestBuildSynthesisMessages` (9) — Format der zwei Messages, Original-Prompt im User-Msg, Code-Fence, stdout/stderr nur wenn vorhanden, exit_code im Marker, Marker-Disjunktheit, System-Prompt-Inhalte, Truncate bei Mega-Stdout.
+- `TestSynthesizeCodeOutput` (8) — Async-Wrapper: Skip-bei-None-payload, Skip-bei-exit0-leer, Happy-Path, exit!=0-Pfad, Fail-Open bei LLM-Crash/leerer-Antwort/Whitespace/Non-Tuple.
+- `TestP203d2SourceAudit` (7) — Synthese-Modul existiert, Logging-Tag, Imports in legacy.py, korrekte Args-Reihenfolge im Aufruf, Reihenfolge-Garantie (Synthese VOR Assistant-Store), User-Store FRUEH, Truncate-Limit-Konstante.
+- `TestE2ESynthesis` (10) — End-to-End ueber `chat_completions` mit Two-Step-Mock-LLM (Erst-Call: Code-Block, Zweit-Call: Synthese): answer ersetzt bei Happy-Path, Fehler-Erklaerung bei exit!=0, User-Prompt im Synthese-Call, kein Synthese-Call bei Plain-Text/leerem-Output/inaktivem-Projekt/disabled-Sandbox, Original-Answer bleibt bei Synthese-Crash/leerer-Synthese, OpenAI-Schema unangetastet.
+
+**Logging-Tag:** `[SYNTH-203d-2]` (separat von `[SANDBOX-203d]` aus P203d-1, damit Operations-Logs den Synthese-Pfad isoliert beobachten koennen).
+
+**Teststand:** 1720 baseline (P203d-1) → **1767 passed** (+47 P203d-2-Tests), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`), 0 neue Failures.
+
+**Effekt fuer den User:** Bei aktivem Projekt + Code-Block in der Antwort + erfolgreicher Sandbox-Execution liest Nala statt `\`\`\`python\nprint(2+2)\n\`\`\`` jetzt eine Antwort wie `Das Ergebnis ist 4.` Bei einem Fehler (`exit_code=1`, stderr=`ZeroDivisionError`) liefert Nala eine Fix-Empfehlung anstatt nur den Crash-Output. Das `code_execution`-Feld bleibt zusaetzlich in der HTTP-Response — Frontends koennen den Roh-Output und die Synthese parallel rendern (P203d-3 wird das Layout bauen).
+
+**Effekt fuer die naechste Coda-Session:** P203d-3 kann sofort starten — Synthese-Output kommt im normalen `choices[0].message.content`-Pfad, das `code_execution`-Feld liefert separat den Code-Block + stdout/stderr fuers UI. Frontend-Patch ist orthogonal: Nala-Renderer baut Code-Card + Synthese-Card unter dem Chat-Bubble-Layout. Nach P203d-3 ist Phase-5a-Ziel #5 vollstaendig abgeschlossen.
+
+---
 
 **Patch 203c** — Sandbox-Workspace-Mount + execute_in_workspace (Phase 5a #5, Zwischenschritt) (2026-05-02)
 
@@ -301,6 +359,7 @@ Vollständige Patch-Historie in [`docs/PROJEKTDOKUMENTATION.md`](docs/PROJEKTDOK
 
 | Patch | Datum | Zusammenfassung |
 |-------|-------|-----------------|
+| **P203d-2** | 2026-05-03 | Phase 5a #5 Output-Synthese: zweiter LLM-Call (Prompt+Code+stdout/stderr → menschenlesbare Antwort), Pure-Function-Schicht in `modules/sandbox/synthesis.py`, `should_synthesize`-Trigger, Bytes-genau Truncate (5KB), `[SYNTH-203d-2]`-Logging, store_interaction-Reorder (assistant-Insert nach Synthese), fail-open + 47 Tests |
 | **P203d-1** | 2026-05-02 | Phase 5a #5 Backend-Pfad: Code-Detection + Sandbox-Roundtrip im `/v1/chat/completions` — `first_executable_block` + `execute_in_workspace(writable=False)` + additives `code_execution`-JSON-Field, Sechs-Stufen-Gate (Header + Slug + Overlay-not-None + Sandbox-enabled + Fenced-Block + Result), fail-open + 19 Tests |
 | **P204** | 2026-05-02 | Phase 5a #17 ABGESCHLOSSEN: Prosodie-Kontext im LLM — `[PROSODIE]`-Block, BERT+Gemma-Konsens via Mehrabian, Worker-Protection (keine Zahlen) + 33 Tests |
 | **P203c** | 2026-05-02 | Phase 5a #5 Zwischenschritt: Sandbox-Workspace-Mount + `execute_in_workspace` — RO-Default, Mount-Validation, Defense-in-Depth + 17 Tests |
