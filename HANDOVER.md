@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P198 — Phase 5a #2: Template-Generierung beim Anlegen
 **Tests:** 1487 passed (+23), 4 xfailed (pre-existing), 2 pre-existing Failures (unrelated)
-**Commit:** _pending_ (wird nach Push nachgetragen)
-**Repos synchron:** _pending_
+**Commit:** d6889cb — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
