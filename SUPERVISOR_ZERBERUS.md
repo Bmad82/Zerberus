@@ -1,10 +1,31 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 196 (2026-05-02) – Phase 5a #4 Datei-Upload-Endpoint + UI*
+*Letzte Aktualisierung: Patch 197 (2026-05-02) – Phase 5a Decision 3: Persona-Merge-Layer aktiviert*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 197** — Phase 5a Decision 3: Persona-Merge-Layer aktiviert (2026-05-02)
+
+Schließt die Lücke zwischen P194 (Persona-Overlay-JSON in der DB) / P195 (Hel-UI-Editor dafür) und der eigentlichen Wirkung im LLM-Call. Bisher konnte Chris in der Hel-UI ein `system_addendum` und `tone_hints` pro Projekt pflegen — aber das landete nirgends im System-Prompt. P197 verdrahtet das.
+
+Aktivierungs-Mechanismus: Header `X-Active-Project-Id: <int>` am `POST /v1/chat/completions`-Request. Header-basierte Auswahl (statt persistenter Spalte) gewinnt im ersten Schritt — keine Schema-Änderung, kein Migration-Risiko, der Frontend-Caller (Nala-Tab "Projekte" sobald gebaut, oder externe Clients) entscheidet pro Request. Persistente Auswahl (Spalte `active_project_id` an `chat_sessions`) ist später trivial nachrüstbar — der Reader `read_active_project_id` ist die einzige Stelle, die geändert werden muss.
+
+Merge-Reihenfolge laut Decision 3 (2026-05-01): System-Default → User-Persona ("Mein Ton") → Projekt-Overlay. Die ersten beiden stecken bereits zusammen in `system_prompt_<profile>.json` (eine Datei pro Profil); P197 hängt nur den Projekt-Layer als markierten Block hinten dran. Der Block beginnt mit `[PROJEKT-KONTEXT — verbindlich für diese Session]` als eindeutigem Marker (Substring-Check für Tests/Logs + Schutz gegen Doppel-Injection in derselben Pipeline). Optional ist eine `Projekt: <slug>`-Zeile drin, damit das LLM beim Self-Talk korrekt referenziert.
+
+Position der Verdrahtung: VOR `_wrap_persona` (P184), damit der `# AKTIVE PERSONA — VERBINDLICH`-Marker auch das Projekt-Overlay umschließt — sonst stünde der Projekt-Block AUSSERHALB der "verbindlichen Persona" und das LLM könnte ihn entwerten. Die Reihenfolge ist explizit per Source-Audit-Test verifiziert (`test_persona_merge.TestSourceAudit.test_merge_runs_before_wrap`).
+
+Defensive Behaviors: archivierte Projekte → kein Overlay (Slug wird trotzdem geloggt, damit Bug-Reports diagnostizierbar bleiben); unbekannte ID → kein Crash, einfach kein Overlay; kaputter Header (Buchstaben, negative Zahl) → ignoriert; leerer Overlay (kein `system_addendum`, leere `tone_hints`) → kein Block; `tone_hints` mit Duplikaten/Leer-Strings → bereinigt (case-insensitive Dedupe, erstes Vorkommen gewinnt). Die DB-Auflösung `resolve_project_overlay` ist von der Pure-Function `merge_persona` getrennt — der Helper bleibt I/O-frei und damit synchron testbar.
+
+Telegram bewusst aus P197 ausgeklammert: Huginn hat eine eigene Persona-Welt (zynischer Rabe) ohne User-Profile und ohne Verbindung zu Nala-Projekten. Project-Awareness in Telegram bräuchte eigene UX (`/project <slug>`-Befehl oder persistente Bind-Tabelle) — eigener Patch wenn der Bedarf entsteht.
+
+- **Neuer Helper:** [`zerberus/core/persona_merge.py`](zerberus/core/persona_merge.py) — `merge_persona(base_prompt, overlay, project_slug=None)` als Pure-Function, `read_active_project_id(headers)` mit Lowercase-Fallback (FastAPI-`Headers` ist case-insensitive, ein Test-`dict` nicht), `resolve_project_overlay(project_id, *, skip_archived=True)` als async DB-Schnittstelle (lazy-Import von `projects_repo` gegen Zirkular-Importe). Konstanten `ACTIVE_PROJECT_HEADER` und `PROJECT_BLOCK_MARKER` exportiert.
+- **Verdrahtung:** [`legacy.py::chat_completions`](zerberus/app/routers/legacy.py) — Reihenfolge jetzt `load_system_prompt` → **`merge_persona` (P197, NEU)** → `_wrap_persona` (P184) → `append_runtime_info` (P185) → `append_decision_box_hint` (P118a) → Prosodie-Inject (P190) → `messages.insert(0, system)`.
+- **Logging:** Neuer `[PERSONA-197]`-INFO-Log mit `project_id`, `slug`, `base_len`, `project_block_len`. Bei Lookup-Fehlern WARNING mit Exception-Text. Bei archiviertem Projekt INFO mit Slug.
+- **Tests:** 33 neue Tests in [`test_persona_merge.py`](zerberus/tests/test_persona_merge.py) — 12 Edge-Cases für `merge_persona` (kein Overlay/leeres Overlay/nur Addendum/nur Hints/beide/Dedupe case-insensitive/leere Strings strippen/Doppel-Injection-Schutz/leerer Base-Prompt/Slug-Anzeige/unerwartete Typen/Separator-Format), 7 Header-Reader-Cases (fehlt/None/leer/valid/Lowercase-Fallback/Non-Numeric/negativ), 5 async DB-Cases via `tmp_db`-Fixture (None-ID/Unknown-ID/Existing/Archived/Archived-with-Skip-False/ohne Overlay), 4 End-to-End über `chat_completions` mit Mock-LLM (Overlay erscheint im messages[0], kein Header → kein Overlay, unbekannte ID → kein Crash, archiviert → übersprungen), 5 Source-Audit-Cases (Log-Marker, Imports, Reihenfolge merge-vor-wrap).
+- **Teststand:** 1431 → **1464 passed** (+33), 4 xfailed (pre-existing), 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — bekannte Schulden).
+- **Phase 5a Decision 3:** ✅ Persona-Merge-Layer aktiv. Die in P194/P195 vorbereitete Persona-Overlay-Pflege wirkt jetzt im LLM-Call.
 
 **Patch 196** — Phase 5a #4: Datei-Upload-Endpoint + UI (2026-05-02)
 
@@ -55,6 +76,7 @@ Vollständige Patch-Historie in [`docs/PROJEKTDOKUMENTATION.md`](docs/PROJEKTDOK
 
 | Patch | Datum | Zusammenfassung |
 |-------|-------|-----------------|
+| **P197** | 2026-05-02 | Phase 5a Decision 3: Persona-Merge-Layer aktiviert — Header `X-Active-Project-Id` + `merge_persona`-Helper + 33 Tests |
 | **P196** | 2026-05-02 | Phase 5a #4: Datei-Upload-Endpoint + Drop-Zone-UI (öffnet Ziel #4) — SHA-Dedup-Delete, Extension-Blacklist, atomic write + 49 Tests |
 | **P195** | 2026-05-02 | Phase 5a #1: Hel-UI-Tab "Projekte" (schließt Ziel #1 ab) — Liste/Form/Persona-Overlay + 20 Tests |
 | **P194** | 2026-05-02 | Phase 5a #1: Projekte als Entität (Backend) — Schema + Repo + Hel-CRUD + 46 Tests |

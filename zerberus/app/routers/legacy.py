@@ -162,6 +162,39 @@ async def chat_completions(
 
     # System-Prompt einfügen, falls nicht vorhanden
     sys_prompt = load_system_prompt(profile_name)
+    base_prompt_len = len(sys_prompt)
+
+    # Patch 197: Projekt-Persona-Overlay anhaengen, wenn der Client einen
+    # `X-Active-Project-Id`-Header geschickt hat. Reihenfolge laut
+    # Decision 3 (2026-05-01): System-Default → User-Persona → Projekt.
+    # Die ersten beiden stecken bereits in `sys_prompt` (eine Datei pro
+    # Profil); hier kommt nur noch der Projekt-Layer als markierter Block
+    # dazu. Wird VOR dem Persona-Wrap eingehaengt, damit der AKTIVE-PERSONA-
+    # Marker auch das Projekt-Overlay umschliesst.
+    from zerberus.core.persona_merge import (
+        merge_persona,
+        read_active_project_id,
+        resolve_project_overlay,
+    )
+    active_project_id = read_active_project_id(request.headers)
+    project_overlay: dict | None = None
+    project_slug: str | None = None
+    if active_project_id is not None:
+        try:
+            project_overlay, project_slug = await resolve_project_overlay(active_project_id)
+        except Exception as _proj_err:
+            logger.warning(
+                f"[PERSONA-197] Projekt-Lookup fuer id={active_project_id} fehlgeschlagen: {_proj_err}"
+            )
+            project_overlay, project_slug = None, None
+        if project_overlay is None and project_slug:
+            logger.info(
+                f"[PERSONA-197] Projekt id={active_project_id} ist archiviert — Overlay uebersprungen"
+            )
+    if project_overlay:
+        sys_prompt = merge_persona(sys_prompt, project_overlay, project_slug=project_slug)
+    project_block_len = len(sys_prompt) - base_prompt_len
+
     # Patch 184: Profil-spezifische Persona ("Mein Ton" aus Settings) explizit
     # als verbindliche Persona markieren. Der generische Nala-Default bleibt
     # ungewrappt — er IST der Default-Stil und braucht keinen Verstaerker.
@@ -177,6 +210,11 @@ async def chat_completions(
         f"[PERSONA-184] profile={profile_name} | persona_active={persona_active} | "
         f"sys_prompt_len={len(sys_prompt)} | first200={sys_prompt[:200]!r}"
     )
+    if active_project_id is not None:
+        logger.info(
+            f"[PERSONA-197] project_id={active_project_id} slug={project_slug!r} "
+            f"base_len={base_prompt_len} project_block_len={project_block_len}"
+        )
     # Patch 118a: Decision-Box-Hinweis anhängen, wenn features.decision_boxes aktiv
     from zerberus.core.prompt_features import append_decision_box_hint
     sys_prompt = append_decision_box_hint(sys_prompt, settings)

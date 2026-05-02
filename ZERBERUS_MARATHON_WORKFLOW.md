@@ -1,7 +1,7 @@
 # ZERBERUS_MARATHON_WORKFLOW.md
 
 **Phase:** 5a — Nala-Projekte
-**Letzter Patch:** P196 | **Tests:** 1431 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
+**Letzter Patch:** P197 | **Tests:** 1464 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
 
 ---
 
@@ -65,7 +65,7 @@ Die folgende Liste beschreibt WAS, nicht WIE. Die Architektur ist deine Sache.
 | # | Ziel | Kontext | Braucht | Status |
 |---|------|---------|---------|--------|
 | 1 | **Projekte existieren als Entität** — Persistenz, CRUD, sichtbar in Hel | Fundament für alles | — | ✅ (Backend P194, Hel-UI P195) |
-| 2 | **Projekte haben Struktur** — Template-Dateien, Ordner, optional Git | Damit Projekte nicht leer starten | #1 | ⬜ |
+| 2 | **Projekte haben Struktur** — Template-Dateien, Ordner, optional Git | Damit Projekte nicht leer starten | #1 | ⬜ (P198 als nächstes) |
 | 3 | **Projekte haben eigenes Wissen** — isolierter RAG-Index pro Projekt | Code-LLM braucht Projektkontext | #1 | ⬜ |
 | 4 | **Dateien kommen ins Projekt** — Upload in Nala-Chat, Indexierung | Dateien müssen rein | #1 | 🟡 (Hel-Upload P196 ✅, Nala-Upload + RAG-Indexierung offen → P199) |
 | 5 | **Code wird ausgeführt** — vom Chat zur Docker-Sandbox und zurück | Kernfeature | #1, #3 | ⬜ |
@@ -100,6 +100,7 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 **Projekte-Backend (P194):** Tabellen `projects` + `project_files` in `bunker_memory.db`, Repo `zerberus/core/projects_repo.py`, Hel-CRUD `/hel/admin/projects/*` (Basic-Auth) ✅
 **Projekte-UI (P195):** Hel-Tab `📁 Projekte` mit Liste/Form/Persona-Overlay-Editor ✅
 **Projekt-Datei-Upload (P196):** `POST /hel/admin/projects/{id}/files` (Multipart) + `DELETE /hel/admin/projects/{id}/files/{file_id}` mit SHA-Dedup-Schutz, Extension-Blacklist, 50 MB Limit, atomic write via `tempfile + os.replace`, Drop-Zone-UI mit XHR-Progress + Lösch-Button ✅
+**Persona-Merge-Layer (P197):** Header `X-Active-Project-Id: <int>` am `POST /v1/chat/completions` aktiviert das Projekt-Overlay. `zerberus/core/persona_merge.py` mit `merge_persona` (Pure-Function), `read_active_project_id` (Header-Reader mit Lowercase-Fallback), `resolve_project_overlay` (async DB-Schicht). Merge-Reihenfolge System → User → Projekt-Overlay (Decision 3, 2026-05-01). Verdrahtung VOR `_wrap_persona`-Marker, damit AKTIVE-PERSONA-Wrap auch das Overlay umschließt. `[PERSONA-197]`-Logging-Tag. Telegram bewusst ausgeklammert. ✅
 
 ---
 
@@ -126,6 +127,8 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 | 14 | Datei löschen → Confirm-Dialog. Bestätigen → Datei verschwindet aus Liste. Storage-Ordner `data/projects/<slug>/` prüfen: Datei + leere Sha-Prefix-Ordner sind weg | P196 | ⬜ | — |
 | 15 | SHA-Dedup-Schutz: Dieselbe Datei in zwei Projekten hochladen, in Projekt A löschen → Datei in Projekt B bleibt erhalten (Test deckt das schon, hier nur sanity-check über Hel-UI) | P196 | ⬜ | — |
 | 16 | iPhone: Drop-Zone und Datei-Liste auf 390x844-Viewport — Drop-Zone ist tap-bar (öffnet File-Picker), Lösch-Button hat 36px+ Touch-Target | P196 | ⬜ | — |
+| 17 | git push + sync_repos.ps1 für P197 | P197 | ⬜ | — |
+| 18 | Header-Test: Projekt mit Persona-Overlay anlegen (Hel-UI), dann `curl -H "Authorization: Bearer <token>" -H "X-Active-Project-Id: <id>" -X POST -d '{"messages":[{"role":"user","content":"hi"}]}' .../v1/chat/completions` → Server-Log nach `[PERSONA-197]` greppen, prüfen dass `project_block_len > 0`. LLM-Antwort sollte den Tonfall aus `tone_hints` widerspiegeln (z.B. wenn `tone_hints=["foermlich"]` → Sie statt du). Optional Kontroll-Test ohne Header → `[PERSONA-197]`-Zeile fehlt im Log | P197 | ⬜ | — |
 
 ---
 
@@ -138,7 +141,7 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 |---|-------|---------|---------------|--------|
 | 1 | Projekt-DB: eigene SQLite oder Tabellen in bunker_memory.db? | Isolation vs. Einfachheit | **bunker_memory.db** mit eigenen Tabellen (projects, project_files). Vermeidet zwei Connections/WAL-Configs/Backup-Pfade und ATTACH bei Joins. Isolation via Foreign Keys + Namespaces. | BEANTWORTET 2026-05-01, UMGESETZT P194 |
 | 2 | Projekt-UI zuerst in Hel oder auch in Nala? | Admin-first vs. Mobile-first | **Hel-first.** Projekt-Verwaltung (anlegen/konfigurieren/Dateien) = Admin-Arbeit, Desktop-Kontext. Nala-Integration zweiter Schritt: im Chat "Wechsel zu Projekt X", Projektkontext fließt in Antworten. | BEANTWORTET 2026-05-01, BACKEND P194, UI offen → P195 |
-| 3 | Persona-Hierarchie: Projekt überschreibt User-Persona? | "Mein Ton" vs. Projekt-Ton | **Merge, nicht Override.** Layer-Order: System-Default → User-Persona ("Mein Ton") → Projekt-Persona. Projekt darf Fachsprache und Kontext-Regeln hinzufügen, Grundton bleibt erhalten. | BEANTWORTET 2026-05-01, SCHEMA-FELD `persona_overlay` IN P194, MERGE-LAYER OFFEN |
+| 3 | Persona-Hierarchie: Projekt überschreibt User-Persona? | "Mein Ton" vs. Projekt-Ton | **Merge, nicht Override.** Layer-Order: System-Default → User-Persona ("Mein Ton") → Projekt-Persona. Projekt darf Fachsprache und Kontext-Regeln hinzufügen, Grundton bleibt erhalten. | BEANTWORTET 2026-05-01, SCHEMA-FELD `persona_overlay` IN P194, MERGE-LAYER AKTIV in P197 ✅ |
 
 ---
 

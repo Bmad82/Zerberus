@@ -5215,3 +5215,81 @@ Teststand 1382 → **1431 passed** (+49). 4 xfailed (pre-existing). 2 pre-existi
 
 *Stand: 2026-05-02, Patch 196 — Phase 5a Ziel #4 geöffnet (Datei-Upload + Delete + SHA-Dedup-Schutz). 1431 passed, 0 neue Failures.*
 
+## Patch 197 — Phase 5a Decision 3: Persona-Merge-Layer aktiviert (2026-05-02)
+
+### Warum
+P194 hat das Schema-Feld `projects.persona_overlay` gebaut, P195 die Hel-UI dafür (Editor mit `system_addendum`-Textarea und `tone_hints`-Komma-Liste). Aber: Beide Patches haben den Overlay nur GESPEICHERT — im LLM-Call von Nala (`/v1/chat/completions`) wurde er bisher nicht ausgewertet. Der User konnte in der Hel-UI alles pflegen, aber die KI hat es nicht gesehen. Decision 3 vom 2026-05-01 (Merge System → User → Projekt, kein Override) hing seit drei Patches in der Luft. P197 schließt die Lücke.
+
+### Was P197 macht
+Ein neues Modul `zerberus/core/persona_merge.py` mit drei zentralen Funktionen, eine Verdrahtung in `legacy.py::chat_completions`, Header-basierte Aktivierung über `X-Active-Project-Id`, INFO-Logging-Tag `[PERSONA-197]`, 33 neue Tests.
+
+### Architektur-Entscheidungen
+
+**Header statt persistenter Spalte als Aktivierungs-Mechanismus.** Der Frontend-Caller schickt `X-Active-Project-Id: <int>` an den Chat-Endpoint. Alternative wäre eine neue Spalte `active_project_id` an `chat_sessions` gewesen, mit eigenem `/nala/session/active-project`-Endpoint zum Setzen. Die Header-Variante gewinnt im ersten Schritt: kein Schema-Risiko, keine Migration, keine zusätzliche UI-Komplexität (Nala-Tab "Projekte" muss eh erst gebaut werden, dann setzt der Tab beim Wechsel den Header). Persistente Auswahl ist später trivial nachrüstbar — der Reader `read_active_project_id` ist die einzige Stelle, die geändert werden muss. Die Entscheidung steht in der HANDOVER-Empfehlung vom 2026-05-02 dokumentiert.
+
+**Pure-Function vs. DB-Schicht trennen.** `merge_persona(base, overlay, project_slug=None)` ist eine reine String-Funktion ohne I/O — deshalb synchron testbar, keine Mocks nötig, 12 Edge-Case-Tests in <1 Sekunde. `resolve_project_overlay(project_id, *, skip_archived=True)` ist die async DB-Schicht, die `projects_repo.get_project` aufruft (lazy-Import gegen Zirkular-Importe). Diese Trennung erlaubt es, den Merge-Helper auch in zukünftigen Code-Pfaden zu nutzen, wo der Caller den Overlay schon hat (z.B. eine zukünftige Telegram-Verdrahtung mit `/project <slug>`-Befehl).
+
+**Verdrahtung VOR `_wrap_persona`.** Reihenfolge im Endpoint ist `load_system_prompt` → **`merge_persona`** → `_wrap_persona` → `append_runtime_info` → `append_decision_box_hint`. Die Position ist kritisch: der Persona-Wrap (P184) legt einen `# AKTIVE PERSONA — VERBINDLICH`-Marker davor. Wenn der Projekt-Overlay NACH dem Wrap käme, stünde er außerhalb der "verbindlichen Persona" und das LLM könnte ihn als unverbindlichen Anhang behandeln. Eine Source-Audit-Test-Klasse verifiziert die Reihenfolge per Substring-Position (`idx_merge < idx_wrap`) — schützt gegen Drift, falls jemand später zwischen die Stufen rutscht.
+
+**Markierter Block statt nahtloser String-Concat.** Der Overlay landet als eigener Block `[PROJEKT-KONTEXT — verbindlich für diese Session]\n[Projekt: <slug>]\n<system_addendum>\n\nTonfall-Hinweise:\n- <hint1>\n- <hint2>` mit Trennstrich davor. Drei Gründe: (1) Substring-Check für Tests/Logs ist eindeutig, (2) Doppel-Injection-Schutz greift trivial — wenn der Marker schon im Base steht, gibt's keinen zweiten Block, (3) das LLM erkennt den Übergang und kann den Projekt-Kontext gezielt zitieren ("für Projekt X gilt …"). Die optionale `Projekt: <slug>`-Zeile macht den Self-Talk noch präziser.
+
+**`tone_hints` werden bereinigt, nicht 1:1 weitergegeben.** Hel-UI liefert eine Komma-Liste, die im Repo zu einer Liste wird — aber externe Caller (Tests, zukünftige API-Konsumenten) könnten Strings, None, ints, Whitespace, Duplikate schicken. `_normalize_tone_hints` filtert Nicht-Strings, strippt Whitespace, dedupliziert case-insensitive (erstes Vorkommen gewinnt, Schreibweise behalten). `["foermlich", "Foermlich", "FOERMLICH", "praezise"]` → `["foermlich", "praezise"]`.
+
+**Header-Reader mit Lowercase-Fallback.** FastAPI's `Request.headers` (Starlette `Headers`) ist case-insensitive — `headers.get("X-Active-Project-Id")` funktioniert egal wie der Client schreibt. Aber im Unit-Test wird oft ein Plain-`dict` als Headers-Mock genutzt, und `dict` ist case-sensitive. Der Reader macht zuerst `headers.get(ACTIVE_PROJECT_HEADER)` und fällt bei `None` auf `headers.get(ACTIVE_PROJECT_HEADER.lower())` zurück. Diese 4 Zeilen verhindern einen ganzen Klassen Test-vs-Prod-Drift-Bugs.
+
+**Defensive Behaviors gegen kaputte/fehlende Daten.**
+- Header fehlt / leer / Whitespace → `None` (kein Overlay)
+- Header negativ / 0 / Buchstaben / Floats → `None` (positive int-Constraint)
+- Unbekannte Project-ID → `(None, None)` aus Resolver, kein Crash
+- Archivierte Projekte → Overlay wird übersprungen, aber Slug wird mit INFO geloggt (damit Bug-Reports diagnostizierbar bleiben — Chris kann in der Hel-UI nachschauen, warum sein vermeintlich aktives Projekt archiviert ist)
+- DB-Exception im Resolver → WARNING-Log, Endpoint läuft normal weiter ohne Overlay
+- Overlay vorhanden, aber sowohl `system_addendum` leer als auch `tone_hints` leer → kein Block (würde sonst nur `---\n[PROJEKT-KONTEXT]\n` ohne Inhalt produzieren)
+
+**Telegram bewusst aus P197 ausgeklammert.** Huginn (`zerberus/modules/telegram/bot.py`) hat eine eigene Persona-Welt — `DEFAULT_HUGINN_PROMPT` (zynischer Rabe), optional in Hel überschreibbar via `modules.telegram.system_prompt`. Es gibt keine User-Profile in Telegram (jeder Telegram-User hat dieselbe Persona) und keine Verbindung zu Nala-Projekten. Project-Awareness in Telegram bräuchte eigene UX (`/project <slug>`-Befehl, persistente User-zu-Projekt-Bindung) und ist nicht trivial — eigener Patch wenn der Bedarf konkret entsteht. Bewusst dokumentiert in CLAUDE_ZERBERUS.md, lessons.md und HANDOVER, damit die nächste Instanz nicht vergebens nach der Telegram-Verdrahtung sucht.
+
+### Logging
+Zwei neue Log-Messages auf INFO-Level in `legacy.py`:
+
+```
+[PERSONA-197] project_id=42 slug='backend-refactor' base_len=1234 project_block_len=187
+[PERSONA-197] Projekt id=42 ist archiviert — Overlay uebersprungen
+```
+
+Plus ein WARNING bei DB-Lookup-Fehlern:
+```
+[PERSONA-197] Projekt-Lookup fuer id=42 fehlgeschlagen: <exception text>
+```
+
+Bei Persona-Bug-Reports: erst nach `[PERSONA-184]` greppen (zeigt User-Persona), dann nach `[PERSONA-197]` (zeigt Projekt-Overlay-Längen). Lücke zwischen `base_len` und `base_len + project_block_len` zeigt, wie viel Overlay-Text dazu gekommen ist.
+
+### Tests
+33 neue Tests in [`zerberus/tests/test_persona_merge.py`](../zerberus/tests/test_persona_merge.py), verteilt auf vier Test-Klassen:
+
+- **`TestMergePersona`** — 12 Pure-Function-Tests: kein Overlay, leeres Overlay, nur Addendum, nur Hints, beide, Dedupe case-insensitive, Whitespace/None/int-Filter, Doppel-Injection-Schutz, leerer Base-Prompt mit nur Block, Slug-Anzeige, Slug-Weglassen, unerwartete Typen, Separator-Format mit Leerzeile.
+- **`TestReadActiveProjectId`** — 7 Header-Reader-Tests: missing/None/empty/whitespace, valid int, Lowercase-Fallback, non-numeric, negative/zero.
+- **`TestResolveProjectOverlay`** — 5 async DB-Tests via `tmp_db`-Fixture (gleiches Muster wie `test_projects_repo.py`): None-ID, unknown ID, existing project, archived (skip + skip-False), project ohne Overlay → leerer Default-Dict.
+- **`TestE2EChatCompletionsWithProjectOverlay`** — 4 End-to-End-Tests über `chat_completions` mit Mock-LLM (`monkeypatch.setattr(LLMService, "call", fake_call)`) und `tmp_db`: Overlay erscheint im finalen `messages[0]["content"]` mit Slug-Zeile UND innerhalb des AKTIVE-PERSONA-Wraps; ohne Header → kein Block (Regression-Schutz für P184); unbekannte ID → kein Crash; archiviertes Projekt → übersprungen.
+- **`TestSourceAudit`** — 5 Source-Inspection-Tests: `[PERSONA-197]`-Log-Marker existiert in `legacy.py`, alle drei Helper-Imports da, Reihenfolge `merge_persona(sys_prompt` kommt VOR `_wrap_persona(sys_prompt)`.
+
+Teststand 1431 → **1464 passed** (+33). 4 xfailed (pre-existing). 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts) unverändert.
+
+### Was NICHT in P197 passiert ist
+- **Nala-UI-Tab "Aktives Projekt"** — der Header `X-Active-Project-Id` wird vom Endpoint korrekt gelesen, aber Nala-Frontend setzt ihn noch nicht. Wenn Chris einen Test machen will, muss er den Header per `curl` / SillyTavern setzen, oder die Hel-UI zur Verifikation nutzen. Die Nala-Verdrahtung kommt mit dem Tab "Projekte" (kein eigener Patch nötig — Nala sendet dann beim Tab-Wechsel den Header).
+- **Persistente Projekt-Auswahl an `chat_sessions`** — Header reicht für den Anfang. Wenn Chris später will, dass nach Browser-Reload das letzte Projekt aktiv bleibt: neue Spalte + `/nala/session/active-project`-Setter + Reader liest aus DB statt nur Header.
+- **Telegram-Verdrahtung** — siehe Architektur-Begründung oben.
+- **Storage-GC für verwaiste SHAs nach Projekt-Delete** — aus dem P196-HANDOVER offen, weiterhin offen. Theoretisch könnten beim harten Projekt-Delete (P194 `delete_project`) Bytes verwaisen. Low-prio bis das Storage-Volumen relevant wird.
+
+### Lessons (in lessons.md eingetragen, neue Sektion "Persona-Layer-Merge (P197)")
+- Mehrstufige Persona NICHT als monolithischen String aus 3 Quellen kombinieren — markierter Block pro Layer.
+- Pure-Function vs. DB-Schicht trennen für Testbarkeit.
+- Header statt persistenter Spalte als Aktivierungs-Mechanismus für ersten Schritt.
+- Reihenfolge VOR `_wrap_persona`-Marker — sonst entwertet das LLM den Block.
+- FastAPI-Headers vs. dict Case-Sensitivity-Falle.
+- `tone_hints` aus User-Input bereinigen (case-insensitive Dedupe, Filter).
+- Defensive Behaviors für jede Header-basierte Auswahl.
+- Telegram-Pfad ausklammern dokumentieren, wenn Persona-Welt fundamental anders ist.
+
+---
+
+*Stand: 2026-05-02, Patch 197 — Phase 5a Decision 3 aktiviert (Persona-Merge-Layer im LLM-Call). 1464 passed, 0 neue Failures.*
+
