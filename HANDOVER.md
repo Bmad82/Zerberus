@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P203a — Project-Workspace-Layout (Vorbereitung Phase 5a #5)
 **Tests:** 1635 passed (+36), 4 xfailed (pre-existing), 2 failed (pre-existing aus Schuldenliste: edge-tts + dual-rag)
-**Commit:** _wird nach Push nachgetragen_
-**Repos synchron:** _wird nach `verify_sync.ps1` nachgetragen_
+**Commit:** 2cab625 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
