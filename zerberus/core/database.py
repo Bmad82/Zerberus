@@ -5,7 +5,7 @@ import logging
 import uuid
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, joinedload
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, select, func, text
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, UniqueConstraint, select, func, text
 from datetime import datetime, timedelta
 
 from zerberus.core.config import get_settings
@@ -108,6 +108,59 @@ class Memory(Base):
     is_active = Column(Integer, default=1)             # SQLite Boolean as Integer; 1=active, 0=soft-deleted
 
 
+class Project(Base):
+    """Patch 194 — Phase 5a #1: Projekte als Entitaet.
+
+    Fundament fuer Code-Sandbox, projekt-spezifischen RAG-Index, isolierte
+    Persona-Layer und HitL-Gates pro Projekt. Lebt in ``bunker_memory.db``
+    (Decision 1, 2026-05-01) statt eigener SQLite-Datei.
+
+    ``persona_overlay`` ist ein JSON-Text, der im Persona-Merge-Layer
+    (Decision 3, 2026-05-01) ueber System-Default und User-Persona gelegt
+    wird. Format: ``{"system_addendum": "...", "tone_hints": [...]}``.
+
+    Soft-delete via ``is_archived``; harte Loeschungen kaskadieren in
+    ``project_files`` (FK ON DELETE CASCADE).
+    """
+    __tablename__ = "projects"
+
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    persona_overlay = Column(Text, nullable=True)
+    is_archived = Column(Integer, default=0, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProjectFile(Base):
+    """Patch 194 — Datei-Eintraege pro Projekt.
+
+    Bytes liegen NICHT in der DB, sondern unter
+    ``data/projects/<slug>/<sha256-prefix>/<sha256>``. Die DB haelt nur
+    Metadaten + Pfad. ``UNIQUE(project_id, relative_path)`` verhindert
+    Doppel-Uploads derselben Datei im selben Projekt; ``sha256`` erlaubt
+    Inhalts-Dedup ueber Projekte hinweg (separater Index).
+
+    Cascade-Delete an ``projects.id`` haengt — Foreign-Keys-Pragma muss in
+    SQLite aktiv sein (vgl. ``init_db``).
+    """
+    __tablename__ = "project_files"
+    __table_args__ = (
+        UniqueConstraint("project_id", "relative_path", name="uq_project_files_project_path"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, nullable=False, index=True)
+    relative_path = Column(String(500), nullable=False)
+    sha256 = Column(String(64), nullable=False, index=True)
+    size_bytes = Column(Integer, nullable=False)
+    mime_type = Column(String(100), nullable=True)
+    storage_path = Column(String(500), nullable=False)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+
 class HitlTask(Base):
     """Patch 167 — Persistente HitL-Tasks (Phase C, Block 1).
 
@@ -176,6 +229,10 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_interactions_profile_key "
             "ON interactions(profile_key, timestamp DESC)"
         ))
+        # Patch 194: FK-Pragma fuer SQLite. Cascade wird per Repo
+        # (``delete_project``) garantiert, weil die Models bewusst
+        # dependency-frei bleiben (keine ORM-Relations).
+        await conn.execute(text("PRAGMA foreign_keys = ON"))
     logger.info("✅ Datenbank bereit")
 
 async def get_db() -> AsyncSession:

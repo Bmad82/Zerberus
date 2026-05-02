@@ -1,5 +1,19 @@
 # CLAUDE_ZERBERUS.md – Zerberus Pro 4.0
 
+## Projekte (P194 — Phase 5a #1, Backend)
+- Tabellen: `projects(id, slug UNIQUE, name, description, persona_overlay JSON-TEXT, is_archived, created_at, updated_at)` + `project_files(id, project_id, relative_path, sha256, size_bytes, mime_type, storage_path, uploaded_at, UNIQUE(project_id, relative_path))` in `bunker_memory.db` (Decision 1, 2026-05-01)
+- Repo: [`zerberus/core/projects_repo.py`](zerberus/core/projects_repo.py) — async Pure-Functions (`create_project`/`get_project`/`get_project_by_slug`/`list_projects`/`update_project`/`archive_project`/`unarchive_project`/`delete_project`/`register_file`/`list_files`/`get_file`/`delete_file`)|Helper: `slugify()`, `compute_sha256()`, `storage_path_for()`
+- Models bewusst dependency-frei: keine ORM-Relations, keine `Column(ForeignKey)`|Cascade per Repo (`delete_project` führt explizites `DELETE FROM project_files WHERE project_id = ?` aus)
+- Composite-UNIQUE `(project_id, relative_path)` MUSS als `__table_args__ = (UniqueConstraint(...),)` im Model — sonst greift Constraint nicht in Test-Fixtures (siehe lessons.md/Datenbank)
+- Slug-Generator: lowercase, `[^a-z0-9]+` → `-`, max 64 Zeichen, Kollisions-Suffix `-2`/`-3`/...|Empty-Fallback `"projekt"`|Slug ist immutable (Rename per Drop+Recreate)
+- Persona-Overlay: JSON-Dict `{"system_addendum": "...", "tone_hints": [...]}` für Decision 3 (Merge-Layer System → User → Projekt|kein Override)|Repo serialisiert/deserialisiert, Caller arbeitet mit Dicts
+- Storage-Konvention: `data/projects/<slug>/<sha256[:2]>/<sha256>`|Sha-Prefix verhindert Hotspot-Ordner|Bytes liegen NICHT in DB|Cleanup-Job für Storage-Dateien beim Hard-Delete kommt separat (sha kann projektübergreifend referenziert sein)
+- Endpoints: `/hel/admin/projects` (GET list, POST create) + `/hel/admin/projects/{id}` (GET, PATCH, DELETE) + `/.../archive` + `/.../unarchive` + `/.../files`|Admin-only via Hel-Basic-Auth (`verify_admin`)|NICHT unter `/v1/` — `/v1/` ist Dictate-App-Lane (Hotfix 103a)
+- Migration: Alembic `b03fbb0bd5e3_patch194_projects` (down_revision `7feab49e6afe`)|idempotent via `_has_table()`-Guard|Indexe: `uq_projects_slug`, `idx_projects_is_archived`, `idx_project_files_project`, `idx_project_files_sha`
+- Tests: 28 in [`test_projects_repo.py`](zerberus/tests/test_projects_repo.py) + 18 in [`test_projects_endpoints.py`](zerberus/tests/test_projects_endpoints.py)|`tmp_db`-Fixture analog `test_memory_store.py`|Endpoint-Tests rufen Coroutines direkt auf (kein TestClient, gleiches Muster wie `test_huginn_config_endpoint.py`)
+- Logging-Tag: `[PROJECTS-194]`
+- UI-Tab in Hel folgt in P195 (Backend-Patch bewusst von UI getrennt — Workflow-Regel "lieber 2 saubere Patches als 3 mit halb fertigem dritten")
+
 ## Sentiment-Triptychon (P192)
 - Modul: [`zerberus/utils/sentiment_display.py`](zerberus/utils/sentiment_display.py) — `bert_emoji()`, `prosody_emoji()`, `consensus_emoji()`, `compute_consensus()`, `build_sentiment_payload()`
 - Drei Kanaele: BERT 📝 (Text-Sentiment), Prosodie 🎙️ (Stimm-Analyse, nur bei Audio), Konsens 🎯 (Fusion)

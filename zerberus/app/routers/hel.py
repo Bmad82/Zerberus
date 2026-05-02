@@ -3380,6 +3380,115 @@ async def delete_memory(memory_id: int):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Patch 194 (Phase 5a #1): Projekt-CRUD
+#  Admin-only via verify_admin (Hel Basic-Auth). Tabellen liegen in
+#  bunker_memory.db (Decision 1, 2026-05-01). Hel-first vor Nala-Integration
+#  (Decision 2). Persona-Overlay als Merge-Layer (Decision 3).
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/admin/projects")
+async def list_projects_endpoint(include_archived: bool = False):
+    from zerberus.core import projects_repo
+    items = await projects_repo.list_projects(include_archived=include_archived)
+    return {"projects": items, "count": len(items)}
+
+
+@router.post("/admin/projects")
+async def create_project_endpoint(request: Request):
+    from zerberus.core import projects_repo
+    data = await request.json()
+    name = str(data.get("name", "")).strip()
+    if not name:
+        raise HTTPException(400, "name darf nicht leer sein")
+    description = str(data.get("description", "")).strip()
+    persona_overlay = data.get("persona_overlay")
+    slug_override = data.get("slug")
+    if persona_overlay is not None and not isinstance(persona_overlay, dict):
+        raise HTTPException(400, "persona_overlay muss ein Objekt sein")
+    try:
+        project = await projects_repo.create_project(
+            name=name,
+            description=description,
+            persona_overlay=persona_overlay,
+            slug=slug_override,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "ok", "project": project}
+
+
+@router.get("/admin/projects/{project_id}")
+async def get_project_endpoint(project_id: int):
+    from zerberus.core import projects_repo
+    project = await projects_repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    return {"project": project}
+
+
+@router.patch("/admin/projects/{project_id}")
+async def update_project_endpoint(project_id: int, request: Request):
+    from zerberus.core import projects_repo
+    data = await request.json()
+    kwargs: dict = {}
+    if "name" in data:
+        kwargs["name"] = str(data["name"])
+    if "description" in data:
+        kwargs["description"] = str(data["description"])
+    if "persona_overlay" in data:
+        overlay = data["persona_overlay"]
+        if overlay is not None and not isinstance(overlay, dict):
+            raise HTTPException(400, "persona_overlay muss ein Objekt oder null sein")
+        kwargs["persona_overlay"] = overlay
+    try:
+        project = await projects_repo.update_project(project_id, **kwargs)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if project is None:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    return {"status": "ok", "project": project}
+
+
+@router.post("/admin/projects/{project_id}/archive")
+async def archive_project_endpoint(project_id: int):
+    from zerberus.core import projects_repo
+    project = await projects_repo.archive_project(project_id)
+    if project is None:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    return {"status": "ok", "project": project}
+
+
+@router.post("/admin/projects/{project_id}/unarchive")
+async def unarchive_project_endpoint(project_id: int):
+    from zerberus.core import projects_repo
+    project = await projects_repo.unarchive_project(project_id)
+    if project is None:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    return {"status": "ok", "project": project}
+
+
+@router.delete("/admin/projects/{project_id}")
+async def delete_project_endpoint(project_id: int):
+    """Harte Loeschung — kaskadiert ueber project_files. Nicht reversibel."""
+    from zerberus.core import projects_repo
+    deleted = await projects_repo.delete_project(project_id)
+    if not deleted:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    return {"status": "ok"}
+
+
+@router.get("/admin/projects/{project_id}/files")
+async def list_project_files_endpoint(project_id: int):
+    from zerberus.core import projects_repo
+    project = await projects_repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    files = await projects_repo.list_files(project_id)
+    return {"files": files, "count": len(files)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Patch 131: Vision-Modell-Endpoints (nur Vision-fähige Modelle)
 # ═══════════════════════════════════════════════════════════════════════════
 

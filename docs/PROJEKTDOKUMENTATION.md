@@ -5017,3 +5017,94 @@ Drei kleine Sentiment-Indikatoren an jeder Chat-Bubble (BERT-Text + Prosodie-Sti
 
 *Stand: 2026-05-01, Patch 192-193 — Sentiment-Triptychon UI (Frontend) + Whisper-Endpoint Enrichment (Backend, additiv, backward-compat). Phase 4 ist damit abgeschlossen. Phase 5 (Nala-Projekte) startet ab P194 — siehe [`HANDOVER_PHASE_5.md`](HANDOVER_PHASE_5.md).*
 
+---
+
+## Patch 194 — Phase 5a #1: Projekte als Entität (Backend) (2026-05-02)
+
+### Ziel
+Erstes konkretes Ziel der Phase 5a: Projekte als persistente Entität im System verankern, damit die nachfolgenden Patches (Templates, projekt-spezifischer RAG-Index, Code-Sandbox, HitL-Gate, Persona-Merge) ein Fundament haben. Bewusst in zwei Patches getrennt: P194 nur Backend (Schema + Repo + Endpoints + Tests), die Hel-UI folgt in P195. Die Trennung folgt der Workflow-Regel "lieber zwei saubere Patches als drei mit halb fertigem dritten".
+
+### Architekturentscheidungen (übernommen aus DECISIONS_PENDING #1-3, beantwortet 2026-05-01)
+- **DB-Lokation (Decision 1):** Tabellen leben in `bunker_memory.db` mit eigenen Namespaces, NICHT in einer separaten SQLite-Datei. Vermeidet zwei Connections, getrennte WAL-Configs, doppelte Backup-Pfade und ATTACH-Spielereien bei Joins. Isolation passiert über Foreign-Keys + namespacede Repo-Funktionen.
+- **UI-Reihenfolge (Decision 2):** Hel-first vor Nala-Integration. Projekte anlegen, konfigurieren und Dateien hochladen ist Admin-Arbeit im Desktop-Kontext — gehört nach Hel. Die Nala-Chat-Integration ("Wechsel zu Projekt X", Projektkontext fließt in Antworten) kommt in einem Folge-Patch.
+- **Persona-Hierarchie (Decision 3):** Merge, NICHT Override. Layer-Order: System-Default → User-Persona ("Mein Ton") → Projekt-Persona. Das Projekt darf Fachsprache und Kontext-Regeln hinzufügen; der Grundton des Users bleibt erhalten. Implementiert über das `persona_overlay`-Feld als JSON-Dict mit `system_addendum` und `tone_hints`.
+
+### Schema
+**Tabelle `projects`** (in `bunker_memory.db`):
+
+| Spalte | Typ | Hinweise |
+|--------|-----|----------|
+| `id` | INTEGER PK | |
+| `slug` | VARCHAR(64) UNIQUE | URL-stabil, lowercase, `[^a-z0-9]+` → `-`, max 64 Zeichen |
+| `name` | VARCHAR(200) NOT NULL | Anzeigename (mutable) |
+| `description` | TEXT NULL | optional, frei |
+| `persona_overlay` | TEXT (JSON) NULL | `{"system_addendum": "...", "tone_hints": [...]}` |
+| `is_archived` | INTEGER DEFAULT 0 | Soft-Delete (1=archiviert) |
+| `created_at` | DATETIME | |
+| `updated_at` | DATETIME (`onupdate=now`) | |
+
+**Tabelle `project_files`** (Bytes liegen NICHT in der DB):
+
+| Spalte | Typ | Hinweise |
+|--------|-----|----------|
+| `id` | INTEGER PK | |
+| `project_id` | INTEGER NOT NULL | logische FK auf `projects.id`, Cascade per Repo |
+| `relative_path` | VARCHAR(500) NOT NULL | z.B. `src/main.py` |
+| `sha256` | VARCHAR(64) NOT NULL | Inhalts-Hash (Dedup, Change-Detection) |
+| `size_bytes` | INTEGER NOT NULL | |
+| `mime_type` | VARCHAR(100) NULL | |
+| `storage_path` | VARCHAR(500) NOT NULL | `data/projects/<slug>/<sha[:2]>/<sha>` |
+| `uploaded_at` | DATETIME | |
+
+Plus `UNIQUE(project_id, relative_path)` als Composite-Constraint im Model (`__table_args__`) — verhindert Doppel-Uploads derselben Datei im selben Projekt.
+
+### Repository
+[`zerberus/core/projects_repo.py`](../zerberus/core/projects_repo.py) — async Pure-Functions, keine Klassen, keine ORM-Relations. Matcht das Muster der bestehenden `store_interaction`- und Memory-Helper. Funktions-Surface: `create_project`, `get_project`, `get_project_by_slug`, `list_projects`, `update_project`, `archive_project`, `unarchive_project`, `delete_project`, `register_file`, `list_files`, `get_file`, `delete_file`. Helper: `slugify(name)`, `compute_sha256(bytes)`, `storage_path_for(slug, sha, base_dir)`.
+
+Cascade beim Hard-Delete passiert per Repo (`delete_project` führt explizites `DELETE FROM project_files WHERE project_id = ?` aus), nicht per ORM-Relation oder DB-FK. Das hält die Models dependency-frei und erlaubt dem Repo-Layer, später z.B. Storage-Cleanup oder RAG-Index-Cleanup vor dem DB-Delete einzuhängen.
+
+Slug-Generator: lowercase, special-chars-collapse, max 64 Zeichen, Empty-Fallback `"projekt"`. Bei Kollision wird ein Counter-Suffix `-2`/`-3`/... angehängt (begrenzt auf 1000 Versuche). Slug ist nach Anlegen immutable — Rename per Drop+Recreate, weil ein wechselnder Slug URLs und (später) Storage-Pfade instabil machen würde.
+
+Persona-Overlay-Serialisierung lebt im Repo, nicht im Model: das Model hält JSON als Text, Repo-Funktionen reichen Dicts rein und raus. Caller (Hel-Endpoints, später Persona-Merge-Layer) arbeiten nie mit dem Roh-JSON.
+
+### Endpoints (in [`hel.py`](../zerberus/app/routers/hel.py))
+| Methode | Pfad | Zweck |
+|---------|------|-------|
+| GET | `/hel/admin/projects?include_archived=false` | Liste |
+| POST | `/hel/admin/projects` | Anlegen — Body `{name, description?, persona_overlay?, slug?}` |
+| GET | `/hel/admin/projects/{id}` | Detail |
+| PATCH | `/hel/admin/projects/{id}` | Partial-Update — Body kann `name`, `description`, `persona_overlay` enthalten |
+| POST | `/hel/admin/projects/{id}/archive` | Soft-Delete |
+| POST | `/hel/admin/projects/{id}/unarchive` | Wiederherstellung |
+| DELETE | `/hel/admin/projects/{id}` | Hard-Delete (kaskadiert auf `project_files`, NICHT reversibel) |
+| GET | `/hel/admin/projects/{id}/files` | Datei-Liste eines Projekts |
+
+Alle Endpoints liegen unter `/hel/` und sind via Hel-Basic-Auth (`verify_admin`) admin-geschützt. Bewusste Routing-Entscheidung gegen `/v1/projects/*`: `/v1/` ist exklusiv für die Dictate-Tastatur reserviert (Hotfix 103a, hartkodiert in `_JWT_EXCLUDED_PREFIXES`). Admin-CRUD unter `/v1/` würde entweder die Auth-frei-Invariante brechen oder die Dictate-App brechen — gehört nach `/hel/admin/`. Die Nala-Integration im Folge-Patch wird voraussichtlich `/nala/projects/active` o.ä. via JWT-Auth nutzen.
+
+### Migration
+[`alembic/versions/b03fbb0bd5e3_patch194_projects.py`](../alembic/versions/b03fbb0bd5e3_patch194_projects.py), `down_revision = "7feab49e6afe"` (Baseline P92). Idempotent via `_has_table()`-Helper — auf DBs, die das Schema schon über `init_db()` (Startup-Hook) bekommen haben, passiert nichts. Indexe: `uq_projects_slug` (UNIQUE), `idx_projects_is_archived` (composite mit `updated_at DESC` für die List-Query), `idx_project_files_project`, `idx_project_files_sha`. Die Composite-UNIQUE `(project_id, relative_path)` wird über `sa.UniqueConstraint` direkt im `op.create_table()`-Aufruf deklariert.
+
+### Tests
+- [`test_projects_repo.py`](../zerberus/tests/test_projects_repo.py) — 28 Tests: Slug-Generator (5), Create (5), Read (4), Update (4), Archive+Delete (4), Files (6).
+- [`test_projects_endpoints.py`](../zerberus/tests/test_projects_endpoints.py) — 18 Tests: List/Create (6), Get/Update/Archive/Delete (8), Files (3) — plus `test_create_invalid_overlay_type_raises_400`.
+
+`tmp_db`-Fixture analog `test_memory_store.py` — isolierte SQLite pro Test, monkey-patched über `_engine` und `_async_session_maker`. Endpoint-Tests rufen die Coroutines direkt auf (`_FakeRequest`-Pattern aus `test_huginn_config_endpoint.py`), ohne TestClient/ASGI-Setup — testet die HTTPException-Pfade trotzdem sauber.
+
+Teststand 1316 → **1365 passed** (+49: 28 Repo + 18 Endpoints + 3 weitere im Drumherum), 4 xfailed (pre-existing), 0 neue Failures.
+
+### Lesson dokumentiert (in `lessons.md`/Datenbank)
+Composite-UNIQUE-Constraints (z.B. `UNIQUE(project_id, relative_path)`) MÜSSEN als `__table_args__ = (UniqueConstraint(...),)` im SQLAlchemy-Model stehen. Nur ein `CREATE UNIQUE INDEX IF NOT EXISTS …` in `init_db` reicht NICHT, weil Test-Fixtures `Base.metadata.create_all` direkt gegen die Models laufen lassen (ohne `init_db`). Symptom: ein Repo-Test, der eine Duplikat-Insertion erwartet, sieht keine IntegrityError. Faustregel: Constraint im Model = Single Source of Truth, `init_db` nur für DDL die `metadata.create_all` nicht ableiten kann (PRAGMA, ALTER, Migrations-Backfills).
+
+### Routing-Korrektur ggü. Bootstrap-HANDOVER
+Der initiale HANDOVER-Plan sah `/v1/projects/*` vor — falsch. Beim Implementieren stellte sich heraus, dass `/v1/` exklusiv die Dictate-Tastatur-Lane ist (Hotfix 103a, hartkodierte Auth-Bypass-Liste). Korrigiert auf `/hel/admin/projects/*`. Matcht die "Hel-first"-Decision sauber und respektiert die `/v1/`-Invariante.
+
+### Logging-Tag
+- `[PROJECTS-194]` — Created/Archived/Hard-deleted Aufrufe, plus Warnungen bei nicht-parsebarem `persona_overlay`-JSON.
+
+### Was P195 macht
+Hel-UI-Tab "📁 Projekte" — Liste, Anlegen-Form, Detail-Modal mit Persona-Overlay-Editor, Datei-Liste. Nutzt die Endpoints aus P194 1:1. Gleiches Design-System wie die existierenden Hel-Tabs (Tab-Nav, `.hel-section-body`, Mobile-first 44px Touch-Targets).
+
+---
+
+*Stand: 2026-05-02, Patch 194 — Phase 5a #1 Backend. UI-Tab folgt in P195. 1365 passed, 0 neue Failures.*
+

@@ -13,6 +13,7 @@ Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 - bunker_memory.db nie manuell editieren/löschen
 - interactions-Tabelle hat KEINE User-Spalte|User-Trennung nur per Session-ID (unzuverlässig, vor Metrik-Auswertung klären)
 - Schema-Check vor Dedup-Query: `interactions` hat `content`+`role`, NICHT `user_message`|`PRAGMA table_info(interactions)` laufen lassen (P113a)
+- Composite-UNIQUE-Constraints (z.B. `UNIQUE(project_id, relative_path)`) MÜSSEN als `__table_args__ = (UniqueConstraint(...),)` im SQLAlchemy-Model stehen (P194)|Nur `CREATE UNIQUE INDEX IF NOT EXISTS …` in `init_db` reicht NICHT, weil Test-Fixtures `Base.metadata.create_all` direkt gegen die Models laufen lassen (ohne `init_db`)|Symptom: Repo-Test fügt Duplikat ein → erwartete IntegrityError fliegt nicht|Faustregel: Constraint im Model = Single Source of Truth, init_db nur für DDL die `metadata.create_all` nicht ableiten kann (PRAGMA, ALTER, Migrations-Backfills)
 
 ## RAG
 - Orchestrator Auto-Indexing aus|erzeugt sonst „source: orchestrator"-Chunks nach manuellem Clear (P68)|verdrängt echte Dokument-Chunks|nach jedem Clear prüfen
