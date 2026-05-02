@@ -3,6 +3,13 @@
 
 Universelle Erkenntnisse: https://github.com/Bmad82/Claude/lessons/
 
+## LLM-Kontext-Brücken (Prosodie, RAG, Persona)
+- LLM-Brücken-Blöcke IMMER mit eindeutigem Marker-Paar bauen (P204): `[PROSODIE — ...]` / `[/PROSODIE]` analog `[PROJEKT-RAG — Kontext aus Projektdateien]` (P199) und `[PERSONA-Marker]` (P197)|Marker-Substring in `system_prompt` ist der Idempotenz-Check (zweiter Aufruf hängt nicht doppelt an)|Test `TestMarkerUniqueness` verifiziert dass die drei Marker disjoint sind (kein Substring-Match zwischen ihnen)
+- Worker-Protection (P191) für jeden Kontext-Block der Stimmungs-/Verhaltens-Daten ans LLM gibt: NUR qualitative Labels, KEINE numerischen Werte (P204)|Confidence/Score/Valence/Arousal werden im Konsens-Label verkocht (z.B. `"leicht positiv"`/`"deutlich negativ"`/`"inkongruent — ..."`)|Defense via parametrisiertem Test mit Regex `\d+\.\d+`/`%`/`\b\d+\b` über alle Block-Zeilen — schlägt sofort an wenn versehentlich eine Zahl reinrutscht
+- Konsens-Logik einmal definieren, mehrfach nutzen: Mehrabian-Schwellen (BERT_HIGH=0.7, PROSODY_DOMINATES=0.5, VALENCE_NEGATIVE=-0.2) sind in `utils/sentiment_display.py` (P192, UI-Triptychon) UND `modules/prosody/injector.py` (P204, LLM-Kontext)|UI-Konsens und LLM-Konsens dürfen nicht divergieren — wenn die Schwellen geändert werden, MÜSSEN beide Stellen synchron bleiben|Cross-Test-Verifikation kann ein gemeinsames Helper-Modul rechtfertigen, ist aber bewusst dupliziert solange die Schichten klar getrennt bleiben (UI=Emoji, LLM=Text)
+- Voice-only-Garantie zwei-stufig: (1) Frontend setzt den Indikator-Header nur nach echtem Voice-Roundtrip (Datenfluss-Garantie)|(2) Backend filtert defense-in-depth über Source-Check (Stub-Source → kein Block) — schützt gegen versehentliche Pseudo-Contexts wenn Frontend-Bug einen alten Voice-Context bei einem getippten Turn mitsendet
+- Optional-additive Erweiterung statt neuer Funktion: `inject_prosody_context(sys, prosody, *, bert_label=None, bert_score=None)` — keyword-only Parameter, Backward-Compat zu P190-Aufrufern erhalten|alte Tests bleiben, neue Tests für die neuen Pfade in eigener Test-Datei|Format-Update der alten Tests OK wenn substantielles Refactoring im Block selbst stattfindet (P204 hat `[Prosodie-Hinweis ...]` durch `[PROSODIE]...[/PROSODIE]` ersetzt — alte Format-Asserts angepasst)
+
 ## Konfiguration
 - config.yaml = Single Source of Truth|config.json NIE als Konfig-Quelle (Split-Brain P34)
 - Module mit `enabled: false` nicht anfassen, auch nicht „kurz testen"

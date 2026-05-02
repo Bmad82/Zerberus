@@ -1,10 +1,20 @@
 """
-Patch 190 — Tests für Audio-Pipeline-Aktivierung.
+Patch 190 + Patch 204 — Tests fuer Prosodie-LLM-Bruecke.
 
-Coverage:
-  - inject_prosody_context (alle Gating-Regeln)
+P190 hat den Block eingefuehrt; P204 (Phase 5a #17) hat das Format auf
+einen markierten ``[PROSODIE]...[/PROSODIE]``-Block umgestellt und um
+optionale BERT-Konsens-Logik erweitert. Die Gating-Regeln (Stub,
+Low-Confidence, None, invalid types) gelten unveraendert.
+
+Coverage hier:
+  - Gating-Verhalten (Stub-Skip, Low-Conf-Skip, None, invalid)
+  - Idempotenz (zweiter Aufruf haengt nichts an)
+  - Original-Prompt bleibt vor dem Block
   - asyncio.gather-Logik (parallel, Failure-Pfade)
-  - Source-Audit für Pipeline-Hooks in legacy.py + nala.py
+  - Source-Audit fuer Pipeline-Hooks in legacy.py + nala.py
+
+P204-spezifische Erweiterungen (BERT, Konsens, Voice-only):
+  → ``test_p204_prosody_context.py``.
 """
 from __future__ import annotations
 
@@ -14,7 +24,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from zerberus.modules.prosody.injector import inject_prosody_context
+from zerberus.modules.prosody.injector import (
+    PROSODY_BLOCK_CLOSE,
+    PROSODY_BLOCK_MARKER,
+    inject_prosody_context,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class TestInjectProsodyContext:
     def test_inject_prosody_adds_block(self):
-        """Echtes Ergebnis (gemma_e2b, hohe Confidence) → Block hinten dran."""
+        """Echtes Ergebnis (gemma_e2b, hohe Confidence) → markierter Block."""
         sys = "Du bist Nala."
         out = inject_prosody_context(sys, {
             "mood": "happy", "tempo": "fast", "confidence": 0.85,
@@ -34,10 +48,14 @@ class TestInjectProsodyContext:
             "source": "gemma_e2b",
         })
         assert sys in out  # Original bleibt davor
-        assert "[Prosodie-Hinweis" in out
-        assert "Stimmung=happy" in out
-        assert "Tempo=fast" in out
-        assert "Confidence: 85%" in out
+        assert PROSODY_BLOCK_MARKER in out
+        assert PROSODY_BLOCK_CLOSE in out
+        # Qualitative Labels statt Zahlen (Worker-Protection P191)
+        assert "Stimme: froehlich" in out
+        assert "Tempo: schnell" in out
+        # Keine Confidence-Zahl mehr im Block
+        assert "85%" not in out
+        assert "Confidence" not in out
 
     def test_inject_prosody_skips_stub(self):
         """source='stub' → unveränderter Prompt."""
@@ -59,25 +77,42 @@ class TestInjectProsodyContext:
         })
         assert out == sys
 
-    def test_inject_prosody_adds_incongruence_warning(self):
-        """Negative Valenz < -0.3 → Inkongruenz-Hinweis."""
+    def test_inject_prosody_consensus_label_present(self):
+        """Block enthält 'Konsens:' als Label (immer, mit oder ohne BERT)."""
         sys = "Du bist Nala."
         out = inject_prosody_context(sys, {
-            "mood": "sad", "tempo": "slow", "confidence": 0.7,
-            "valence": -0.6, "arousal": 0.4, "dominance": 0.3,
+            "mood": "calm", "tempo": "normal", "confidence": 0.7,
+            "valence": 0.4, "arousal": 0.3, "dominance": 0.5,
             "source": "gemma_e2b",
         })
-        assert "Stimme klingt anders als Text vermuten lässt" in out
+        assert "Konsens:" in out
+        # Ohne BERT → Stimm-Mood ist Konsens-Default
+        assert "ruhig" in out
 
-    def test_inject_prosody_no_warning_for_positive_valence(self):
-        """Positive Valenz → KEINE Inkongruenz-Warnung."""
+    def test_inject_prosody_inkongruenz_when_text_positive_voice_negative(self):
+        """BERT positiv + Prosody-Valenz negativ → Inkongruenz-Konsens."""
+        sys = "Du bist Nala."
+        out = inject_prosody_context(
+            sys,
+            {
+                "mood": "sad", "tempo": "slow", "confidence": 0.7,
+                "valence": -0.6, "arousal": 0.4, "dominance": 0.3,
+                "source": "gemma_e2b",
+            },
+            bert_label="positive",
+            bert_score=0.8,
+        )
+        assert "inkongruent" in out.lower()
+
+    def test_inject_prosody_no_inkongruenz_for_positive_valence(self):
+        """Positive Valenz → kein Inkongruenz-Konsens."""
         sys = "Du bist Nala."
         out = inject_prosody_context(sys, {
             "mood": "happy", "tempo": "fast", "confidence": 0.7,
             "valence": 0.5, "arousal": 0.6, "dominance": 0.5,
             "source": "gemma_e2b",
         })
-        assert "Inkongruenz" not in out
+        assert "inkongruent" not in out.lower()
         assert "Ironie" not in out
 
     def test_inject_prosody_preserves_original_prompt(self):
@@ -114,6 +149,18 @@ class TestInjectProsodyContext:
             "source": "gemma_e2b",
         })
         assert out == sys
+
+    def test_inject_prosody_idempotent_no_double_block(self):
+        """Zweiter Aufruf am gleichen Prompt haengt keinen zweiten Block an."""
+        sys = "Du bist Nala."
+        prosody = {
+            "mood": "happy", "tempo": "fast", "confidence": 0.7,
+            "valence": 0.5, "arousal": 0.6, "source": "gemma_e2b",
+        }
+        once = inject_prosody_context(sys, prosody)
+        twice = inject_prosody_context(once, prosody)
+        assert once == twice
+        assert once.count(PROSODY_BLOCK_MARKER) == 1
 
 
 # ====================================================================

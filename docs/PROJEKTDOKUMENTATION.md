@@ -5890,5 +5890,145 @@ Hel ist wieder voll bedienbar. Tabs wechseln, Buttons reagieren, Settings-Zahnra
 
 ---
 
-*Stand: 2026-05-02, Patch 203b — Hel-UI-Hotfix Quote-Escape-Bug. 1645 passed (+10), 0 neue Failures, alter `test_projects_ui::test_file_list_has_delete_button` semantisch angepasst.*
+## Patch 204 — Prosodie-Kontext im LLM (Phase 5a #17, unabhängig einschiebbar)
+
+**Datum:** 2026-05-02
+**Branch:** main
+**Auslöser:** Chris-Feature-Request (FEATURE_REQUEST_PROSODIE_KONTEXT.md). Die Prosodie-Pipeline (P189-193) liefert ihre Daten an das UI-Triptychon (P192) — Nala sieht die Stimmung, das LLM aber nicht. DeepSeek bekommt beim Voice-Input keinen Kontext, wer da gerade in welcher Verfassung redet. P190 hatte einen rudimentären `[Prosodie-Hinweis ...]`-Block, aber nur Gemma (kein BERT, kein Konsens) und in einem ad-hoc-Format.
+
+**Ziel:** Sentiment- und Prosodie-Daten aus Whisper+Gemma+BERT als markierter `[PROSODIE]...[/PROSODIE]`-Kontextblock in die LLM-Messages einfließen lassen — analog `[PROJEKT-RAG]` (P199), `[PROJEKT-KONTEXT]` (P197). Damit kann Nala den Ton subtil anpassen (zurücknehmen wenn jemand müde klingt, nachfragen bei Stress) ohne plakative "Du klingst traurig!"-Reaktionen.
+
+**Architektur:**
+
+Pure-Function-Schicht in [`zerberus/modules/prosody/injector.py`](zerberus/modules/prosody/injector.py):
+
+```python
+def build_prosody_block(
+    prosody: Optional[dict],
+    *,
+    bert_label: Optional[str] = None,
+    bert_score: Optional[float] = None,
+) -> str:
+    ...
+```
+
+Die Pure-Function nimmt das Prosodie-Result (so wie es `ProsodyManager.analyze()` liefert) plus optionale BERT-Daten und produziert den Block-String. Lookup-Tables `_BERT_LABEL_DE` (positive→positiv, negative→negativ, neutral→neutral), `_PROSODY_MOOD_DE` (happy→fröhlich, calm→ruhig, tired→müde, …), `_PROSODY_TEMPO_DE` (slow→langsam, normal→normal, fast→schnell). Helper `_consensus_label` implementiert die Mehrabian-Logik aus [`utils/sentiment_display.py::consensus_emoji`](zerberus/utils/sentiment_display.py) — gleiche Schwellen (BERT_HIGH=0.7, PROSODY_DOMINATES_CONFIDENCE=0.5, VALENCE_NEGATIVE=-0.2), damit UI-Konsens und LLM-Konsens nicht voneinander abweichen.
+
+Der gerenderte Block sieht so aus:
+
+```
+[PROSODIE — Stimmungs-Kontext aus Voice-Input]
+Stimme: ruhig
+Tempo: langsam
+Sentiment-Text: leicht positiv (BERT)
+Sentiment-Stimme: ruhig (Gemma)
+Konsens: ruhig
+[/PROSODIE]
+```
+
+Bei Inkongruenz (BERT positiv, Prosody-Valenz negativ) liefert der Konsens stattdessen `inkongruent — Text positiv, Stimme negativ (mögliche Ironie oder Stress)` — Mehrabian-Heuristik analog UI-Triptychon.
+
+**Worker-Protection (P191): keine Zahlen im Block.**
+
+Confidence/Score/Valence/Arousal werden im Konsens-Label verkocht — das LLM bekommt nur menschenlesbare Beschreibungen, keine numerischen Metriken. Damit kann das Modell die Daten nicht zu Performance-Bewertungen aus Stimmungsdaten missbrauchen ("der User wirkt zu 85% gestresst, also leistet er weniger"). Die Defense ist als parametrisierter Test implementiert (`TestWorkerProtectionNoNumbers`): drei verschiedene Prosodie-Szenarien werden geprüft, dass der gerenderte Block keinerlei Floats (`\d+\.\d+`), Prozente (`%`) oder Standalone-Integer (`\b\d+\b`) enthält.
+
+**Voice-only-Garantie zwei-stufig:**
+
+1. **Datenfluss-Garantie:** Der `X-Prosody-Context`-Header wird vom Frontend NUR nach einem Whisper-Roundtrip gesetzt — bei getipptem Text gibt es keine Whisper-Response, also keinen Header, also keinen Block. Nichts mit dem Backend zu tun.
+2. **Defense-in-depth:** Wenn das Frontend (z.B. wegen eines Bugs) einen alten Voice-Context bei einem getippten Turn mitsendet, fängt der Stub-Source-Check den Fall ab. `prosody.get("source") == "stub"` → leerer Block. Das Stub-Result hat `source="stub"`, so dass selbst beim missbräuchlichen Mit-Senden kein LLM-Kontext landet.
+
+Plus: `confidence < 0.3` → kein Block (zu unsicher), `prosody=None` → kein Block (Header fehlt oder kaputtes JSON), `consent=false` → Frontend bekommt den Header gar nicht erst gerendert (P191 Consent-Check im Voice-Endpoint).
+
+**Verdrahtung in `legacy.py /v1/chat/completions`:**
+
+Der bestehende P190-Block wurde umgestellt:
+
+```python
+_prosody_ctx_raw = request.headers.get("X-Prosody-Context", "")
+_prosody_consent = request.headers.get("X-Prosody-Consent", "false").lower() == "true"
+_prosody_ctx: dict | None = None
+if _prosody_ctx_raw and _prosody_consent:
+    try:
+        _parsed = json.loads(_prosody_ctx_raw)
+        if isinstance(_parsed, dict):
+            _prosody_ctx = _parsed
+    except (json.JSONDecodeError, ValueError) as _pr_err:
+        logger.warning(f"[PROSODY-190] X-Prosody-Context ungültig: {_pr_err}")
+
+if _prosody_ctx:
+    _bert_label = None
+    _bert_score = None
+    try:
+        from zerberus.modules.sentiment.router import analyze_sentiment
+        _bert = analyze_sentiment(last_user_msg or "")
+        _bert_label = _bert.get("label", "neutral")
+        _bert_score = float(_bert.get("score", 0.5))
+    except Exception as _bert_err:
+        logger.warning(f"[PROSODY-204] BERT-Analyse fehlgeschlagen (fail-open): {_bert_err}")
+
+    from zerberus.modules.prosody.injector import inject_prosody_context
+    sys_prompt = inject_prosody_context(
+        sys_prompt,
+        _prosody_ctx,
+        bert_label=_bert_label,
+        bert_score=_bert_score,
+    )
+```
+
+Drei Defensiv-Schichten:
+- JSON-Parse mit Type-Guard (nur `dict` akzeptiert — Listen oder Strings würden weiter unten in `build_prosody_block` rausgefiltert, aber wir sortieren früh aus)
+- BERT-Call in try/except → fail-open: Sentiment-Modul kaputt → Block ohne Sentiment-Text-Zeile, nicht gar kein Block
+- Keyword-only-Parameter — bestehende P190-Aufrufer ohne BERT bekommen einen Block ohne Sentiment-Text (Backward-Compat erhalten)
+
+**Reihenfolge der Brücken-Blöcke im finalen System-Prompt** (von oben nach unten):
+
+1. Base-Persona aus `system_prompt_<profile>.json` (P184)
+2. Projekt-Persona-Overlay (P197 `[PROJEKT-KONTEXT — verbindlich für diese Session]`)
+3. AKTIVE-PERSONA-Wrap (P184)
+4. Runtime-Info (P185)
+5. Decision-Box-Hint (P118a)
+6. **Prosodie-Block (P190+204 `[PROSODIE — Stimmungs-Kontext aus Voice-Input]`)** ← hier
+7. Projekt-RAG-Block (P199 `[PROJEKT-RAG — Kontext aus Projektdateien]`)
+
+Die Reihenfolge ist im Code so dokumentiert. Logik: Persona definiert WER, Projekt-Kontext definiert WAS, Prosodie definiert WIE der User klingt, RAG definiert worüber gesprochen werden kann. Prosodie kommt vor RAG, weil RAG-Hits auch lang werden und das LLM den Stimmungs-Kontext sonst nach unten verdrängt.
+
+**Tests:**
+
+33 neue in [`test_p204_prosody_context.py`](zerberus/tests/test_p204_prosody_context.py):
+
+- **`TestBuildProsodyBlock`** (9): Marker-Pair (Open + Close), Stimme/Tempo-Labels, Konsens-Zeile mit BERT (`leicht positiv`, kein `deutlich`), Konsens-Zeile ohne BERT (Stimm-Mood ist Konsens), Stub-Source-Reject, Low-Confidence-Reject, None/Wrong-Type/List-Reject, Invalid-Conf-String-Reject, Unknown-Mood-Fallback (raw value).
+- **`TestWorkerProtectionNoNumbers`** (3 parametrisiert): drei Prosody+BERT-Szenarien, jedes prüft via Regex `%`, `\d+\.\d+`, `\b\d+\b` dass keine Zahl im Block landet.
+- **`TestConsensusLabel`** (6): Inkongruenz-Pfad, Voice-Dominate (Confidence > 0.5), BERT-Fallback (Confidence ≤ 0.5), Neutral-Pfad, ohne-BERT-Fallback (Voice-only), Invalid-Numeric-Inputs (Defaults greifen).
+- **`TestBertQualitative`** (6): positive high (deutlich), positive low (leicht), negative high, negative low, neutral (kein Präfix), Invalid-Score-Fallback.
+- **`TestInjectWithBert`** (5): Block mit BERT-Labels appended, Stub-Skip mit BERT, Low-Conf-Skip mit BERT, leerer Base-Prompt (Block beginnt direkt ohne Leerzeilen-Präfix), Idempotenz (Marker schon im Prompt → kein zweiter Block).
+- **`TestP204LegacyVerdrahtung`** (6 Source-Audit): `inject_prosody_context` importiert, `bert_label=` + `bert_score=` als Keywords im Aufruf, `[PROSODY-204]`-Tag in legacy.py, X-Prosody-Context + X-Prosody-Consent gelesen, Keyword-Aufruf-Pattern via Regex, BERT-Call in try/except mit `[PROSODY-204] BERT-Analyse`-Tag.
+- **`TestMarkerUniqueness`** (3): `PROSODY_BLOCK_MARKER` startet mit `[PROSODIE`, Close-Marker ist `[/PROSODIE]`, distinct vom `PROJECT_BLOCK_MARKER` (P197) und `PROJECT_RAG_BLOCK_MARKER` (P199), substring-disjoint.
+
+Plus 6 nachgeschärfte Tests in [`test_prosody_pipeline.py::TestInjectProsodyContext`](zerberus/tests/test_prosody_pipeline.py): Format-Assertions umgestellt von `"[Prosodie-Hinweis"`/`"Stimmung=happy"`/`"Confidence: 85%"` auf `PROSODY_BLOCK_MARKER`/`"Stimme: fröhlich"`/qualitative Labels (Worker-Protection-Check). Plus neuer Idempotenz-Test, plus Inkongruenz-Test mit BERT-Parametern, plus Konsens-Label-Test.
+
+**Was P204 bewusst NICHT macht:**
+
+- **Keine Persistierung der Prosodie-Daten in der DB.** Ist one-shot pro Request — Worker-Protection (P191).
+- **Keine Triptychon-UI-Änderung.** P192 zeigt die Daten bereits, P204 ist die Brücke zum LLM, nicht zur UI.
+- **Keine Pipeline-Änderung.** Whisper/Gemma/BERT bleiben unverändert; P204 nutzt nur die Outputs.
+- **Kein neuer `X-Voice-Input`-Header.** Der bestehende `X-Prosody-Context`-Header IST der Voice-Indikator (Frontend setzt ihn nur nach Whisper-Roundtrip), Stub-Source-Check + Consent-Header sind defense-in-depth.
+- **Keine Persona-spezifische Prosodie-Anpassung.** Z.B. "förmliche Persona reagiert anders auf Stress als spielerische" — hat nichts in P204 verloren, das ist Persona-Engineering im System-Prompt selbst (P197 Overlay).
+- **Kein BERT-Header-Reuse aus P193.** Der Whisper-Endpoint berechnet schon BERT (`response.sentiment.bert`), aber das Frontend reicht das nicht weiter — Server-seitig BERT auf `last_user_msg` nochmal aufzurufen ist O(ms) im selben Prozess und vermeidet Header-Engineering. Falls später Latenz-Optimierung gewünscht: `X-Sentiment-Context`-Header analog `X-Prosody-Context` einführen, BERT überspringen wenn da.
+
+**Effekt für den User:**
+
+Bei Voice-Input liest DeepSeek im System-Prompt jetzt einen Kontext-Block mit der vollen Stimmungslage. Nala kann den Ton subtil anpassen — beispielsweise zurückhaltender antworten wenn jemand `Stimme: müde`, `Konsens: müde` ist; nachfragen wenn `Stimme: gestresst` und `Konsens: angespannt` zusammenkommen; oder sensibel werden wenn `Konsens: inkongruent — Text positiv, Stimme negativ (mögliche Ironie oder Stress)` auftaucht (klassischer Maskierung von Belastung). **Wichtig:** Nala soll NICHT plakativ reagieren ("Du klingst traurig, oh nein!") — das LLM hat den Block als zusätzlichen Kontext, nicht als Marketing-Briefing. Subtilität kommt aus der Persona, nicht aus dem Block.
+
+Bei getipptem Text: kein Block, Chat unverändert. Bei deaktiviertem Consent: kein Block. Bei Stub-Pipeline (kein Modell geladen): kein Block. Bei Low-Confidence (< 0.3): kein Block. Bei Inkongruenz: zusätzliche Konsens-Zeile mit Hinweis.
+
+**Architektur-Lessons (für lessons.md):**
+
+- LLM-Kontext-Blöcke immer mit eindeutigem Marker-Paar bauen (`[PROSODIE — ...]` / `[/PROSODIE]`), Substring im Prompt ist der Idempotenz-Check.
+- Worker-Protection für stimmungs-/verhaltens-relevante Daten ans LLM: NUR qualitative Labels, KEINE Zahlen — Defense via parametrisiertem Regex-Test.
+- Konsens-Logik ist UI- und LLM-relevant: Schwellen einmal definieren und in beiden Schichten replizieren — UI und LLM dürfen nicht voneinander abweichen.
+- Voice-only-Garantie zwei-stufig (Datenfluss + Source-Check), nicht nur eine — Frontend-Bugs landen sonst beim LLM.
+
+---
+
+*Stand: 2026-05-02, Patch 204 — Prosodie-Kontext im LLM (Phase 5a #17 abgeschlossen). 1685 passed (+40), 0 neue Failures, 6 nachgeschärfte Tests in `test_prosody_pipeline.py` (Format-Update).*
 

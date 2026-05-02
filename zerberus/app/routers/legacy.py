@@ -219,18 +219,49 @@ async def chat_completions(
     from zerberus.core.prompt_features import append_decision_box_hint
     sys_prompt = append_decision_box_hint(sys_prompt, settings)
 
-    # Patch 190: Prosodie-Block aus X-Prosody-Context Header (vom Audio-Endpoint
-    # kommendes JSON, vom Frontend durchgereicht). Worker-Protection:
-    # nur injizieren wenn Consent + Source != stub + Confidence ausreicht.
+    # Patch 190 + Patch 204 (Phase 5a #17): Prosodie-Bruecke zum LLM.
+    # Der `X-Prosody-Context`-Header kommt vom Frontend NUR nach einem
+    # Whisper-Roundtrip (Voice-Input) — getippter Text liefert ihn nicht.
+    # Fail-open: Header fehlt / ungueltig / Consent fehlt → kein Block.
+    # P204: zusaetzlich BERT-Sentiment auf der letzten User-Nachricht
+    # berechnen und zusammen mit Gemma in einen markierten
+    # `[PROSODIE]...[/PROSODIE]`-Block giessen, analog `[PROJEKT-RAG]`.
+    # Worker-Protection (P191): der Block enthaelt nur qualitative Labels,
+    # keine Confidence/Score/Valence.
     _prosody_ctx_raw = request.headers.get("X-Prosody-Context", "")
     _prosody_consent = request.headers.get("X-Prosody-Consent", "false").lower() == "true"
+    _prosody_ctx: dict | None = None
     if _prosody_ctx_raw and _prosody_consent:
         try:
-            _prosody_ctx = json.loads(_prosody_ctx_raw)
-            from zerberus.modules.prosody.injector import inject_prosody_context
-            sys_prompt = inject_prosody_context(sys_prompt, _prosody_ctx)
+            _parsed = json.loads(_prosody_ctx_raw)
+            if isinstance(_parsed, dict):
+                _prosody_ctx = _parsed
         except (json.JSONDecodeError, ValueError) as _pr_err:
             logger.warning(f"[PROSODY-190] X-Prosody-Context ungültig: {_pr_err}")
+
+    if _prosody_ctx:
+        # BERT auf der letzten User-Nachricht — fail-open auf Sentiment-Fehler,
+        # damit der Chat normal weiterlaeuft. Kein BERT → Block wird ohne
+        # Sentiment-Text-Zeile gebaut (Stimm-only Pfad).
+        _bert_label = None
+        _bert_score = None
+        try:
+            from zerberus.modules.sentiment.router import analyze_sentiment
+            _bert = analyze_sentiment(last_user_msg or "")
+            _bert_label = _bert.get("label", "neutral")
+            _bert_score = float(_bert.get("score", 0.5))
+        except Exception as _bert_err:
+            logger.warning(
+                f"[PROSODY-204] BERT-Analyse fuer Konsens fehlgeschlagen (fail-open): {_bert_err}"
+            )
+
+        from zerberus.modules.prosody.injector import inject_prosody_context
+        sys_prompt = inject_prosody_context(
+            sys_prompt,
+            _prosody_ctx,
+            bert_label=_bert_label,
+            bert_score=_bert_score,
+        )
 
     # Patch 199 (Phase 5a #3): Projekt-RAG-Block. Wenn ein aktives Projekt
     # gesetzt ist (P197) UND der Index Treffer fuer die letzte User-Message

@@ -1,10 +1,33 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 203b (2026-05-02) – Hel-UI-Hotfix: kaputtes Quote-Escaping → Event-Delegation*
+*Letzte Aktualisierung: Patch 204 (2026-05-02) – Prosodie-Kontext im LLM (Phase 5a #17)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 204** — Prosodie-Kontext im LLM (Phase 5a #17, unabhängig einschiebbar) (2026-05-02)
+
+Schließt Phase-5a-Ziel #17: Die Prosodie-Pipeline (P189-193) lieferte ihre Daten bisher nur ans UI-Triptychon (P192) — DeepSeek bekam beim Voice-Input keinen Kontext, das LLM "hörte" die Stimme nicht. P190 hatte zwar einen rudimentären `[Prosodie-Hinweis ...]`-Block hinzugefügt, aber nur Gemma (kein BERT, kein Konsens-Label) und in einem ad-hoc-Format. P204 baut die Brücke richtig: ein markierter `[PROSODIE]...[/PROSODIE]`-Block analog `[PROJEKT-RAG]` (P199), mit BERT-Sentiment und Mehrabian-Konsens.
+
+**Format-Entscheidung: qualitative Labels, keine Zahlen (Worker-Protection P191).** Confidence/Score/Valence/Arousal werden im Konsens-Label verkocht — das LLM bekommt nur menschenlesbare Beschreibungen wie "leicht positiv", "ruhig", "deutlich negativ", "inkongruent — Text positiv, Stimme negativ". Damit kann das Modell die Daten nicht zu Performance-Bewertungen aus Stimmungsdaten missbrauchen. Tests verifizieren die Number-Free-Property mit einem Regex (`\d+\.\d+`, `%`, `\b\d+\b`).
+
+**Architektur: Pure-Function `build_prosody_block` plus Wrapper `inject_prosody_context`.** Pure-Schicht baut den Block-String (lookup-table-based mood/tempo-Übersetzung de, Mehrabian-Konsens-Logik aus `utils.sentiment_display` repliziert), Wrapper hängt am System-Prompt an mit Idempotenz-Check (Marker-Substring im Prompt → kein zweiter Block). BERT-Parameter sind keyword-only und additiv — bestehende P190-Aufrufer ohne BERT bekommen einen Block ohne Sentiment-Text-Zeile (Stimm-only-Pfad).
+
+**Verdrahtung in `legacy.py /v1/chat/completions`.** Der `X-Prosody-Context`-Header (vom Whisper-Endpoint übers Frontend durchgereicht) plus `X-Prosody-Consent: true` schaltet den Block frei. Server-seitig wird BERT auf der letzten User-Message berechnet (fail-open: BERT-Fehler → kein Sentiment-Text-Zeile, Block läuft ohne) und an `inject_prosody_context` durchgereicht. Voice-only-Garantie: der Header existiert nur nach Whisper-Roundtrip (Frontend setzt ihn nicht bei getipptem Text) — defense-in-depth über Stub-Source-Check filtert versehentliche Pseudo-Contexts.
+
+**Mehrabian-Konsens (Pure):** BERT positiv + Prosody-Valenz negativ → `"inkongruent — ..."`. Sonst: Confidence > 0.5 → Stimme dominiert (Stimm-Mood gewinnt), Confidence ≤ 0.5 → BERT-Fallback (`"deutlich/leicht positiv/negativ"` oder `"neutral"`). Schwellen identisch zu `utils/sentiment_display.py` (P192) — UI-Konsens und LLM-Konsens dürfen nicht voneinander abweichen.
+
+- **Pure-Schicht:** [`zerberus/modules/prosody/injector.py::build_prosody_block`](zerberus/modules/prosody/injector.py) plus Helper `_consensus_label`, `_bert_qualitative` und Marker-Konstanten `PROSODY_BLOCK_MARKER` / `PROSODY_BLOCK_CLOSE`. Lookup-Tables `_BERT_LABEL_DE`, `_PROSODY_MOOD_DE`, `_PROSODY_TEMPO_DE`. Schwellen `_BERT_HIGH=0.7`, `_PROSODY_DOMINATES_CONFIDENCE=0.5`, `_MIN_CONFIDENCE_FOR_BLOCK=0.3`.
+- **Wrapper:** `inject_prosody_context(system_prompt, prosody_result, *, bert_label=None, bert_score=None)` — Backward-Compat-Signatur (keyword-only-Parameter additiv). Idempotent. Logging `[PROSODY-204]` wenn BERT mitgegeben, `[PROSODY-190]` ohne.
+- **Verdrahtung:** [`legacy.py::chat_completions`](zerberus/app/routers/legacy.py) — JSON-Parse + Type-Guard (nur `dict`), BERT-Call in try/except (fail-open), Aufruf mit Keyword-Args.
+- **Tests:** 33 in [`test_p204_prosody_context.py`](zerberus/tests/test_p204_prosody_context.py) (`TestBuildProsodyBlock` 9: Marker, Stimme/Tempo, Konsens-mit-BERT, Konsens-ohne-BERT, Stub-Reject, Low-Conf-Reject, None/Wrong-Type, Invalid-Conf, Unknown-Mood-Fallback; `TestWorkerProtectionNoNumbers` 3 parametrisiert: Regex-Check `%`/`\d+\.\d+`/`\b\d+\b`; `TestConsensusLabel` 6: Inkongruenz, Voice-dominiert, BERT-Fallback, Neutral, ohne-BERT, Invalid-Inputs; `TestBertQualitative` 6: positive/negative high/low, neutral, invalid; `TestInjectWithBert` 5: append-mit-BERT, Stub-skip, Low-Conf-skip, leerer-Base, Idempotenz; `TestP204LegacyVerdrahtung` 6 Source-Audit; `TestMarkerUniqueness` 3: Format, Distinct-vom-PROJEKT-RAG/PROJEKT-KONTEXT). Plus 6 nachgeschärfte Tests in [`test_prosody_pipeline.py::TestInjectProsodyContext`](zerberus/tests/test_prosody_pipeline.py) — Format-Assertions auf neue Marker (`PROSODY_BLOCK_MARKER`, `PROSODY_BLOCK_CLOSE`, qualitative Labels statt Zahlen, Konsens-Zeile, Inkongruenz-via-BERT, neuer Idempotenz-Test).
+- **Logging-Tag:** `[PROSODY-204]` für BERT-erweiterten Block, `[PROSODY-190]` bleibt für Stimm-only-Pfad.
+- **Teststand:** 1645 baseline (P203b) → **1685 passed** (+40), 4 xfailed pre-existing, 2 failed pre-existing aus Schuldenliste (`edge-tts` + `test_rag_dual_switch.test_fallback_logic`, beide nicht blockierend).
+- **Effekt für den User:** Bei Voice-Input liest DeepSeek im System-Prompt jetzt einen Block wie `[PROSODIE — Stimmungs-Kontext aus Voice-Input]\nStimme: muede\nTempo: langsam\nSentiment-Text: leicht positiv (BERT)\nSentiment-Stimme: muede (Gemma)\nKonsens: muede\n[/PROSODIE]`. Nala kann den Ton subtil anpassen (zurücknehmen wenn jemand müde klingt, nachfragen bei Stress) ohne plakative "Du klingst traurig!"-Reaktionen. Bei getipptem Text: kein Block, Chat unverändert. Bei deaktiviertem Consent: kein Block. Bei Stub-Pipeline (kein Modell geladen): kein Block.
+- **Was P204 bewusst NICHT macht:** Persistierung der Prosodie-Daten in der DB (Worker-Protection — Daten sind one-shot pro Request). Kein neues UI (Triptychon P192 zeigt schon). Keine Pipeline-Änderung (Brücke zum LLM, nicht Refactor von Whisper/Gemma/BERT). Kein Voice-Indicator-Header über `X-Voice-Input` o.ä. — der bestehende `X-Prosody-Context`-Header IST der Voice-Indikator (Frontend setzt ihn nur nach Whisper-Roundtrip), Stub-Source-Check + Consent-Header sind defense-in-depth.
+
+---
 
 **Patch 203b** — Hel-UI-Hotfix (BLOCKER, Chris-Bugmeldung) (2026-05-02)
 
