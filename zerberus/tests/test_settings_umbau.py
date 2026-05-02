@@ -55,12 +55,28 @@ def _find_sidebar_actions_html(src: str) -> str:
 
 class TestSchraubenschluesselWeg:
     def test_schraubenschluessel_nicht_in_topbar(self, nala_src):
-        """B-006: 🔧-Button im main-header existiert nicht mehr."""
+        """B-006: 🔧-Button im main-header existiert nicht mehr.
+
+        P201 erlaubt erneut ``openSettingsModal()`` im Header — aber NUR via
+        Active-Project-Chip, der gleichzeitig ``switchSettingsTab('projects')``
+        ruft. Der reine Schraubenschluessel-Settings-Button bleibt verboten.
+        """
         header = _find_main_header_html_block(nala_src)
-        # In der Top-Bar existiert kein openSettingsModal() mehr
-        assert "openSettingsModal()" not in header
+        # Schraubenschluessel-Emoji darf NICHT in der Top-Bar auftauchen
+        assert "🔧" not in header
+        # Reine Settings-Button-Stelle: also kein "icon-btn" mit openSettingsModal()
+        # als alleiniger Action (das war das alte Wrench-Pattern).
+        assert 'icon-btn" onclick="openSettingsModal()' not in header
         # Export-Button ist noch da
         assert "openExportMenu()" in header
+
+    def test_settings_modal_im_header_nur_via_project_chip(self, nala_src):
+        """P201: Falls openSettingsModal() im Header auftaucht, muss es ausschliesslich
+        ueber den Active-Project-Chip kommen (kombiniert mit switchSettingsTab('projects'))."""
+        header = _find_main_header_html_block(nala_src)
+        if "openSettingsModal()" in header:
+            assert "active-project-chip" in header
+            assert "switchSettingsTab('projects')" in header
 
 
 class TestSidebarFooter:

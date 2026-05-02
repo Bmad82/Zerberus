@@ -1,7 +1,7 @@
 # ZERBERUS_MARATHON_WORKFLOW.md
 
 **Phase:** 5a — Nala-Projekte
-**Letzter Patch:** P200 | **Tests:** 1572 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
+**Letzter Patch:** P201 | **Tests:** 1594 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
 
 ---
 
@@ -67,7 +67,7 @@ Die folgende Liste beschreibt WAS, nicht WIE. Die Architektur ist deine Sache.
 | 1 | **Projekte existieren als Entität** — Persistenz, CRUD, sichtbar in Hel | Fundament für alles | — | ✅ (Backend P194, Hel-UI P195) |
 | 2 | **Projekte haben Struktur** — Template-Dateien, Ordner, optional Git | Damit Projekte nicht leer starten | #1 | ✅ (Templates P198 — Git-Init verschoben auf P200/Workspace) |
 | 3 | **Projekte haben eigenes Wissen** — isolierter RAG-Index pro Projekt | Code-LLM braucht Projektkontext | #1 | ✅ (Projekt-RAG-Index P199 — Pure-Numpy-Linearscan + MiniLM + Best-Effort-Triggers) |
-| 4 | **Dateien kommen ins Projekt** — Upload in Nala-Chat, Indexierung | Dateien müssen rein | #1 | 🟡 (Hel-Upload P196 ✅, Indexierung P199 ✅, Nala-Upload offen → P201) |
+| 4 | **Dateien kommen ins Projekt** — Upload in Nala-Chat, Indexierung, Auswahl im Chat | Dateien müssen rein | #1 | ✅ (Hel-Upload P196 + Indexierung P199 + Nala-Tab "Projekte" P201 — Header-Setter `X-Active-Project-Id` aktiviert P197+P199 vom Chat aus) |
 | 5 | **Code wird ausgeführt** — vom Chat zur Docker-Sandbox und zurück | Kernfeature | #1, #3 | ⬜ |
 | 6 | **Mensch bestätigt vor Ausführung** — HitL-Gate, One-Click | Sicherheit | #5 | ⬜ |
 | 7 | **Zweite Meinung vor Ausführung** — Veto-Logik, Wandschlag-Erkennung | Schutzschicht | #5 | ⬜ |
@@ -105,6 +105,7 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 **Projekt-Templates (P198):** `create_project_endpoint` materialisiert `ZERBERUS_<SLUG>.md` (Projekt-Bibel, 5 Sektionen) + `README.md` (kurze Prosa) beim Anlegen. `zerberus/core/projects_template.py` mit Pure-Function-Render-Schicht (`render_project_bible`/`render_readme`/`template_files_for`) und async Materialisierungs-Schicht (`materialize_template`). SHA-Storage wie Uploads, DB-Eintrag in `project_files` mit lesbarem `relative_path`. Idempotenz via Existenz-Check (User-Inhalte werden NICHT überschrieben). Best-Effort: Crash bricht Anlegen nicht ab. Feature-Flag `ProjectsConfig.auto_template: bool = True`. Git-Init bewusst weggelassen (kommt mit Workspace-Layout in P200). `[TEMPLATE-198]`-Logging-Tag. ✅
 **Projekt-RAG-Index (P199):** Per-Projekt-Vektor-Store unter `data/projects/<slug>/_rag/{vectors.npy, meta.json}`, isoliert vom globalen RAG. `zerberus/core/projects_rag.py` mit Pure-Function-Schicht (Splitter, Chunker-Dispatcher, Top-K, Format-Block), File-I/O-Schicht (load/save/remove + atomic write), Embedder-Wrapper (`_embed_text` lazy MiniLM-L6-v2, monkeypatchbar) und async DB-Schicht (`index_project_file`, `remove_file_from_index`, `query_project_rag`). Pure-Numpy-Linearscan via `argpartition` statt FAISS, weil Per-Projekt-Indizes klein sind (~10-2000 Chunks) und Tests dependency-frei bleiben. Code-Files via `code_chunker.chunk_code` (P122), Prosa via lokalem Para-Splitter mit Sentence-Fallback. Idempotenz pro `file_id`. Trigger: Upload-Endpoint, `materialize_template`, Delete-File, Delete-Projekt — alle Best-Effort. Wirkung im Chat NACH P197/P184/P185/P118a/P190, VOR `messages.insert`, mit Marker `[PROJEKT-RAG — Kontext aus Projektdateien]`. Feature-Flags `rag_enabled`, `rag_top_k`, `rag_max_file_bytes`. `[RAG-199]`-Logging-Tag. ✅
 **PWA-Verdrahtung Nala + Hel (P200):** Eigener Router `zerberus/app/routers/pwa.py` mit vier Endpoints (`/nala/manifest.json`, `/nala/sw.js`, `/hel/manifest.json`, `/hel/sw.js`) ohne Auth-Dependencies. In `main.py` VOR `hel.router` via `include_router(pwa.router)` eingehängt — sonst gated `verify_admin` den Manifest-Fetch und der Install-Prompt erscheint nie. SW-Scope folgt dem Pfad der SW-Datei (`/nala/sw.js` → scope `/nala/`, `/hel/sw.js` → scope `/hel/`) — kein `Service-Worker-Allowed`-Header nötig, jede App cacht NUR ihre eigenen URLs. Per-App-Manifeste mit Theme-Color, Apple-Mobile-Web-App-Meta, zwei Icons (192/512 px, `purpose: "any maskable"` für Android-Adaptive). Icons via `scripts/generate_pwa_icons.py` (PIL, deterministisch) im Kintsugi-Stil. SW-Logik: install precacht App-Shell, activate räumt alte Caches, fetch macht network-first mit cache-fallback, non-GET passt durch. `[PWA-200]`-Logging-Tag (browser-seitig in `console.warn`). ✅
+**Nala-Tab "Projekte" + Header-Setter (P201):** Neuer Endpoint `GET /nala/projects` (JWT-pflichtig, eigener `nala.router` statt Wiederverwendung von `/hel/admin/projects` — zwei Auth-Welten + Persona-Overlay-Schutz + Archived-Default unterscheiden sich). Response slimmed auf `{id, slug, name, description, updated_at}` ohne `persona_overlay`. UI: vierter Settings-Tab "📁 Projekte" zwischen "Ausdruck" und "System", lazy-loaded beim Tab-Klick. Active-Project-Chip im Chat-Header neben Profile-Badge (gold-border Pill, klick öffnet Settings + Projects-Tab). State in zwei localStorage-Keys (`nala_active_project_id` numerisch + `nala_active_project_meta` JSON für Renderer ohne Re-Fetch). Header-Injektion ZENTRAL in `profileHeaders()` (drei Zeilen) → wirkt auf ALLE Nala-Calls. Zombie-ID-Schutz: nach jedem `loadNalaProjects` wird geräumt wenn aktive ID nicht mehr in Liste. XSS-Schutz via `escapeProjectText()` für name+slug+description, Source-Audit-Test zählt mind. 3 Aufrufe. ✅
 
 ---
 
@@ -147,6 +148,11 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 | 30 | Android Chrome → Hel öffnen → "App installieren" → installiert standalone, separates Icon vom Nala-PWA | P200 | ⬜ | — |
 | 31 | Beide Geräte: Service-Worker-Registrierung im DevTools-Application-Tab sichtbar, App-Shell wird gecached, Reload aus dem Cache funktioniert wenn Server steht | P200 | ⬜ | — |
 | 32 | Hel-PWA-Auth: nach Install im standalone-Mode öffnen → Basic-Auth-Prompt erscheint (Hel-Routes sind weiterhin authentifiziert, nur Manifest+SW gehen public). Manifest-Fetch via DevTools-Network: 200 OHNE Auth-Header | P200 | ⬜ | — |
+| 33 | git push + sync_repos.ps1 für P201 | P201 | ⬜ | — |
+| 34 | Nala-Tab "Projekte": Login → Settings (⚙ in Sidebar-Footer) → Tab `📁 Projekte` sichtbar zwischen "Ausdruck" und "System". Klick → Liste lädt. Projekt auswählen → Header-Chip `📁 <slug>` erscheint neben Profile-Badge. Reload (F5) → Chip bleibt sichtbar (localStorage). Klick auf Chip → Settings öffnet automatisch auf Projects-Tab. Auswahl löschen → Chip verschwindet | P201 | ⬜ | — |
+| 35 | End-to-End P197+P199 von Nala aus: Projekt mit indexierter Datei (Inhalt z.B. "Geheimrezept Banane mit Senf"), in Nala aktivieren, normale Chat-Frage "Was ist mein Geheimrezept?" → Antwort enthält "Banane mit Senf". Server-Log: `[PERSONA-197]` mit project_block_len > 0 + `[RAG-199]` mit chunks_used > 0. Auswahl löschen, gleiche Frage erneut → keine `[PERSONA-197]`/`[RAG-199]`-Zeile, LLM kennt das Rezept nicht | P201 | ⬜ | — |
+| 36 | Zombie-ID-Schutz: Projekt in Nala aktivieren, dann in Hel löschen (oder archivieren), dann in Nala Settings → Projekte-Tab öffnen → Liste lädt OHNE das gelöschte Projekt, Header-Chip ist automatisch verschwunden, localStorage geräumt | P201 | ⬜ | — |
+| 37 | XSS-Sanity: in Hel ein Projekt mit name `<script>alert(1)</script>` anlegen, in Nala Settings → Projekte-Tab → Name wird als TEXT angezeigt (escaped: `&lt;script&gt;...`), KEIN Alert-Popup. Sanity-Check in DevTools → DOM enthält die Entitäten, nicht das Tag | P201 | ⬜ | — |
 
 ---
 

@@ -277,6 +277,27 @@ NALA_HTML = """<!DOCTYPE html>
             margin-left: 6px;
             color: var(--color-text-light);
         }
+        /* Patch 201: Aktives-Projekt-Chip im Header — kompakter Pill,
+           goldener Rand, klickbar zum Wechseln. Touch-Target ueber padding. */
+        .active-project-chip {
+            display: inline-block;
+            font-size: 0.55em;
+            font-weight: 600;
+            padding: 4px 9px;
+            margin-left: 8px;
+            border-radius: 999px;
+            border: 1px solid var(--color-gold);
+            color: var(--color-gold);
+            background: rgba(240, 180, 41, 0.10);
+            line-height: 1.0;
+            min-height: 22px;
+            vertical-align: middle;
+            white-space: nowrap;
+            max-width: 140px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .active-project-chip:hover { background: rgba(240, 180, 41, 0.20); }
         /* ── Status-Bar (Patch 46: SSE) ── */
         #status-bar {
             text-align: center;
@@ -1482,6 +1503,9 @@ NALA_HTML = """<!DOCTYPE html>
             <div class="title">
                 👑 Nala
                 <span class="profile-badge" id="profile-badge"></span>
+                <!-- Patch 201: Aktives-Projekt-Chip — sichtbar nur wenn ein Projekt gewaehlt ist.
+                     Klick oeffnet Settings -> Projekte-Tab. -->
+                <span id="active-project-chip" class="active-project-chip" style="display:none;cursor:pointer;" onclick="openSettingsModal(); switchSettingsTab('projects');" title="Aktives Projekt — klick zum Wechseln"></span>
             </div>
             <!-- Patch 142 (B-006): Schraubenschlüssel entfernt — Einstellungen nur noch
                  über Zahnrad ⚙️ im Hamburger-Menü. Export bleibt in der Top-Bar. -->
@@ -1606,9 +1630,11 @@ NALA_HTML = """<!DOCTYPE html>
         <h4>⚙️ Einstellungen</h4>
 
         <!-- Patch 142 (B-015): Tab-Navigation -->
+        <!-- Patch 201: Tab "Projekte" eingeschoben — wechselt das aktive Projekt fuer den Chat-Kontext. -->
         <div class="settings-tabs">
             <button class="settings-tab-btn active" data-tab="look" onclick="switchSettingsTab('look')">Aussehen</button>
             <button class="settings-tab-btn" data-tab="voice" onclick="switchSettingsTab('voice')">Ausdruck</button>
+            <button class="settings-tab-btn" data-tab="projects" onclick="switchSettingsTab('projects')">📁 Projekte</button>
             <button class="settings-tab-btn" data-tab="system" onclick="switchSettingsTab('system')">System</button>
         </div>
 
@@ -1783,6 +1809,27 @@ NALA_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- ===== Tab "System" (Patch 142 / B-013) ===== -->
+        <!-- ===== Tab "Projekte" (Patch 201) ===== -->
+        <div class="settings-tab-panel" id="settings-tab-projects">
+            <div class="settings-section" style="border-top:none;padding-top:0;margin-top:0;">
+                <h5>📁 Aktives Projekt</h5>
+                <p style="font-size:0.85em;color:#8aa0c0;line-height:1.45;margin:0 0 12px;">
+                    Waehl ein Projekt, dann fliesst dessen Persona-Overlay (P197) und Datei-Wissen (P199 RAG)
+                    in jede Antwort ein. Ohne Auswahl chattet Nala wie bisher ohne Projektkontext.
+                </p>
+                <div id="nala-projects-active" style="font-size:0.92em;color:#e0e8f8;margin:0 0 12px;min-height:1.4em;">
+                    Aktiv: <em style="color:#8aa0c0;">keins</em>
+                </div>
+                <div style="display:flex;gap:8px;margin-bottom:14px;">
+                    <button class="export-opt-btn" onclick="loadNalaProjects()" style="flex:1;min-height:36px;">🔄 Aktualisieren</button>
+                    <button class="export-opt-btn" onclick="clearActiveProject()" style="flex:1;min-height:36px;">✖ Auswahl loeschen</button>
+                </div>
+                <div id="nala-projects-list" style="font-size:0.92em;color:#e0e8f8;line-height:1.45;max-height:46vh;overflow-y:auto;">
+                    <em style="color:#8aa0c0;">Liste wird geladen…</em>
+                </div>
+            </div>
+        </div>
+
         <div class="settings-tab-panel" id="settings-tab-system">
             <div class="settings-section" style="border-top:none;padding-top:0;margin-top:0;">
                 <h5>🔑 Passwort ändern</h5>
@@ -2011,6 +2058,8 @@ NALA_HTML = """<!DOCTYPE html>
         if (messagesDiv.children.length === 0) {
             fetchGreeting();  // Patch 67: dynamische Begrüßung per API
         }
+        // Patch 201: Aktives-Projekt-Chip initial rendern (wenn aus localStorage gesetzt).
+        try { renderActiveProjectChip(); } catch(_) {}
     }
 
     // ── Profile-Header für API-Requests (Patch 54: Bearer-Token statt X-Permission-Level) ──
@@ -2019,7 +2068,139 @@ NALA_HTML = """<!DOCTYPE html>
         if (currentProfile && currentProfile.token) {
             h['Authorization'] = 'Bearer ' + currentProfile.token;
         }
+        // Patch 201: Aktives Projekt einhaengen, falls gesetzt — wirkt auf P197
+        // (Persona-Overlay) und P199 (Projekt-RAG). Bewusst hier zentral, damit
+        // alle Calls (Chat, Voice, Whisper, ...) konsistent gegated sind.
+        const activeId = getActiveProjectId();
+        if (activeId !== null) {
+            h['X-Active-Project-Id'] = String(activeId);
+        }
         return h;
+    }
+
+    // ── Patch 201: Aktives-Projekt-Picker (Settings-Tab "Projekte") ──
+    // State liegt in localStorage als zwei Keys (id + slug + name), damit der
+    // Header-Chip auch ohne Re-Fetch sichtbar bleibt nach Reload.
+    function getActiveProjectId() {
+        const raw = localStorage.getItem('nala_active_project_id');
+        if (!raw) return null;
+        const n = parseInt(raw, 10);
+        return Number.isFinite(n) ? n : null;
+    }
+    function getActiveProjectMeta() {
+        try {
+            const raw = localStorage.getItem('nala_active_project_meta');
+            return raw ? JSON.parse(raw) : null;
+        } catch (_) { return null; }
+    }
+    function setActiveProject(p) {
+        if (!p || typeof p.id !== 'number') {
+            clearActiveProject();
+            return;
+        }
+        localStorage.setItem('nala_active_project_id', String(p.id));
+        localStorage.setItem('nala_active_project_meta', JSON.stringify({
+            id: p.id, slug: p.slug || '', name: p.name || ''
+        }));
+        renderActiveProjectChip();
+        renderNalaProjectsList(window.__nalaProjectsCache || []);
+        renderNalaProjectsActive();
+    }
+    function clearActiveProject() {
+        localStorage.removeItem('nala_active_project_id');
+        localStorage.removeItem('nala_active_project_meta');
+        renderActiveProjectChip();
+        renderNalaProjectsList(window.__nalaProjectsCache || []);
+        renderNalaProjectsActive();
+    }
+    function renderActiveProjectChip() {
+        const chip = document.getElementById('active-project-chip');
+        if (!chip) return;
+        const meta = getActiveProjectMeta();
+        if (!meta || !meta.id) {
+            chip.style.display = 'none';
+            chip.textContent = '';
+            return;
+        }
+        chip.style.display = '';
+        chip.textContent = '📁 ' + (meta.slug || meta.name || ('#' + meta.id));
+        chip.title = 'Aktives Projekt: ' + (meta.name || meta.slug) + ' — klick zum Wechseln';
+    }
+    function renderNalaProjectsActive() {
+        const el = document.getElementById('nala-projects-active');
+        if (!el) return;
+        const meta = getActiveProjectMeta();
+        if (!meta || !meta.id) {
+            el.innerHTML = 'Aktiv: <em style="color:#8aa0c0;">keins</em>';
+        } else {
+            el.innerHTML = 'Aktiv: <strong style="color:var(--color-gold);">'
+                + escapeProjectText(meta.name || meta.slug) + '</strong> '
+                + '<span style="color:#8aa0c0;">('
+                + escapeProjectText(meta.slug) + ')</span>';
+        }
+    }
+    function escapeProjectText(s) {
+        if (s === null || s === undefined) return '';
+        return String(s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function renderNalaProjectsList(items) {
+        const el = document.getElementById('nala-projects-list');
+        if (!el) return;
+        if (!Array.isArray(items) || items.length === 0) {
+            el.innerHTML = '<em style="color:#8aa0c0;">Keine Projekte angelegt. Anlegen geht ueber Hel.</em>';
+            return;
+        }
+        const activeId = getActiveProjectId();
+        const html = items.map(p => {
+            const isActive = (activeId !== null && p.id === activeId);
+            const bg = isActive ? 'rgba(240,180,41,0.16)' : 'transparent';
+            const border = isActive ? '1px solid var(--color-gold)' : '1px solid #2a4068';
+            const action = isActive
+                ? '<button class="export-opt-btn" onclick="clearActiveProject()" style="min-height:36px;padding:6px 12px;">Aktiv ✓ — abwaehlen</button>'
+                : '<button class="export-opt-btn" onclick="selectActiveProjectById(' + p.id + ')" style="min-height:36px;padding:6px 12px;">Auswaehlen</button>';
+            const desc = p.description ? ('<div style="font-size:0.82em;color:#8aa0c0;margin-top:3px;">' + escapeProjectText(p.description) + '</div>') : '';
+            return '<div style="background:' + bg + ';border:' + border + ';border-radius:8px;padding:10px 12px;margin-bottom:8px;">'
+                +   '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+                +     '<div style="min-width:0;flex:1;">'
+                +       '<div style="font-weight:600;color:#e0e8f8;">' + escapeProjectText(p.name) + '</div>'
+                +       '<div style="font-size:0.78em;color:#8aa0c0;font-family:monospace;">' + escapeProjectText(p.slug) + '</div>'
+                +     '</div>'
+                +     action
+                +   '</div>'
+                +   desc
+                + '</div>';
+        }).join('');
+        el.innerHTML = html;
+    }
+    function selectActiveProjectById(id) {
+        const cache = window.__nalaProjectsCache || [];
+        const found = cache.find(p => p.id === id);
+        if (!found) return;
+        setActiveProject(found);
+    }
+    async function loadNalaProjects() {
+        const el = document.getElementById('nala-projects-list');
+        if (el) el.innerHTML = '<em style="color:#8aa0c0;">Lade…</em>';
+        try {
+            const res = await fetch('/nala/projects', { headers: profileHeaders() });
+            if (res.status === 401) { handle401(); return; }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            const items = Array.isArray(data.projects) ? data.projects : [];
+            window.__nalaProjectsCache = items;
+            // Wenn das aktive Projekt nicht mehr existiert (geloescht/archiviert),
+            // raus aus localStorage. Sonst haengt der Header-Chip an Zombie-IDs.
+            const activeId = getActiveProjectId();
+            if (activeId !== null && !items.find(p => p.id === activeId)) {
+                clearActiveProject();
+            }
+            renderNalaProjectsList(items);
+            renderNalaProjectsActive();
+        } catch (e) {
+            if (el) el.innerHTML = '<em style="color:#e57373;">Fehler beim Laden: ' + escapeProjectText(e.message || String(e)) + '</em>';
+        }
     }
 
     // ── 401-Handler: automatisch ausloggen ──
@@ -3228,6 +3409,11 @@ NALA_HTML = """<!DOCTYPE html>
         document.querySelectorAll('.settings-tab-panel').forEach(p => {
             p.classList.toggle('active', p.id === 'settings-tab-' + tab);
         });
+        // Patch 201: Projekte-Tab lazy laden — vermeidet einen Fetch-Roundtrip
+        // beim Oeffnen des Modals, wenn der User gar nicht den Tab will.
+        if (tab === 'projects') {
+            try { loadNalaProjects(); } catch(_) {}
+        }
     }
     function closeSettingsModal() {
         document.getElementById('settings-modal').classList.remove('open');
@@ -4211,6 +4397,46 @@ async def profile_list():
             "theme_color": val.get("theme_color", "#ec407a"),
         })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Patch 201 — Projekt-Liste fuer Nala-User
+# ---------------------------------------------------------------------------
+# Read-only Sicht auf die Hel-Projekte fuer eingeloggte Nala-User. Bewusst
+# eigener Endpoint statt Wiederverwendung von /hel/admin/projects:
+#   - Hel-CRUD ist Basic-Auth-gated, Nala-User haben aber JWT
+#   - Nala-User darf NIE persona_overlay sehen (Admin-Geheimnis: Tonfall-Hints
+#     und system_addendum koennen Prompt-Engineering-Spuren enthalten)
+#   - Archivierte Projekte werden hier per Default ausgeblendet
+# Antwort: nur id/slug/name/description/updated_at — minimal genug fuer den
+# Picker im Settings-Modal.
+
+@router.get("/projects")
+async def nala_projects_list(request: Request):
+    """Liefert die nicht-archivierten Projekte als schlanke Liste fuer den Nala-Picker.
+
+    Auth: JWT-Middleware setzt ``request.state.profile_name`` — ohne gueltigen
+    Token also 401, mit Token (auch Guest) 200. Persona-Overlay wird absichtlich
+    NICHT mitgeliefert.
+    """
+    profile_name = getattr(request.state, "profile_name", None)
+    if not profile_name:
+        raise HTTPException(status_code=401, detail="Nicht eingeloggt")
+
+    from zerberus.core import projects_repo
+
+    items = await projects_repo.list_projects(include_archived=False)
+    slim = [
+        {
+            "id": p.get("id"),
+            "slug": p.get("slug"),
+            "name": p.get("name"),
+            "description": p.get("description") or "",
+            "updated_at": p.get("updated_at"),
+        }
+        for p in items
+    ]
+    return {"projects": slim, "count": len(slim)}
 
 
 @router.get("/profile/my_prompt")

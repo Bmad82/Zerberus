@@ -5570,3 +5570,74 @@ Teststand 1487 → **1533 passed** (+46). 4 xfailed (pre-existing). 2 pre-existi
 
 *Stand: 2026-05-02, Patch 200 — Phase 5a Ziel #16 abgeschlossen (PWA für Nala + Hel). 1572 passed, 0 neue Failures.*
 
+## Patch 201 — Phase 5a #4 abgeschlossen: Nala-Tab "Projekte" + Header-Setter (2026-05-02)
+
+**Ziel:** Den letzten Hop schließen, damit Nala-User vom Chat aus ein aktives Projekt auswählen können — ab da fließt der Persona-Overlay (P197) und das Datei-Wissen (P199-RAG) automatisch in jede Antwort. Vorher war diese Kombination nur über externe Clients (curl, SillyTavern, eigene Skripte) erreichbar — die Hel-CRUD-UI (P195) konnte zwar Projekte anlegen und Dateien hochladen, aber kein User in Nala konnte sie aktivieren.
+
+### Architektur-Entscheidungen
+
+**Eigener `/nala/projects`-Endpoint statt Wiederverwendung von `/hel/admin/projects`.** Drei Gründe: (a) Hel-CRUD ist Basic-Auth-gated, Nala-User haben aber JWT — zwei Auth-Welten, und Bridges zwischen ihnen sind eine Quelle von Sicherheits-Bugs. (b) Nala-User darf NIEMALS `persona_overlay` sehen — das ist Admin-Geheimnis, kann Prompt-Engineering-Spuren oder interne Tonfall-Hints enthalten, die der User nicht beeinflussen können soll. Der neue Endpoint slimmed das Response-Dict auf `{id, slug, name, description, updated_at}`. (c) Archivierte Projekte werden hier per Default ausgeblendet — der User soll keine "alten" Projekte sehen, die er nicht mehr nutzen soll.
+
+**Header-Injektion zentral in `profileHeaders()`.** Statt nur den Chat-Fetch zu modifizieren, hängt P201 den `X-Active-Project-Id`-Header in die zentrale Helper-Funktion, die ALLE Nala-Calls verwenden. Damit ist garantiert, dass der Projekt-Kontext konsistent gegated ist — keine Möglichkeit, dass ein neuer Endpoint den Header "vergisst".
+
+**State in zwei localStorage-Keys.** `nala_active_project_id` (numerisch, für Header-Injektion) + `nala_active_project_meta` (JSON: `{id, slug, name}`, für Header-Chip-Renderer ohne Re-Fetch). Beim Logout wird beides bewusst NICHT gelöscht — der nächste Login bekommt das Projekt automatisch zurück, was für den typischen Use-Case (gleicher User, gleicher Browser) genau richtig ist.
+
+**Zombie-ID-Schutz.** Wenn `loadNalaProjects` ein Projekt nicht mehr in der Liste findet (gelöscht oder archiviert in der Zwischenzeit), wird die aktive Auswahl automatisch geräumt. Sonst hängt der Header-Chip an einer Zombie-ID und das Backend würde einen non-existing-project-Header bekommen (was P197 zwar gracefully ignoriert, aber sauberer ist client-seitig zu räumen).
+
+**Settings-Modal-Tab statt eigenes Modal.** Bestehende Tab-Mechanik (P142 B-015) wiederverwendet, kein neues Modal-Konstrukt, kein Sidebar-Tab. Lazy-Loading: `loadNalaProjects()` läuft erst, wenn der User auf den Tab klickt, nicht beim Modal-Öffnen — spart Roundtrip wenn der User nur Theme ändern will.
+
+**XSS-Schutz im Renderer.** Der Listen-Renderer rendert User-eingegebene Felder (name, slug, description) — alle drei laufen durch `escapeProjectText()` (wandelt `&`, `<`, `>`, `"`, `'` in HTML-Entities). Source-Audit-Test zählt mindestens drei `escapeProjectText`-Aufrufe in `renderNalaProjectsList`, damit ein vergessener Aufruf in zukünftigen Refactorings sofort auffällt.
+
+### Implementierung
+
+- **Backend-Endpoint** [`zerberus/app/routers/nala.py::nala_projects_list`](../zerberus/app/routers/nala.py) — `GET /nala/projects`, JWT-pflichtig via `request.state.profile_name`, ruft `projects_repo.list_projects(include_archived=False)` und slimmed das Response-Dict.
+- **UI-Tab:** Settings-Modal um vierten Tab "📁 Projekte" zwischen "Ausdruck" und "System" erweitert. Panel mit Aktiv-Anzeige, Aktualisieren-Button, Auswahl-löschen-Button, Listen-Container `id="nala-projects-list"`.
+- **Header-Chip:** `<span id="active-project-chip" class="active-project-chip">` neben dem Profile-Badge im main-header. Goldener Pill-Border, transparenter Hintergrund, hover-Glow, max-width + ellipsis für lange Slugs, min-height 22px für Touch-Target. Klick öffnet Settings + springt direkt auf den Projekte-Tab.
+- **JS-Funktionen:** `getActiveProjectId`, `getActiveProjectMeta`, `setActiveProject(p)`, `clearActiveProject`, `selectActiveProjectById(id)`, `renderActiveProjectChip`, `renderNalaProjectsActive`, `renderNalaProjectsList(items)`, `escapeProjectText(s)`, `loadNalaProjects()` — kompletter Lifecycle.
+- **Header-Injektion:** [`profileHeaders(extra)`](../zerberus/app/routers/nala.py) um drei Zeilen erweitert, die `X-Active-Project-Id` setzen wenn aktiv. Damit wirkt es auf ALLE Nala-Calls.
+- **Lazy-Load:** [`switchSettingsTab(tab)`](../zerberus/app/routers/nala.py) ruft `loadNalaProjects()` wenn `tab === 'projects'`.
+- **CSS:** `.active-project-chip` mit gold-border, transparent-Hintergrund, hover-Glow, max-width 140px, text-overflow: ellipsis.
+
+### Defensive Behaviors
+
+- 401 ohne Token → Frontend ruft `handle401()` (kicked to login)
+- Backend-Endpoint wirft 401 explizit wenn `request.state.profile_name` fehlt — Pattern wie `/nala/profile/my_prompt`
+- Renderer toleriert leere Listen ("Keine Projekte angelegt. Anlegen geht über Hel.")
+- Renderer toleriert Null/Undefined-Felder via `escapeProjectText` (gibt leeren String zurück)
+- Backend filtert `persona_overlay` raus, falls in `list_projects`-Response auftaucht
+- Zombie-ID nach jedem Refresh geräumt
+- Header-Chip ist hidden wenn kein aktives Projekt — kein leeres Pill-Element
+
+### Tests (21 neu + 1 nachgeschärft = 22)
+
+- `TestNalaProjectsEndpoint` (6) — 401 ohne Login, leere Liste, gelistete Projekte mit korrekten Slugs, archivierte versteckt, persona_overlay NICHT im Response (sentinel-string-check), minimal-Felder
+- `TestNalaHtmlProjectsTab` (6) — Tab-Button mit data-tab="projects", Panel `settings-tab-projects`, active-project-chip im Header inkl. CSS-Klasse, Chip-Klick öffnet projects-Tab, min-height 22px Touch-Target, lazy-load in switchSettingsTab
+- `TestNalaHtmlProjectsJs` (4) — alle 9 JS-Funktionen definiert, beide localStorage-Keys, fetch-Endpoint, 401-Handling
+- `TestProfileHeadersInjection` (2) — `'X-Active-Project-Id'`-Header gesetzt, Injektion ist IN profileHeaders (zentral, nicht pro Call)
+- `TestNalaHtmlProjectsRendererXss` (2) — escapeProjectText-Funktion existiert, Renderer ruft mindestens 3x auf
+- `TestZombieIdHandling` (1) — loadNalaProjects räumt Zombie-Active-ID
+- Plus 1 nachgeschärfter Test in `test_settings_umbau.py::test_schraubenschluessel_nicht_in_topbar`: alter `openSettingsModal()`-Proxy-Check → spezifischer 🔧-Emoji + `icon-btn` mit openSettingsModal als alleinige Action (P201 erlaubt openSettingsModal im Header NUR via Project-Chip)
+
+**Teststand:** 1572 → **1594 passed** (+22), 4 xfailed pre-existing, 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — bekannte Schulden, unrelated).
+
+### Manuelle Tests (Chris, in WORKFLOW.md eingetragen)
+
+- Login als loki, Settings öffnen → Tab "📁 Projekte" sichtbar
+- Tab klicken → Liste lädt, Projekt auswählen → Chip erscheint im Header
+- Chat-Nachricht senden → Server-Log `[PERSONA-197]` mit project_block_len > 0
+- Wenn Projekt mit indexierter Datei: Chat-Frage über Datei → RAG-Antwort, Server-Log `[RAG-199]` mit chunks_used > 0
+- Reload → Chip bleibt sichtbar (localStorage-Restore)
+- Auswahl löschen → Chip verschwindet, nächste Chat-Anfrage ohne Projekt-Header
+
+### Lessons Learned
+
+- Auth-Bridge zwischen Hel-CRUD (Basic-Auth) und Nala-User (JWT): NICHT versuchen — eigener schlanker Endpoint im Nala-Router ist sauberer und erlaubt Response-Slimming für User-Sichtbarkeit
+- Header-Injektion ZENTRAL in der profileHeaders-Helper, nicht in einzelnen fetch-Calls — wirkt damit auf ALLE Nala-Calls ohne Vergessens-Risiko
+- localStorage in zwei Keys: numerisch für Header, JSON-Meta für UI-Render ohne Re-Fetch beim Page-Reload
+- Zombie-ID-Schutz nach jedem List-Refresh — verhindert dass der Header-Chip an einer gelöschten/archivierten ID hängt
+- XSS-Helper-Funktion mit Min-Count-Test im Source-Audit — vergessener Aufruf in zukünftigen Refactorings fällt sofort auf
+
+---
+
+*Stand: 2026-05-02, Patch 201 — Phase 5a Ziel #4 komplett abgeschlossen (Nala-Tab "Projekte" + Header-Setter). 1594 passed, 0 neue Failures.*
+

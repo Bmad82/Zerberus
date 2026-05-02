@@ -1,10 +1,37 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 200 (2026-05-02) – Phase 5a Ziel #16: PWA-Installation für Nala + Hel*
+*Letzte Aktualisierung: Patch 201 (2026-05-02) – Phase 5a Ziel #4 abgeschlossen: Nala-Tab "Projekte" + Header-Setter*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 201** — Phase 5a #4: Nala-Tab "Projekte" + Header-Setter (2026-05-02)
+
+Schließt Phase-5a-Ziel #4 ("Dateien kommen ins Projekt") komplett ab — der Backend-Teil war seit P196 da, der Indexer seit P199, jetzt verdrahtet P201 das letzte Stück: Nala-User können vom Chat aus ein aktives Projekt auswählen, und ab da fließt der Persona-Overlay (P197) und das Datei-Wissen (P199-RAG) automatisch in jede Antwort. Vorher war diese Kombination nur über externe Clients (curl, SillyTavern, eigene Skripte) erreichbar — die Hel-CRUD-UI (P195) konnte zwar Projekte anlegen und Dateien hochladen, aber kein User in Nala konnte sie aktivieren.
+
+Architektur-Entscheidung: **Eigener `/nala/projects`-Endpoint statt Wiederverwendung von `/hel/admin/projects`.** Drei Gründe: (a) Hel-CRUD ist Basic-Auth-gated, Nala-User haben aber JWT (zwei Auth-Welten, kein Bridge nötig). (b) Nala-User darf NIEMALS `persona_overlay` sehen — das ist Admin-Geheimnis, kann Prompt-Engineering-Spuren oder interne Tonfall-Hints enthalten, die der User nicht beeinflussen können soll. Der Endpoint slimmed das Response-Dict auf `{id, slug, name, description, updated_at}`. (c) Archivierte Projekte werden hier per Default ausgeblendet — der User soll keine "alten" Projekte sehen, die er nicht mehr nutzen soll.
+
+**Header-Injektion zentral in `profileHeaders()`.** Statt nur den Chat-Fetch zu modifizieren, hängt P201 den `X-Active-Project-Id`-Header in die zentrale Helper-Funktion, die ALLE Nala-Calls verwenden (Chat, Voice, Whisper, Profile-Endpoints). Damit ist garantiert, dass der Projekt-Kontext konsistent gegated ist — keine Möglichkeit, dass ein neuer Endpoint den Header "vergisst".
+
+**State in zwei localStorage-Keys.** `nala_active_project_id` (numerisch) für die Header-Injektion, `nala_active_project_meta` (JSON: id+slug+name) für den Header-Chip-Renderer ohne Re-Fetch. Beim Logout (handle401) wird beides bewusst NICHT gelöscht — der nächste Login bekommt das Projekt automatisch zurück, was für den typischen Use-Case (gleicher User, gleicher Browser) genau richtig ist.
+
+**Zombie-ID-Schutz.** Wenn `loadNalaProjects` ein Projekt nicht mehr in der Liste findet (gelöscht oder archiviert in der Zwischenzeit), wird die aktive Auswahl automatisch geräumt. Sonst hängt der Header-Chip an einer Zombie-ID und das Backend würde einen non-existing-project-Header bekommen (was P197 zwar gracefully ignoriert, aber sauberer ist client-seitig zu räumen).
+
+**UI-Verdrahtung minimal-invasiv.** Neuer Settings-Tab "📁 Projekte" zwischen "Ausdruck" und "System" — bestehende Tab-Mechanik wird wiederverwendet, kein neues Modal, kein Sidebar-Tab. Lazy-Loading: `loadNalaProjects()` läuft erst, wenn der User auf den Tab klickt, nicht beim Modal-Öffnen — spart Roundtrip wenn der User nur Theme ändern will. Active-Project-Chip im Chat-Header, klick öffnet Settings + springt direkt auf den Projekte-Tab. Chip nur sichtbar wenn ein Projekt aktiv ist.
+
+**XSS-Schutz im Renderer.** Der Listen-Renderer rendert User-eingegebene Felder (name, slug, description) — alle drei laufen durch `escapeProjectText()` (wandelt `&`, `<`, `>`, `"`, `'` in HTML-Entities). Source-Audit-Test zählt mindestens drei `escapeProjectText`-Aufrufe in `renderNalaProjectsList`, damit ein vergessener Aufruf in zukünftigen Refactorings sofort auffällt.
+
+- **Backend-Endpoint:** [`nala.py::nala_projects_list`](zerberus/app/routers/nala.py) — `GET /nala/projects`, JWT-pflichtig via `request.state.profile_name`, ruft `projects_repo.list_projects(include_archived=False)` und slimmed das Response-Dict.
+- **UI-Tab:** Settings-Modal um vierten Tab "📁 Projekte" erweitert. Panel mit Aktiv-Anzeige, Aktualisieren-Button, Auswahl-löschen-Button, Listen-Container.
+- **Header-Chip:** [`nala.py`](zerberus/app/routers/nala.py) — `<span id="active-project-chip" class="active-project-chip">` neben dem Profile-Badge im main-header. Goldener Pill-Border, klick öffnet Settings + Projects-Tab.
+- **JS-Funktionen:** `getActiveProjectId`, `getActiveProjectMeta`, `setActiveProject`, `clearActiveProject`, `selectActiveProjectById`, `renderActiveProjectChip`, `renderNalaProjectsActive`, `renderNalaProjectsList`, `escapeProjectText`, `loadNalaProjects` — kompletter Lifecycle.
+- **Header-Injektion:** [`nala.py::profileHeaders`](zerberus/app/routers/nala.py) — drei zusätzliche Zeilen, die `X-Active-Project-Id` setzen wenn aktiv. Damit wirkt es auf ALLE Nala-Calls, nicht nur Chat.
+- **Lazy-Load:** [`switchSettingsTab`](zerberus/app/routers/nala.py) ruft `loadNalaProjects()` wenn der Projects-Tab aktiviert wird.
+- **CSS:** `.active-project-chip` mit gold-border, transparent-Hintergrund, hover-Glow, max-width + ellipsis für lange Slugs.
+- **Tests:** 21 neue in [`test_nala_projects_tab.py`](zerberus/tests/test_nala_projects_tab.py) (6 Endpoint inkl. 401, archived-versteckt, persona_overlay-NICHT-im-Response, minimal-Felder; 11 Source-Audit für Tab/Panel/Chip/JS/Header-Injektion/Lazy-Load; 2 XSS-Schutz inkl. Min-Count escapeProjectText; 1 Zombie-ID-Schutz; 1 Tab-Lazy-Load). Plus 1 nachgeschärfter Test in `test_settings_umbau.py` (alter `openSettingsModal()`-Proxy-Test → spezifischer 🔧-Emoji + icon-btn-Pattern-Check, weil P201 erlaubt openSettingsModal im Header NUR via Project-Chip).
+- **Teststand:** 1572 → **1594 passed** (+22), 4 xfailed pre-existing, 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — bekannte Schulden).
+- **Phase 5a Ziel #4:** ✅ Dateien kommen ins Projekt (komplett: P196 Upload + P199 Index + P201 Nala-Auswahl). Damit sind die Ziele #1, #2, #3, #4, #16 durch. Nächste sinnvolle Patches: #5 (Code-Execution P202).
 
 **Patch 200** — Phase 5a #16: PWA für Nala + Hel (2026-05-02)
 
