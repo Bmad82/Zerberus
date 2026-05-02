@@ -4,8 +4,8 @@
 **Datum:** 2026-05-03
 **Letzter Patch:** P203d-2 — Output-Synthese fuer Sandbox-Code-Execution im Chat (Phase 5a #5 Backend-Loop schliesst)
 **Tests:** 1767 passed (+47 neue P203d-2 aus 1720 baseline), 4 xfailed (pre-existing), 3 failed (alle pre-existing — `edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info.test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`)
-**Commit:** [wird nach Push nachgetragen]
-**Repos synchron:** [wird nach Push nachgetragen]
+**Commit:** dfdd693 — gepusht zu origin/main (plus 3284760 Mini-Cleanup `.gitignore: data/projects/`)
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
