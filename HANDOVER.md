@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P197 — Phase 5a Decision 3: Persona-Merge-Layer aktiviert
 **Tests:** 1464 passed (+33), 4 xfailed (pre-existing), 2 pre-existing Failures (unrelated)
-**Commit:** wird gleich gesetzt
-**Repos synchron:** wird gleich verifiziert
+**Commit:** 598755e — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude ✅ (verify_sync.ps1: 3/3 clean, 0 unpushed)
 
 ---
 
