@@ -5791,3 +5791,104 @@ In `lessons.md` unter `## Project-Workspace-Layout (P203a)` festgehalten:
 
 *Stand: 2026-05-02, Patch 203a — Project-Workspace-Layout (Phase 5a #5 Vorbereitung). 1635 passed (+36), 0 neue Failures.*
 
+---
+
+## Patch 203b — Hel-UI-Hotfix: kaputtes Quote-Escaping → Event-Delegation (2026-05-02)
+
+**Problem (Chris, BLOCKER, 2026-05-02):**
+Hel war nicht mehr bedienbar. Die Seite renderte sichtbar, aber **nichts** reagierte auf Klicks: Tabs wechselten nicht, Buttons taten nichts, Formulare nahmen keine Eingaben entgegen, das Settings-Zahnrad öffnete kein Panel. Nala lief unauffällig. Aufgefallen erst nach dem PWA-Roll-Out (P200) und dem Auth-Hotfix (P202), als Chris den Service-Worker manuell unregistriert, den Cache geleert und Hard-Refresh gedrückt hatte. Vor dem Cache-Wipe lief Hel scheinbar noch — der Cache hat das echte Symptom über mehrere Patches verschleiert.
+
+**Diagnose:**
+Die Hel-Seite ist eine einzelne, vollständig inline gerenderte HTML-Page mit ~115 KB JavaScript in **drei** `<script>`-Blöcken. JavaScript hat eine harte Regel: ein einziger Syntax-Fehler innerhalb eines `<script>`-Blocks invalidiert den **kompletten** Block — sämtliche Funktionsdeklarationen, Variablen und Top-Level-Statements darin werden nie registriert. Genau das war passiert.
+
+Der zentrale `<script>`-Block (Funktionen für Tabs, Metriken, Modelle, RAG, Projekte, etc.) enthielt seit P196 in der `loadProjectFiles`-Render-Funktion folgende Zeile:
+
+```python
++ '<button onclick="deleteProjectFile(' + projectId + ',' + f.id + ',\'' + _escapeHtml(f.relative_path).replace(/'/g, "\\'") + '\')" '
+```
+
+Im Triple-Quoted-Python-String werden Escape-Sequenzen interpretiert:
+
+- `,\''` ergibt `,''` (Comma + zwei Quotes — das `\'` wird zu `'`, dann folgt das echte schließende `'` des Python-String-Literals, dann das öffnende des nächsten)
+- `"\\'"` ergibt `"\'"` (im JS unsinnig: `"\'"` ist 1-char string `'`)
+- `'\')" '` ergibt `')" `
+
+Die ausgelieferte JS-Zeile sieht damit so aus:
+
+```js
++ '<button onclick="deleteProjectFile(' + projectId + ',' + f.id + ','' + _escapeHtml(f.relative_path).replace(/'/g, "\'") + '')" '
+```
+
+JavaScript parst `+ ',' '' +` als zwei adjacent String-Literale ohne Operator dazwischen — das ist ein **harter Syntax-Fehler** (`SyntaxError: Unexpected string`). Damit ist der gesamte mittlere `<script>`-Block tot, inkl. `activateTab`, `toggleHelSettings`, `loadMetrics`, `loadProfiles`, `renderModelSelect` etc. Klicks auf Tabs rufen `onclick="activateTab('llm')"` auf — die Funktion ist undefined → ReferenceError → Klick ignoriert. Genau das von Chris beschriebene Symptom.
+
+Verifiziert via:
+
+```bash
+python -c "from zerberus.app.routers import hel; ..."  # rendert ADMIN_HTML
+node --check _tmp_hel_inline.js                        # SyntaxError reproduziert
+```
+
+**Warum erst nach P200/P202 sichtbar:**
+Der Bug existiert seit P196 (Drop-Zone + Datei-Liste). Bis P200 hatte der Browser entweder eine ältere Hel-Version aus dem HTTP-Cache (vor P196) oder Chris hatte den Projekte-Tab nie geöffnet — beides plausibel, weil der Bug NUR im Render-Pfad der Datei-Liste stand und der `<script>`-Block-Parse trotzdem global tot ist (das ist der subtile Teil: ein Syntax-Fehler in einer Funktion killt auch alle anderen Funktionen im selben Block, auch wenn die nie aufgerufen werden). Mit P200 (SW + cache-v1) und P202 (cache-v2-Bump + activate räumt) wurde irgendwann ein clean-renderter ADMIN_HTML mit dem P196-Bug aus dem Server geladen — und der Browser hat den Syntax-Fehler dann beim Parse erwischt.
+
+Lehre: Browser-/SW-Caches können Renderer-Bugs sehr lange verschleiern. Bei Bug-Symptomen "seit dem letzten Cache-Wipe" sollte man nicht nur den letzten Patch verdächtigen, sondern auch ältere Render-Pfade prüfen.
+
+**Fix:**
+Inline `onclick="deleteProjectFile(...)"` mit String-Concat und Quote-Replace ist eine fragile Konstruktion — XSS-anfällig, schwer zu eskapen, abhängig vom Render-Kontext. Statt das Quote-Escaping in Python zu reparieren (was die Pattern-Fragilität nicht beseitigt), wurde der Renderer auf **Event-Delegation mit `data-*`-Attributen** umgestellt:
+
+```js
+// Vorher (broken):
+'<button onclick="deleteProjectFile(' + projectId + ',' + f.id + ',\'' + ... + '\')" ...>'
+
+// Nachher (P203b):
+'<button class="proj-file-delete-btn" data-project-id="' + projectId + '" '
+    + 'data-file-id="' + f.id + '" '
+    + 'data-relative-path="' + _escapeHtml(f.relative_path) + '" ...>'
+
+list.querySelectorAll('.proj-file-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        deleteProjectFile(
+            parseInt(btn.dataset.projectId, 10),
+            parseInt(btn.dataset.fileId, 10),
+            btn.dataset.relativePath || ''
+        );
+    });
+});
+```
+
+Vorteile:
+
+- **Quote-immun.** Filename geht durch `_escapeHtml` direkt ins Attribut — keine nachträgliche String-Concat-Kette, keine Quote-Replace-Tricks.
+- **XSS-sicher.** `_escapeHtml` (Version aus Z. 3096: escaped `&<>"'`) plus das HTML-Attribut-Quoting verhindert beliebigen Code im Filename.
+- **Lesbarer.** Wer den Code in 6 Monaten anfasst, sieht direkt wie die Daten ans Click-Event kommen.
+- **Pattern-Reuse.** Drop-Zone (P196) verwendet schon `data-project-id` — diese Verdrahtung passt nahtlos.
+
+**Tests (10 neu in `test_p203b_hel_js_integrity.py`):**
+
+- **`TestBrokenQuotePatternAbsent`** (3): keine `onclick="deleteProjectFile(`, kein `+ ','' +`, kein `replace(/'/g, "\\'")` mehr im rendered HTML.
+- **`TestEventDelegationPresent`** (5): `proj-file-delete-btn`-Klasse, drei `data-*`-Attribute, `addEventListener` in der Nähe der Klassen-Selector-Stelle.
+- **`TestJsSyntaxIntegrity`** (1, skipped wenn `node` nicht im PATH): extrahiert ALLE inline `<script>`-Blöcke aus `ADMIN_HTML` und ruft `node --check` auf jedem auf. Hätte den P196-Bug sofort gefangen — als Insurance gegen Wiederholung eingebaut.
+- **`TestHelEndpointSmoke`** (1): nach `_sanitize_unicode(ADMIN_HTML)` sind die neuen Marker drin und das alte `onclick="deleteProjectFile(`-Pattern ist weg.
+
+Plus 1 angepasster bestehender Test (`test_projects_ui::test_file_list_has_delete_button`): Block-Range von 3000 auf 5000 Zeichen erhöht (Event-Delegation macht den Block länger), zusätzlicher Check auf den neuen Klassen-Namen.
+
+**Was P203b bewusst NICHT macht:**
+
+- **Keinen kompletten `node --check`-Pass über NALA_HTML.** Wäre sinnvoll als Schwester-Test, ist aber nicht von der Bug-Meldung abgedeckt. Wenn Nala denselben Pattern hat, erwischen wir es spätestens beim nächsten Roll-Out.
+- **Keinen globalen Refactor von `onclick="..."` auf Event-Delegation.** ADMIN_HTML hat noch dutzende inline `onclick`-Attribute — die meisten ohne String-Concat (`onclick="loadModels()"` o.ä.) und damit nicht fragil. Refactoring nur des Bug-Pfads.
+- **Keine Behebung des doppelten `_escapeHtml`-Definitions** (Z. 1653 + Z. 3096). Beide existieren seit länger, JS überschreibt im non-strict Mode silent. Erklärt nicht den Bug, ist aber ein Sauberkeits-Schmerzpunkt für später.
+
+**Effekt für Chris:**
+Hel ist wieder voll bedienbar. Tabs wechseln, Buttons reagieren, Settings-Zahnrad öffnet Panel, Projekte-Tab lädt Datei-Liste mit funktionierenden Lösch-Buttons. Kein Cache-Reset nötig — der Browser parst den nächsten ADMIN_HTML-Fetch ohne Syntax-Fehler. Live-Test: Hel öffnen, Browser-Konsole offen lassen, alle Tabs durchklicken, Projekt anlegen, Datei hochladen, Datei löschen, alles ohne ReferenceError.
+
+**Architektur-Lessons (für lessons.md):**
+
+- **Inline-`onclick` mit Python-String-Concat in `"""..."""`-HTML ist hochfragil.** Python interpretiert `\\'` und `\'` zu derselben Ausgabe (`'`), aber sie sehen im Source unterschiedlich aus — Auto-Quote-Bugs sind dadurch fast unvermeidbar.
+- **Event-Delegation mit `data-*`-Attributen ist die robuste Antwort.** Quote-immun, XSS-sicher, lesbarer.
+- **JS-Syntax-Errors in inline `<script>`-Blöcken sind silent-killers für die GANZE Page.** Ein `node --check`-Test über alle inline-Scripts gehört in jede Pre-Commit-Pipeline mit HTML-im-Python-Source.
+- **Browser-Cache verschleiert JS-Render-Bugs sehr lange.** "Symptom seit Cache-Wipe" ≠ "Bug ist vom letzten Patch".
+
+---
+
+*Stand: 2026-05-02, Patch 203b — Hel-UI-Hotfix Quote-Escape-Bug. 1645 passed (+10), 0 neue Failures, alter `test_projects_ui::test_file_list_has_delete_button` semantisch angepasst.*
+

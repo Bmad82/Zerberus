@@ -226,7 +226,11 @@ class TestP196JsFunctions:
         assert "/files/' + fileId" in del_block
 
     def test_file_list_has_delete_button(self, hel_src):
-        load_block = hel_src.split("async function loadProjectFiles(")[1][:3000]
+        # P203b: Delete-Button per Event-Delegation (data-Attribute) statt
+        # inline onclick — der Block ist dadurch laenger; deleteProjectFile()
+        # wird in der Delegation aufgerufen.
+        load_block = hel_src.split("async function loadProjectFiles(")[1][:5000]
+        assert "proj-file-delete-btn" in load_block
         assert "deleteProjectFile(" in load_block
 
     def test_uploads_are_sequential(self, hel_src):

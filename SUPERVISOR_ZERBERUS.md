@@ -1,10 +1,29 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 203a (2026-05-02) – Project-Workspace-Layout (Phase 5a #5 Vorbereitung)*
+*Letzte Aktualisierung: Patch 203b (2026-05-02) – Hel-UI-Hotfix: kaputtes Quote-Escaping → Event-Delegation*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 203b** — Hel-UI-Hotfix (BLOCKER, Chris-Bugmeldung) (2026-05-02)
+
+Behebt einen Blocker in Hel: Die UI rendert, aber NICHTS ist anklickbar — Tabs wechseln nicht, Buttons reagieren nicht, Formulare nicht bedienbar. Nala lief unauffällig. Auffällig erst nach P200/P202 (PWA-Roll-Out + Cache-Wipe), Symptom verschleiert vorher durch Browser-Cache.
+
+Root-Cause: Im `loadProjectFiles`-Renderer (eingeführt mit P196) stand fehlerhaftes Python-Quote-Escaping. Im Python-Source: `+ ',\'' + _escapeHtml(f.relative_path).replace(/'/g, "\\'") + '\')" '` — Python evaluiert die Escape-Sequenzen im Triple-Quoted-String und produziert in der ausgelieferten HTML/JS-Zeile: `+ ',''  + _escapeHtml(...).replace(/'/g, "\'") + '')" '`. JavaScript parst das als `+ ',' '' +` (zwei adjacent String-Literale ohne Operator) und wirft `SyntaxError: Unexpected string`. Ein einziger Syntax-Fehler in einem `<script>`-Block invalidiert den **gesamten** Block — alle Funktionen darin werden nicht definiert, inkl. `activateTab`, `toggleHelSettings`, `loadProjects`, `loadMetrics`. Damit: keine Klicks, keine Tabs, kein nichts. Nala unbetroffen, weil eigener Renderer.
+
+Fix: Inline `onclick="deleteProjectFile(...)"` durch `data-*`-Attribute (`data-project-id`, `data-file-id`, `data-relative-path`) plus Event-Delegation per `addEventListener` ersetzt. Pattern ist immun gegen Quote-Escape-Probleme (Filename geht durch `_escapeHtml` direkt ins Attribut, statt durch eine fragile JS-String-Concat-Kette mit `replace(/'/g, ...)`) und gleichzeitig XSS-sicher.
+
+Warum erst nach P200/P202 sichtbar: Bug existiert seit P196. Bis P200 hatte der Browser eine ältere Hel-Version aus dem HTTP-Cache. Mit P200 (SW-Roll-Out + Cache-v1) wechselte der Cache, mit P202 (SW-v2-Activate + Wipe) wurde alles geräumt — der Browser holte die echte aktuelle Hel-Seite mit dem P196-Bug. Chris' manuelles Unregister + Cache-Wipe + Hard-Refresh hat das Symptom dann deutlich gemacht.
+
+- **Fix:** [`hel.py::loadProjectFiles`](zerberus/app/routers/hel.py) — `<button class="proj-file-delete-btn" data-project-id="..." data-file-id="..." data-relative-path="...">` plus `list.querySelectorAll('.proj-file-delete-btn').forEach(btn => btn.addEventListener('click', () => deleteProjectFile(...)))`. Kein `onclick`-Attribut, kein `replace(/'/g, "\\'")` mehr.
+- **Tests:** 10 neue in [`test_p203b_hel_js_integrity.py`](zerberus/tests/test_p203b_hel_js_integrity.py) — drei Source-Audit-Tests gegen das alte Bug-Pattern (`+ ',''`, `onclick="deleteProjectFile(`, `replace(/'/g, "\\'")`), fünf Source-Audit-Tests für die neue Event-Delegation (Klassen-Name + drei data-Attribute + addEventListener-Nähe), ein Smoke-Test gegen den Endpunkt-Output, und ein **JS-Integrity-Test** der ALLE inline `<script>`-Blöcke aus `ADMIN_HTML` extrahiert und mit `node --check` validiert (skipped wenn `node` nicht im PATH). Letzterer hätte den Bug bei P196 sofort gefangen — nachträglich eingebaut als Schutz vor Wiederholung. Plus 1 angepasster bestehender Test (`test_projects_ui::test_file_list_has_delete_button` — Block-Range erweitert + Klassen-Name-Check, weil event-delegation den Block länger macht).
+- **Logging:** Kein neuer Tag — Hotfix bleibt unter `[PWA-200]`/`[PWA-202]`-Doku-Klammer im Quelltext.
+- **Teststand:** lokal 1635 baseline (P203a) → **1645 passed** (+10), 4 xfailed pre-existing, 2 failed pre-existing aus Schuldenliste.
+- **Effekt für den User:** Hel wieder voll bedienbar — Tabs wechseln, Buttons funktionieren, Forms gehen. Beim Laden der Projekte-Tab werden Files mit Lösch-Button korrekt gerendert, Klick auf Lösch-Button feuert die Delete-Bestätigung. Kein Browser-Cache-Reset mehr nötig (Bug-Pattern aus dem HTML raus).
+- **Lessons:** (a) JS-Syntax-Errors in inline `<script>`-Blöcken sind silent-killers für die ganze Page — ein Test der `node --check` über alle Inline-Scripts laufen lässt fängt das früh. (b) Inline `onclick` mit String-Concat über benutzergenerierte Daten ist immer fragil — Event-Delegation mit `data-*`-Attributen ist robust und XSS-sicher. (c) Browser-/SW-Caches können Bugs monatelang verschleiern — bei "neuen" Symptomen nach Cache-Wipe immer auch ältere Patches auf rendering-Probleme prüfen.
+
+---
 
 **Patch 203a** — Project-Workspace-Layout (Phase 5a #5, Vorbereitung) (2026-05-02)
 

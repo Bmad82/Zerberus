@@ -3273,6 +3273,11 @@ ADMIN_HTML = """<!DOCTYPE html>
                 if (files.length === 0) {
                     list.innerHTML = '<span style="color:#888;">Keine Dateien. Drop-Zone oben benutzen.</span>';
                 } else {
+                    // P203b-Hotfix: data-Attribute + Event-Delegation statt inline-onclick.
+                    // Die alte Variante mit ',\\'' + replace(/'/g, "\\\\'") + '\\''
+                    // hatte falsches Python-Quote-Escaping — das ergab in JS einen
+                    // Syntax-Fehler ("Unexpected string"), der den GANZEN <script>-
+                    // Block ungueltig machte und damit alle Hel-UI-Klicks blockierte.
                     list.innerHTML = files.map(f => {
                         const kb = (f.size_bytes / 1024).toFixed(1);
                         return '<div style="padding:6px 0;border-bottom:1px solid #2a2a2a;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">'
@@ -3280,11 +3285,22 @@ ADMIN_HTML = """<!DOCTYPE html>
                                 + '<span style="color:#4ecdc4;">' + _escapeHtml(f.relative_path) + '</span> '
                                 + '<span style="color:#888;">(' + kb + ' KB, ' + _escapeHtml(f.mime_type || 'unknown') + ')</span>'
                             + '</div>'
-                            + '<button onclick="deleteProjectFile(' + projectId + ',' + f.id + ',\'' + _escapeHtml(f.relative_path).replace(/'/g, "\\'") + '\')" '
-                                + 'style="padding:4px 8px;min-height:36px;background:#5c2f2f;color:#f88;border:1px solid #844;border-radius:4px;font-size:0.85em;">'
+                            + '<button type="button" class="proj-file-delete-btn"'
+                                + ' data-project-id="' + projectId + '"'
+                                + ' data-file-id="' + f.id + '"'
+                                + ' data-relative-path="' + _escapeHtml(f.relative_path) + '"'
+                                + ' style="padding:4px 8px;min-height:36px;background:#5c2f2f;color:#f88;border:1px solid #844;border-radius:4px;font-size:0.85em;">'
                                 + '&#128465;&#65039; Loeschen</button>'
                             + '</div>';
                     }).join('');
+                    list.querySelectorAll('.proj-file-delete-btn').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            const pid = parseInt(btn.dataset.projectId, 10);
+                            const fid = parseInt(btn.dataset.fileId, 10);
+                            const rel = btn.dataset.relativePath || '';
+                            deleteProjectFile(pid, fid, rel);
+                        });
+                    });
                 }
             } catch (e) {
                 list.innerHTML = '<span style="color:#f88;">Fehler: ' + e.message + '</span>';
