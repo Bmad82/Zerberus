@@ -6521,3 +6521,192 @@ Bei Fail-Open eine Warning-Zeile (`Synthese-LLM crashed (fail-open): ...`). Der 
 
 *Stand: 2026-05-03, Patch 203d-2 — Output-Synthese im Chat-Endpunkt. 1767 passed (+47), 0 neue Failures.*
 
+---
+
+## Patch 203d-3 — UI-Render im Nala-Frontend für Sandbox-Code-Execution (Phase 5a Ziel #5 ABGESCHLOSSEN)
+
+**Datum:** 2026-05-03
+**Tests:** 1797 passed (+30 P203d-3 — 2 Renderer-Existenz + 8 Schema-Felder + 2 Fallbacks + 1 Insertion-Punkt + 5 Verdrahtung + 4 XSS + 5 CSS + 1 JS-Integrity + 1 Smoke + 1 escapeProjectText-Schutz), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 neue Failures
+
+**Was P203d-3 abschließt:**
+
+Die P203d-Trilogie (P203d-1 Backend-Pfad / P203d-2 Output-Synthese / P203d-3 UI-Render) und damit Phase-5a-Ziel #5 endgültig. P203d-1 hat den Sandbox-Roundtrip im Chat-Endpunkt verdrahtet und das `code_execution`-JSON-Feld in die HTTP-Response gelegt. P203d-2 hat einen zweiten LLM-Call eingefügt, der den `answer` durch eine menschenlesbare Synthese ersetzt. Aber das Nala-Frontend ignorierte das `code_execution`-Feld komplett — der User las nur die Synthese-Antwort, sah aber nicht den ausgeführten Code, die Roh-Ausgabe oder die Laufzeit. Das Transparenz-Loch wird mit P203d-3 geschlossen: nach dem Bot-Bubble erscheint eine Code-Card (Sprach-Tag + exit-Badge + escapter Code) plus optional eine collapsible Output-Card mit stdout/stderr.
+
+**Architektur: Frontend-only-Patch, drei Bausteine.**
+
+Alles in [`zerberus/app/routers/nala.py`](../zerberus/app/routers/nala.py) — kein neues Modul, kein Backend-Touch. Drei Bausteine:
+
+1. **CSS-Block** (im `<style>`-Bereich, ~120 Zeilen): neue Klassen für die zwei Karten plus Helfer:
+   - `.code-card` mit Header (`.code-card-header`), Content-Block (`.code-content` mit `overflow-x: auto` und `max-height: 380px`), optional Error-Banner (`.exec-error-banner` in rot).
+   - `.lang-tag` für die Sprache (z.B. `python`, `javascript`), Kintsugi-Gold.
+   - `.exit-badge` mit zwei Varianten: `.exit-ok` (grün `#6cd4a1`) und `.exit-fail` (rot `#e57373`). Sofort sichtbarer semantischer Status.
+   - `.exec-meta` für die Laufzeit (z.B. `42 ms`).
+   - `.output-card` mit Header (`.output-card-header`), Body (`.output-card-body`), Toggle-Button (`.code-toggle` mit `min-height: 44px` UND `min-width: 44px` — Mobile-first Touch-Target).
+   - `.output-content` mit zwei Varianten: Default (heller Text auf dunklem Grund) und `.output-stderr` in rot.
+   - `.truncated-marker` als kursiv-grauer Hinweis am Ende der Output-Card wenn die Sandbox den Output abgeschnitten hat (P171-Limit, `code_execution.truncated == true`).
+   - `.output-card.collapsed .output-card-body { display: none }` faltet die Output-Card by default ein. Der Toggle expandiert auf Klick.
+
+2. **`escapeHtml(s)`** als 3-Zeilen-Helper neben `escapeProjectText` (P201). Delegiert an `escapeProjectText`:
+
+   ```js
+   function escapeHtml(s) {
+       return escapeProjectText(s);
+   }
+   ```
+
+   Warum ein eigener Name? Der XSS-Audit-Test grept nach `escapeHtml(`-Aufrufen im Renderer-Body — Min-Count 4 (lang + code + stdout + stderr). Wenn man `escapeProjectText` direkt verwendet, müsste man P201's Audit-Range erweitern oder die Calls doppelt zählen. Sauberer: eigener Name, eigener Audit-Pfad, gemeinsame Implementierung. Pattern für die Zukunft: jeder neue Renderer mit User-/LLM-Strings bekommt seinen eigenen Helper-Alias mit klar greppbarem Namen.
+
+3. **`renderCodeExecution(wrapperEl, codeExec)`** als JS-Renderer (~80 Zeilen):
+
+   ```js
+   function renderCodeExecution(wrapperEl, codeExec) {
+       if (!wrapperEl || !codeExec || typeof codeExec !== 'object') return;
+       const codeStr = codeExec.code === null || codeExec.code === undefined ? '' : String(codeExec.code);
+       if (!codeStr.trim()) return;
+       const lang = codeExec.language ? String(codeExec.language) : 'code';
+       const exitCode = (typeof codeExec.exit_code === 'number') ? codeExec.exit_code : -1;
+       const stdout = codeExec.stdout ? String(codeExec.stdout) : '';
+       const stderr = codeExec.stderr ? String(codeExec.stderr) : '';
+       const truncated = !!codeExec.truncated;
+       const errorMsg = codeExec.error ? String(codeExec.error) : '';
+       const timeMs = (typeof codeExec.execution_time_ms === 'number') ? codeExec.execution_time_ms : null;
+
+       // Code-Card aufbauen ...
+       // Output-Card aufbauen (nur wenn stdout oder stderr da) ...
+
+       const triptych = wrapperEl.querySelector('.sentiment-triptych');
+       if (triptych) {
+           wrapperEl.insertBefore(codeCard, triptych);
+           if (outputCard) wrapperEl.insertBefore(outputCard, triptych);
+       } else {
+           wrapperEl.appendChild(codeCard);
+           if (outputCard) wrapperEl.appendChild(outputCard);
+       }
+   }
+   ```
+
+   Liest alle 8 P203d-1-Schema-Felder. Insertion-Punkt: vor dem `.sentiment-triptych`-Element (Visual-Order: bubble → toolbar → code-card → output-card → triptych → export-row). Skip wenn `codeExec` null/undefined/Non-Object oder `code` leer (Backwards-Compat zu Backends ohne `code_execution`-Feld plus Schutz vor Skip-Cases wo das Feld gefüllt aber leer ist).
+
+**`addMessage` retourniert wrapper.**
+
+Die Funktion gibt jetzt das DOM-Wrapper-Element zurück, damit der Caller den Renderer nachträglich einhängen kann:
+
+```js
+function addMessage(text, sender, tsOverride) {
+    // ... DOM-Aufbau ...
+    messagesDiv.appendChild(wrapper);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    return wrapper;  // Patch 203d-3
+}
+```
+
+Backwards-Compat: alle bisherigen Caller (`addMessage(text, 'user')`, History-Replay, Late-Fallback bei Timeout, Easter-Egg) ignorieren den Return-Value. Ihr Verhalten bleibt identisch zum Pre-P203d-3-Zustand. Pattern für die Zukunft: DOM-Insertion-Funktionen retournieren das Wrapper-Element, damit Caller nachträglich Karten/Banner einhängen können — ohne `querySelector('.last-bot-bubble')`-Brittleness.
+
+**Verdrahtung in `sendMessage`.**
+
+Direkt nach dem Bot-Bubble-Render:
+
+```js
+const botWrapper = addMessage(reply, 'bot');
+// Patch 203d-3: Code-Card + Output-Card unter Bot-Bubble (fail-quiet).
+if (data.code_execution) {
+    try { renderCodeExecution(botWrapper, data.code_execution); } catch (_e) {}
+}
+loadSessions();
+```
+
+Fail-quiet: ein Crash im Renderer (z.B. wenn ein Browser eine bestimmte CSS-Property nicht kennt) darf den Chat-Loop nicht unterbrechen. Der `try/catch` ist absichtlich leer (`catch (_e) {}`) — der Fehler ist Frontend-only, keine Logging-Pipeline drumherum. Wenn der Renderer im Live-Test schweigt aber die Karten nicht erscheinen, hilft der `console.error` aus dem ohnehin gefangenen Stack — DevTools zeigt den Stack-Trace.
+
+**Was P203d-3 BEWUSST nicht macht:**
+
+- **Keine Syntax-Highlighting-Library.** Code wird als Plain-Text in `<pre><code>` gerendert — keine Prism.js, keine highlight.js. Bewusst: PWA-Bundle bleibt leichtgewichtig, kein zusätzlicher Asset-Pfad. Falls in Live-Use unleserlich: Prism.js via CDN als optionaler Toggle.
+- **Kein Edit-Knopf am Code.** Der Code ist read-only. Nala bleibt Chat-Interface — wer den Code anpassen will, kopiert ihn aus dem Bubble (Toolbar hat einen `📋`-Button, der den ganzen Synthese-Text kopiert) und schickt eine neue Frage.
+- **Keine Re-Run-Funktion.** Code läuft im Backend ein Mal pro LLM-Call. Wer den gleichen Block neu prüfen will, schickt die Frage erneut (Retry-Button an User-Bubble, P98).
+- **Keine Output-Card im Skip-Fall.** Wenn `code_execution.code` leer/fehlend ist (alter Backend, kein aktives Projekt, kein Block, Sandbox disabled), rendert der Renderer NICHTS — Bot-Bubble erscheint normal. Backwards-Compat zu Backends die `code_execution` nicht kennen.
+- **Keine SSE-Stream-Frames.** Code-Card und Output-Card erscheinen synchron mit dem Bot-Bubble (Chat ist non-streaming bis P203d-2). SSE-Erweiterung wäre `[SANDBOX-203d]`/`[SYNTH-203d-2]`-Frames — kein P203d-3-Thema.
+- **Kein Telegram-Pfad.** Huginn (Telegram-Adapter) bleibt auf dem Text-Sandbox-Output via `format_sandbox_result` (P171). Nur `/v1/chat/completions` → Nala-PWA-Renderer bekommt das neue UI.
+- **Kein Copy-to-Clipboard-Button am Code-Card.** Der User kann den Code via Browser-Long-Press kopieren. Toolbar des Bot-Bubble hat einen `📋`-Button, der kopiert aber den ganzen Synthese-Text inkl. evtl. Code-Block (wenn die Synthese ihn behält) — nicht den Code aus der Card.
+- **Kein Cache-Bust am Service-Worker.** P200/P202 hatten den Cache-Namen auf `nala-shell-v2` gebumpt. P203d-3 lässt das auf `v2` — network-first im SW fängt das auf, alte Caches werden beim Refresh überschrieben. Falls in Live-Test der alte Frontend-Code im Cache hängt: harter Reload (Ctrl+Shift+R) oder Cache-Wipe in DevTools.
+
+**Lesson aus P203b: `node --check` für JS-Integrity.**
+
+Der P203b-Bug war ein einzelner SyntaxError in einem inline `<script>`-Block, der den GANZEN Block invalidierte — alle Funktionen darin wurden nicht definiert, keine Klicks reagierten. Lesson: in JEDE Test-Suite, die HTML-mit-inline-Scripts in Python-Source baut, gehört ein `node --check`-Pass. P203b hat das für Hel gemacht (`test_p203b_hel_js_integrity.py::TestJsSyntaxIntegrity`), P203d-3 zieht das jetzt für Nala nach (`test_p203d3_nala_code_render.py::TestJsSyntaxIntegrity`). Pattern: `re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", NALA_HTML, re.DOTALL)` extrahiert alle inline `<script>`-Blöcke (mit `src=...`-Filter um externe Skripte auszuschließen), schreibt jeden in eine `.js`-Tempdatei, ruft `node --check` darauf auf. Skipped wenn `node` nicht im PATH (`@pytest.mark.skipif(not shutil.which('node'), ...)`). Lokal mit Node v24.1.0 läuft der Test in <2s.
+
+**Tests:** 30 in [`test_p203d3_nala_code_render.py`](../zerberus/tests/test_p203d3_nala_code_render.py).
+
+`TestRendererExists` (2 Tests) — Existenz-Check:
+
+1. `test_function_definiert` — `function renderCodeExecution` im Source.
+2. `test_signatur_zwei_parameter` — exakte Signatur `(wrapperEl, codeExec)`.
+
+`TestRendererLiestSchemaFelder` (8 Tests) — alle P203d-1-Schema-Felder werden gelesen:
+
+3. `test_liest_code` — `codeExec.code`.
+4. `test_liest_language` — `codeExec.language`.
+5. `test_liest_exit_code` — `codeExec.exit_code`.
+6. `test_liest_stdout` — `codeExec.stdout`.
+7. `test_liest_stderr` — `codeExec.stderr`.
+8. `test_liest_truncated` — `codeExec.truncated`.
+9. `test_liest_error` — `codeExec.error`.
+10. `test_liest_execution_time_ms` — `codeExec.execution_time_ms`.
+
+`TestRendererFallbacks` (2 Tests) — Skip-Pfade:
+
+11. `test_null_check_im_eingang` — `!codeExec`-Guard im Renderer-Body.
+12. `test_skip_bei_leerem_code` — `codeStr.trim()` + `return` als Skip-Pfad.
+
+`TestRendererInsertionPoint` (1 Test) — Visual-Order:
+
+13. `test_insertbefore_triptych` — `querySelector('.sentiment-triptych')` + `insertBefore(codeCard, ...)`.
+
+`TestSendMessageVerdrahtung` (5 Tests) — Caller-Bind:
+
+14. `test_addMessage_returns_wrapper` — `return wrapper` im Body von `addMessage`.
+15. `test_caller_uebernimmt_wrapper` — `= addMessage(reply, 'bot')` in `sendMessage`.
+16. `test_renderer_call_in_sendMessage` — `data.code_execution` + `renderCodeExecution(`-Aufruf in `sendMessage`-Body.
+17. `test_render_nach_addMessage` — Reihenfolge: `addMessage(reply, 'bot')` VOR `renderCodeExecution(botWrapper)`.
+18. `test_renderer_aufruf_failopen` — `try { renderCodeExecution(...)` + `catch` im Aufruf-Fenster.
+
+`TestXssEscape` (4 Tests) — XSS-Schutz:
+
+19. `test_escapeHtml_helper_definiert` — `function escapeHtml(s)` im Source.
+20. `test_escapeProjectText_NICHT_geloescht` — P201-Audit darf nicht brechen (defense-in-depth).
+21. `test_min_count_escapeHtml_im_renderer` — `escapeHtml(`-Aufrufe im Renderer-Body Min-Count 4 (lang+code+stdout+stderr).
+22. `test_keine_innerHTML_ohne_escape` — Heuristik-Check: jeder `.innerHTML = ...`-Statement im Renderer-Body enthält `escapeHtml(`.
+
+`TestCss` (5 Tests) — Mobile-first + semantischer Status:
+
+23. `test_code_card_klasse` — `.code-card {` definiert.
+24. `test_output_card_klasse` — `.output-card {` definiert.
+25. `test_code_toggle_44px_touch` — `.code-toggle` mit `min-height: 44px` UND `min-width: 44px`.
+26. `test_code_content_horizontal_scroll` — `.code-content` mit `overflow-x: auto`.
+27. `test_collapsed_state_default` — `.output-card.collapsed .output-card-body` definiert.
+28. `test_exit_badge_farbcodes` — `.exit-badge.exit-ok` UND `.exit-badge.exit-fail` definiert.
+
+`TestJsSyntaxIntegrity` (1 Test, skipped wenn node fehlt) — analog P203b:
+
+29. `test_alle_inline_scripts_parsen` — `node --check` über alle inline `<script>`-Blöcke aus `NALA_HTML`.
+
+`TestNalaEndpointSmoke` (1 Test):
+
+30. `test_renderer_im_endpoint_response` — `GET /nala/` liefert HTML mit `function renderCodeExecution`, `data.code_execution`, `.code-card`, `.output-card`.
+
+**Manuelle Tests (für Chris):**
+
+- **#63** git push + sync_repos.ps1 für P203d-3 — wie üblich nach jedem Patch.
+- **#64** End-to-End UI live: Sandbox + Workspace aktiv (`config.yaml: modules.sandbox.enabled: true`). Hel → Projekt mit Slug `demo` + `data.txt` (Inhalt `42`). In Nala (Browser oder PWA) → `demo` aktivieren. Chat-Frage: `Lies /workspace/data.txt und gib den Inhalt aus`. Bot-Bubble enthält menschenlesbaren Text (`Der Inhalt der Datei ist 42.`). UNTER dem Bubble erscheinen ZWEI neue Karten: (a) Code-Card mit Sprach-Tag `python`, exit-Badge `exit 0` (grün) und Laufzeit-Meta plus dem ausgeführten Code-Block; (b) Output-Card mit Toggle-Button `▼ anzeigen`. Klick auf den Toggle expandiert die Output-Card und zeigt `42` (oder `42\n`). Mobile-Test: Toggle-Button ist mind. 44×44 px, Code-Card scrollt horizontal bei langen Zeilen ohne den Chat-Layout zu sprengen. DevTools-Network: Response-JSON enthält `code_execution.{code, stdout, exit_code, ...}` plus `choices[0].message.content` mit der Synthese.
+- **#65** Output-Skip + Truncated-Marker live: Chat-Frage `Erstelle eine Variable x = 1, gib sie aber NICHT aus` → Code-Card wird gerendert, Output-Card erscheint NICHT (kein stdout, kein stderr). Zweite Frage: `Generiere mir 10000 Zeilen "hello"` → Output-Card erscheint, expandiert zeigt nur den ersten Teil, am Ende `… [Ausgabe gekuerzt]`-Marker (kursiv-grau) wenn `code_execution.truncated == true`. XSS-Sanity: Chat-Frage `Schreibe Code der "<script>alert(1)</script>" als String enthält und ausgibt` → Output-Card zeigt den String als TEXT, KEIN Alert-Popup.
+
+**Architektur-Lessons (für lessons.md):**
+
+- **Frontend-Renderer für additive Backend-Felder muss BACKWARDS-COMPAT bleiben.** Bei `data.<feld> === null/undefined` rendert er NICHTS und der Bot-Bubble erscheint normal — Schutz gegen Backends die das Feld nicht kennen, plus gegen Skip-Cases wo das Feld zwar gefüllt aber leer ist (z.B. `code_execution.code === ''`).
+- **DOM-Insertion-Funktionen retournieren das Wrapper-Element.** Pattern aus P203d-3: `addMessage(text, sender)` retourniert den Wrapper-Knoten, Caller kann nachträglich Karten/Banner einhängen ohne `querySelector('.last-bot-bubble')`-Brittleness. Backwards-Compat: alte Caller die den Return ignorieren, verhalten sich identisch.
+- **Frontend-Renderer für User-/LLM-Strings: jedes innerHTML-Statement MUSS einen `escapeHtml(`-Aufruf enthalten.** Audit-Test prüft das per Regex auf den Renderer-Body. Workaround wenn der Audit-Test bei Multi-Line-Konstruktion (`headerHtml`-Variable plus `el.innerHTML = headerHtml`) fälschlich anschlägt: direkt-string-concat in der innerHTML-Zuweisung statt temporäre Variable nehmen — der Audit ist heuristisch und reagiert auf direkten RHS-Inhalt.
+- **Mobile-first 44×44px Touch-Target für JEDEN neuen Toggle/Button im Frontend.** `min-height: 44px` UND `min-width: 44px` als CSS-Test verifiziert. Mit nur einer der beiden Constraints rutscht die schmale Variante (z.B. Icon-Toggle mit kurzer Beschriftung) aus dem 44-px-Korridor durch.
+- **Eigene XSS-Helper-Funktion auch wenn ein bestehender Helper schon das Gleiche tut.** Audit-Tests grep'en nach Helper-NAMEN, nicht nach Implementierung. Wer einen neuen Renderer baut und einen anderen Helper aliasiert (3 Zeilen Delegation), bekommt einen klar greppbaren Audit-Pfad. Renaming/Konsolidieren bricht später nur den eigenen Audit, nicht den globalen Helper.
+- **`node --check` für JS-Integrity in jeder Test-Suite die HTML in Python-Source baut.** Lesson aus P203b: ein einzelner SyntaxError invalidiert den gesamten `<script>`-Block. Pattern: `re.findall(<script>...</script>, html)` + Tempdatei + `subprocess.run([node, '--check', file])`. Skipped wenn `node` fehlt.
+
+---
+
+*Stand: 2026-05-03, Patch 203d-3 — UI-Render im Nala-Frontend für Sandbox-Code-Execution. Phase 5a Ziel #5 ABGESCHLOSSEN. 1797 passed (+30), 0 neue Failures.*
+

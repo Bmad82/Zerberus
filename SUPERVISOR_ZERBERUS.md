@@ -1,10 +1,67 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 203d-2 (2026-05-03) – Output-Synthese im Chat-Endpunkt (Phase 5a #5)*
+*Letzte Aktualisierung: Patch 203d-3 (2026-05-03) – UI-Render im Nala-Frontend (Phase 5a Ziel #5 ABGESCHLOSSEN)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 203d-3** — UI-Render im Nala-Frontend fuer Sandbox-Code-Execution (Phase 5a Ziel #5 ABGESCHLOSSEN) (2026-05-03)
+
+Dritter und letzter Sub-Patch der P203d-Aufteilung (P203d-1 Backend-Pfad / P203d-2 Output-Synthese / P203d-3 UI-Render). Schliesst Phase-5a-Ziel #5 endgueltig: nach P203d-1 reichte der Chat-Endpunkt das `code_execution`-Feld in der HTTP-Response durch, P203d-2 ersetzte den `answer` durch eine LLM-Synthese — das Nala-Frontend ignorierte das `code_execution`-Feld trotzdem komplett. Der User las nur die Synthese-Antwort, sah aber nicht den ausgefuehrten Code, die Roh-Ausgabe oder die Laufzeit. P203d-3 baut den UI-Render: nach `addMessage(reply, 'bot')` rendert `renderCodeExecution(wrapperEl, data.code_execution)` zwei Karten unter dem Bot-Bubble.
+
+**Architektur: Frontend-only, drei Bausteine.** Alles in [`zerberus/app/routers/nala.py`](zerberus/app/routers/nala.py) — kein neues Modul, kein Backend-Touch:
+
+- **CSS-Block** im `<style>`-Bereich (~120 Zeilen): neue Klassen `.code-card`/`.code-card-header`/`.lang-tag`/`.exit-badge` (mit `.exit-ok` gruen / `.exit-fail` rot)/`.exec-meta`/`.code-content` (`overflow-x: auto`, `max-height: 380px`)/`.exec-error-banner`/`.output-card` (default `.collapsed`)/`.output-card-header`/`.code-toggle` (44×44px Touch-Target)/`.output-content` (mit `.output-stderr`-Variant in rot)/`.truncated-marker`. Der Toggle erbt das Kintsugi-Gold-Pattern von `.expand-toggle` (P124).
+- **`escapeHtml(s)`** als 3-Zeilen-Helper neben `escapeProjectText` (P201). Delegiert an `escapeProjectText` — gleiche Semantik, eigener Name fuer den XSS-Audit-Test.
+- **`renderCodeExecution(wrapperEl, codeExec)`** — neuer JS-Renderer (~80 Zeilen). Liest `codeExec.{language, code, exit_code, stdout, stderr, execution_time_ms, truncated, error}`. Baut Code-Card (Header mit `lang-tag` + `exit-badge` + optional Laufzeit-Meta, Body als `<pre><code>` mit `escapeHtml`-escapeden Code, optional `exec-error-banner` wenn `error != null`). Baut Output-Card nur wenn stdout oder stderr da: Header mit Label (`📤 Ausgabe` bei exit=0, `⚠️ Ausgabe (Fehler)` sonst) + 44×44px Toggle, Body collapsed-by-default, expandiert auf Klick, enthaelt `<pre>`-Bloecke fuer stdout/stderr (escaped) plus optional `truncated-marker` wenn `truncated: true`. Insertion-Punkt: vor dem `.sentiment-triptych`-Element. Visual-Order: bubble → toolbar → code-card → output-card → triptych → export-row.
+
+**`addMessage` retourniert wrapper.** Die Funktion gibt jetzt das DOM-Wrapper-Element zurueck, damit der Caller (sendMessage) den Renderer nachtraeglich einhaengen kann. Backwards-Compat: alle bisherigen Caller (Voice-Input, History-Replay, Late-Fallback) ignorieren den Return-Value, ihr Verhalten bleibt identisch.
+
+**Verdrahtung in `sendMessage`** direkt nach dem Bot-Bubble-Render:
+
+```js
+const botWrapper = addMessage(reply, 'bot');
+// Patch 203d-3: Code-Card + Output-Card unter Bot-Bubble (fail-quiet).
+if (data.code_execution) {
+    try { renderCodeExecution(botWrapper, data.code_execution); } catch (_e) {}
+}
+loadSessions();
+```
+
+Fail-quiet: Renderer-Crash darf den Chat-Loop nicht unterbrechen.
+
+**Was P203d-3 bewusst NICHT macht** (kommt mit P206/P207 oder bewusste Leerstelle):
+
+- **Keine Syntax-Highlighting-Library.** Code wird als Plain-Text in `<pre><code>` gerendert — keine Prism.js, keine highlight.js. Bewusst: PWA-Bundle bleibt leichtgewichtig, kein zusaetzlicher Asset-Pfad.
+- **Kein Edit-Knopf am Code.** Der Code ist read-only. Nala bleibt Chat-Interface — wer den Code anpassen will, kopiert ihn aus dem Bubble (Toolbar hat `📋`-Button) und schickt eine neue Frage.
+- **Keine Re-Run-Funktion.** Code laeuft im Backend ein Mal pro LLM-Call. Wer den gleichen Block neu pruefen will, schickt die Frage erneut (Retry-Button an User-Bubble).
+- **Keine Output-Card im Skip-Fall.** Wenn `code_execution.code` leer/fehlend ist (alter Backend, kein aktives Projekt, kein Block, Sandbox disabled), rendert der Renderer NICHTS — Bot-Bubble erscheint normal. Backwards-Compat zu Backends die `code_execution` nicht kennen.
+- **Keine SSE-Stream-Frames.** Code-Card und Output-Card erscheinen synchron mit dem Bot-Bubble (Chat ist non-streaming bis P203d-2).
+- **Kein Telegram-Pfad.** Huginn (Telegram-Adapter) bleibt auf dem Text-Sandbox-Output via `format_sandbox_result` (P171). Nur `/v1/chat/completions` → Nala-PWA-Renderer bekommt das neue UI.
+- **Kein Copy-to-Clipboard-Button am Code.** User kopiert via Browser-Long-Press oder ueber den `📋`-Toolbar-Button (kopiert aber den Synthese-Text, nicht den Card-Code).
+
+**Tests:** 30 in [`test_p203d3_nala_code_render.py`](zerberus/tests/test_p203d3_nala_code_render.py):
+
+- `TestRendererExists` (2) — Funktion definiert + Signatur `(wrapperEl, codeExec)`.
+- `TestRendererLiestSchemaFelder` (8) — Renderer liest `code`/`language`/`exit_code`/`stdout`/`stderr`/`truncated`/`error`/`execution_time_ms` aus dem P203d-1-Schema.
+- `TestRendererFallbacks` (2) — Null-Check im Eingang, Skip bei leerem Code.
+- `TestRendererInsertionPoint` (1) — `insertBefore(.sentiment-triptych)` haelt die Visual-Order.
+- `TestSendMessageVerdrahtung` (5) — `addMessage` retournt wrapper, Caller bindet ihn (`= addMessage(reply, 'bot')`), Renderer-Aufruf in `sendMessage` mit `data.code_execution`, Reihenfolge addMessage-vor-Renderer, try/catch.
+- `TestXssEscape` (4) — `escapeHtml`-Helper definiert, `escapeProjectText` nicht geloescht (P201-Audit darf nicht brechen), Min-Count 4 `escapeHtml(`-Aufrufe im Renderer (lang+code+stdout+stderr), keine `innerHTML`-Assigns ohne `escapeHtml`.
+- `TestCss` (5) — `.code-card`/`.output-card`-Klassen, `.code-toggle` mit `min-height: 44px` UND `min-width: 44px`, `.code-content` mit `overflow-x: auto`, `.output-card.collapsed`-State, `.exit-badge.exit-ok`/`.exit-fail`-Farbcodes.
+- `TestJsSyntaxIntegrity` (1, skipped wenn node fehlt) — `node --check` ueber alle inline `<script>`-Bloecke aus `NALA_HTML`. Lesson aus P203b: ein einzelner SyntaxError invalidiert den gesamten Block.
+- `TestNalaEndpointSmoke` (1) — `GET /nala/` liefert HTML mit `function renderCodeExecution`, `data.code_execution`, `.code-card`, `.output-card`.
+
+**Logging-Tag:** keiner. Frontend-only-Patch, alle Backend-Logs (`[SANDBOX-203d]`/`[SYNTH-203d-2]`) bleiben aus P203d-1/2.
+
+**Teststand:** 1767 baseline (P203d-2) → **1797 passed** (+30 P203d-3-Tests), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`), 0 neue Failures.
+
+**Effekt fuer den User:** Bei aktivem Projekt + Code-Block in der Antwort + erfolgreicher Sandbox-Execution sieht Nala jetzt nicht nur die menschenlesbare Synthese (`Der Inhalt der Datei ist 42.`), sondern darunter ZWEI Karten: (a) eine Code-Card mit Sprach-Tag, exit-Status (gruen/rot) und dem ausgefuehrten Code-Block; (b) eine Output-Card mit collapsible stdout/stderr — eingeklappt by default, expandiert auf Tap. Der gesamte Code-Execution-Pfad ist damit von der LLM-Antwort bis ins UI sichtbar.
+
+**Effekt fuer die naechste Coda-Session:** Phase-5a-Ziel #5 ist abgeschlossen. Die naechsten Patches widmen sich anderen Zielen: P205 (RAG-Toast in Hel — Phase-5a-Schuld aus P199), P206 (HitL-Gate vor Code-Execution — Ziel #6 baut auf P203d auf), P207 (Diff-View / Snapshots / Rollback — Ziel #9 + #10), P208 (Spec-Contract / Ambiguitäts-Check — Ziel #8). Helper aus P203d-3 die direkt nutzbar sind: `addMessage` retourniert das Wrapper-Element (P206 HitL-Confirm-Card kann sich nachtraeglich einhaengen), `escapeHtml`-Helper im Frontend (XSS-Schutz fuer alle neuen Karten), `.code-card`/`.output-card`-CSS-Pattern als Vorlage fuer neue Karten.
+
+---
 
 **Patch 203d-2** — Output-Synthese fuer Sandbox-Code-Execution im Chat (Phase 5a #5, Backend-Loop schliesst) (2026-05-03)
 
@@ -359,6 +416,7 @@ Vollständige Patch-Historie in [`docs/PROJEKTDOKUMENTATION.md`](docs/PROJEKTDOK
 
 | Patch | Datum | Zusammenfassung |
 |-------|-------|-----------------|
+| **P203d-3** | 2026-05-03 | Phase 5a Ziel #5 ABGESCHLOSSEN: UI-Render im Nala-Frontend — `renderCodeExecution(wrapperEl, codeExec)` baut Code-Card (Sprach-Tag + exit-Badge + escapter Code) plus collapsible Output-Card (44×44px Toggle, stdout/stderr, Truncated-Marker), `addMessage` retourniert Wrapper-Element, eigener `escapeHtml`-Helper, XSS-Min-Count, `node --check` ueber NALA_HTML-Scripts + 30 Tests |
 | **P203d-2** | 2026-05-03 | Phase 5a #5 Output-Synthese: zweiter LLM-Call (Prompt+Code+stdout/stderr → menschenlesbare Antwort), Pure-Function-Schicht in `modules/sandbox/synthesis.py`, `should_synthesize`-Trigger, Bytes-genau Truncate (5KB), `[SYNTH-203d-2]`-Logging, store_interaction-Reorder (assistant-Insert nach Synthese), fail-open + 47 Tests |
 | **P203d-1** | 2026-05-02 | Phase 5a #5 Backend-Pfad: Code-Detection + Sandbox-Roundtrip im `/v1/chat/completions` — `first_executable_block` + `execute_in_workspace(writable=False)` + additives `code_execution`-JSON-Field, Sechs-Stufen-Gate (Header + Slug + Overlay-not-None + Sandbox-enabled + Fenced-Block + Result), fail-open + 19 Tests |
 | **P204** | 2026-05-02 | Phase 5a #17 ABGESCHLOSSEN: Prosodie-Kontext im LLM — `[PROSODIE]`-Block, BERT+Gemma-Konsens via Mehrabian, Worker-Protection (keine Zahlen) + 33 Tests |
