@@ -301,6 +301,16 @@ Vollständige Patch-Historie in [`docs/PROJEKTDOKUMENTATION.md`](docs/PROJEKTDOK
 
 | Patch | Datum | Zusammenfassung |
 |-------|-------|-----------------|
+| **P203d-1** | 2026-05-02 | Phase 5a #5 Backend-Pfad: Code-Detection + Sandbox-Roundtrip im `/v1/chat/completions` — `first_executable_block` + `execute_in_workspace(writable=False)` + additives `code_execution`-JSON-Field, Sechs-Stufen-Gate (Header + Slug + Overlay-not-None + Sandbox-enabled + Fenced-Block + Result), fail-open + 19 Tests |
+| **P204** | 2026-05-02 | Phase 5a #17 ABGESCHLOSSEN: Prosodie-Kontext im LLM — `[PROSODIE]`-Block, BERT+Gemma-Konsens via Mehrabian, Worker-Protection (keine Zahlen) + 33 Tests |
+| **P203c** | 2026-05-02 | Phase 5a #5 Zwischenschritt: Sandbox-Workspace-Mount + `execute_in_workspace` — RO-Default, Mount-Validation, Defense-in-Depth + 17 Tests |
+| **P203b** | 2026-05-02 | Hel-UI-Hotfix: kaputtes Quote-Escaping → Event-Delegation via `data-*`-Attribute, JS-Integrity-Test + 10 Tests |
+| **P203a** | 2026-05-02 | Phase 5a #5 Vorbereitung: Project-Workspace-Layout — Hardlink+Copy-Fallback, atomic write, sync_workspace + 36 Tests |
+| **P202** | 2026-05-02 | PWA-Auth-Hotfix: SW skipt Top-Level-Navigation, Cache v2-Bump + 5 Tests |
+| **P201** | 2026-05-02 | Phase 5a #4: Nala-Tab "Projekte" + zentraler Header-Setter `X-Active-Project-Id` in `profileHeaders()` + 21 Tests |
+| **P200** | 2026-05-02 | Phase 5a #16: PWA-Verdrahtung Nala + Hel — Manifest + SW pro App, Kintsugi-Icons + 39 Tests |
+| **P199** | 2026-05-02 | Phase 5a #3: Projekt-RAG-Index — Pure-Numpy-Linearscan, MiniLM-L6-v2 + 46 Tests |
+| **P198** | 2026-05-02 | Phase 5a #2: Template-Generierung beim Anlegen (Bibel + README) + 23 Tests |
 | **P197** | 2026-05-02 | Phase 5a Decision 3: Persona-Merge-Layer aktiviert — Header `X-Active-Project-Id` + `merge_persona`-Helper + 33 Tests |
 | **P196** | 2026-05-02 | Phase 5a #4: Datei-Upload-Endpoint + Drop-Zone-UI (öffnet Ziel #4) — SHA-Dedup-Delete, Extension-Blacklist, atomic write + 49 Tests |
 | **P195** | 2026-05-02 | Phase 5a #1: Hel-UI-Tab "Projekte" (schließt Ziel #1 ab) — Liste/Form/Persona-Overlay + 20 Tests |

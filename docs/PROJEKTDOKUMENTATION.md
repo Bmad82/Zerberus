@@ -6169,3 +6169,145 @@ HitL-Gate kommt mit P206 — wickelt sich vor `execute_in_workspace`.
 
 *Stand: 2026-05-02, Patch 203c — Sandbox-Workspace-Mount + execute_in_workspace. 1705 passed (+20), 0 neue Failures.*
 
+---
+
+## Patch 203d-1 — Code-Detection + Sandbox-Roundtrip im Chat-Endpunkt (Phase 5a #5 Backend-Pfad)
+
+**Datum:** 2026-05-02
+**Tests:** 1720 passed (+19 P203d-1 — 7 Source-Audit + 12 End-to-End), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 NEUE Failures
+
+**Was P203d-1 abschließt:**
+
+P203a hat den Workspace gebaut (Hardlink+Copy-Fallback unter `<data>/projects/<slug>/_workspace/`), P203c hat den Sandbox-Mount geliefert (`SandboxManager.execute(workspace_mount, mount_writable)` plus Convenience-Wrapper `execute_in_workspace`). Es fehlte die Verdrahtung: der Chat-Endpunkt rief weder den Code-Extractor noch die Sandbox auf — das LLM konnte einen `print(2+2)`-Block in seine Antwort schreiben, der lief nirgendwohin. P203d-1 schließt diese Lücke als Backend-only Patch (UI und Output-Synthese sind P203d-2/3).
+
+**Kern-Verdrahtung in [`legacy.py::chat_completions`](zerberus/app/routers/legacy.py):**
+
+Direkt nach `store_interaction(user, assistant)` und vor dem Sentiment-Triptychon-Block kommt ein neuer Abschnitt — wenn alle Voraussetzungen erfüllt sind, läuft die Sandbox:
+
+```python
+code_execution_payload: dict | None = None
+if (active_project_id is not None
+    and project_slug
+    and project_overlay is not None):
+    try:
+        from zerberus.modules.sandbox.manager import get_sandbox_manager
+        from zerberus.utils.code_extractor import first_executable_block
+        from zerberus.core.projects_workspace import execute_in_workspace
+
+        _sandbox = get_sandbox_manager()
+        if _sandbox.config.enabled:
+            _block = first_executable_block(
+                answer, list(_sandbox.config.allowed_languages)
+            )
+            if _block is not None:
+                _result = await execute_in_workspace(
+                    project_id=active_project_id,
+                    code=_block.code, language=_block.language,
+                    base_dir=Path(settings.projects.data_dir),
+                    writable=False,
+                )
+                if _result is not None:
+                    code_execution_payload = {
+                        "language": _block.language, "code": _block.code,
+                        "exit_code": _result.exit_code,
+                        "stdout": _result.stdout, "stderr": _result.stderr,
+                        "execution_time_ms": _result.execution_time_ms,
+                        "truncated": _result.truncated, "error": _result.error,
+                    }
+    except Exception as _sandbox_err:
+        logger.warning(f"[SANDBOX-203d] Pipeline-Fehler (fail-open): {_sandbox_err}")
+```
+
+**Schema-Erweiterung der `ChatCompletionResponse`:**
+
+```python
+class ChatCompletionResponse(BaseModel):
+    id: str = "chatcmpl-zerberus"
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: list[Choice]
+    sentiment: dict | None = None       # P192 (additiv)
+    code_execution: dict | None = None  # P203d-1 (additiv)
+```
+
+OpenAI-SDK-Clients (Dictate, SillyTavern, generic OpenAI-Library) lesen nur `choices` und ignorieren unbekannte Felder — der Schema-Bruch ist also nicht real. Das Nala-Frontend (P203d-3) wird das Feld lesen.
+
+**Sechs-Stufen-Gate (alles fail-open ausser ein Gate verbietet's):**
+
+1. **`active_project_id` aus dem `X-Active-Project-Id`-Header.** Ohne aktives Projekt gibt es keinen Workspace, keine Sandbox-Bindung, keine Code-Execution. Der existierende Datei-Fallback aus P171 (Datei-Versand bei Telegram, schlichter Code-Block-Render im UI) gilt weiter.
+
+2. **`project_slug` vorhanden.** `resolve_project_overlay(active_project_id)` liefert `(None, None)` wenn das Projekt nicht existiert. Ohne Slug kann `execute_in_workspace` keinen Pfad bauen.
+
+3. **`project_overlay is not None`.** Hier kommt der subtile Punkt: bei archivierten Projekten liefert der Resolver `(None, slug)`, bei aktiven Projekten ohne Persona-Overlay `({}, slug)`. Der Diskriminator zwischen "archiviert" und "aktiv-ohne-Overlay" ist also `None vs. {}`. Wir blocken Code-Execution auf archivierten Projekten konservativ — der User hat das Projekt bewusst auf Eis gelegt, da kommt sicher kein neuer Code rein. Die existierende RAG-Logik (P199) hat denselben Bug, hat aber keinen sicherheitsrelevanten Effekt — bei archivierten Projekten existieren noch Files im Workspace, RAG-Reads sind unbedenklich. Code-Execution ist anders: ein vergessenes archiviertes Projekt mit veralteten Sandbox-Permissions sollte nicht als Reaktivierungs-Vektor dienen.
+
+4. **`sandbox.config.enabled`.** Sandbox ist als Feature-Flag deaktivierbar. Wenn sie aus ist, läuft der Endpunkt wie vor P203d-1 — Plain-Text-Antwort, keine Code-Execution.
+
+5. **`first_executable_block(answer, allowed_languages)`.** Pure-Function aus P171/P122 ([`zerberus/utils/code_extractor.py`](zerberus/utils/code_extractor.py)). Sucht nach Fenced-Code-Blöcken in der LLM-Antwort und matcht die Sprache gegen `allowed_languages` (Default: Python + JavaScript). Wichtig: KEIN `fallback_language`-Parameter im Aufruf — sonst würde bei einer Plain-Text-Antwort der ganze Antworttext als `unknown`-Code interpretiert. Multiple Code-Blöcke: erster Treffer gewinnt (Pure-Function-Garantie, getestet).
+
+6. **`execute_in_workspace(...)` liefert `SandboxResult`.** Der P203c-Wrapper macht Slug-Sicherheits-Check + Workspace-Anlage on-demand + Sandbox-Aufruf. Returns `None` bei (a) unbekanntem Projekt, (b) Sandbox-Disabled (redundant mit Gate 4, aber Defense-in-Depth), (c) Slug-Reject. `SandboxResult` heisst durchgelaufen — auch bei `exit_code != 0`. Der Caller behandelt beide Fälle: bei `None` bleibt `code_execution_payload = None`, bei `SandboxResult` wird er gefüllt.
+
+**Was P203d-1 BEWUSST nicht macht (alles für nachfolgende Sub-Patches):**
+
+- **Kein zweiter LLM-Call zur Output-Synthese.** Aktuell reicht der Endpunkt den raw `SandboxResult` durch — der Frontend-Code muss `stdout`/`stderr` selbst formatieren oder anzeigen. P203d-2 wird einen zweiten DeepSeek-Call mit `original_prompt + code + stdout + stderr → menschenlesbarer Antwort-Text` aufsetzen. Pattern-Vorlage: [`format_sandbox_result`](zerberus/modules/telegram/router.py:867) aus P171, nur als LLM-Eingabe statt direkter Telegram-Output.
+
+- **Kein UI-Render im Nala-Frontend.** P203d-3 baut den Code-Block + stdout/stderr-Block mit Syntax-Highlighting in `nala_ui.py`. Aktuell sieht der User nur die LLM-Antwort, das `code_execution`-Feld wird ignoriert (wenn das Frontend es noch nicht kennt).
+
+- **Kein HitL-Gate.** Sandbox-Code läuft direkt durch. Die Schutzschicht ist die Sandbox selbst (P171: `--network none`, `--read-only`, `--no-new-privileges`, PID/CPU/Memory-Limits + P203c: RO-Mount). Mensch-bestätigt-Schicht (Phase-5a Ziel #6) kommt mit P206 und hängt VOR `execute_in_workspace`.
+
+- **Kein writable-Mount.** Aktuell ist `writable=False` hardcoded im Aufruf. Schreibender Mount ist orthogonal kompliziert: das LLM würde dann Files in den Workspace schreiben, die DB+RAG-Sicht nicht kennt. Das braucht einen Sync-After-Write-Pfad (`sync_workspace(project_id, base_dir)` aus P203a — DB+RAG-Re-Index nach jedem writable-Run) plus eine Diff-View, damit der User sieht, was sich verändert hat. Beides zusammen ist P207 (Phase-5a Ziel #9 + #10).
+
+- **Kein Streaming.** Der `chat_completions`-Endpunkt ist synchron. SSE-Event `code_execution` als Mid-Stream-Frame ist P203d-3-Thema (kein Endpunkt-Refactor in P203d-1).
+
+- **Keine Cost-Aggregation für Sandbox.** Der Sandbox-Call selbst kostet keine LLM-Tokens, aber wenn P203d-2 die Synthese addiert, kommt ein zweiter LLM-Call dazu. Cost-Tracking in der `interactions`-Tabelle ist unverändert — zählt nur den Erst-Call.
+
+**Logging-Tag `[SANDBOX-203d]`:**
+
+Pro `chat_completions`-Aufruf ein Log-Eintrag im erfolgreichen Pfad:
+
+```
+[SANDBOX-203d] project_id=42 slug='demo' language=python exit_code=0
+              stdout_len=12 stderr_len=0 time_ms=128 truncated=False
+```
+
+Bei Skip-Pfaden eine Zeile mit Grund (`disabled — Code-Detection uebersprungen`, `kein executable Code-Block project_id=42`, `execute_in_workspace returned None (slug_reject/disabled/missing) project_id=42`). Worker-Protection-konform: keine Code-Inhalte, keine Output-Inhalte im Log — wer das ergrep't sieht nur Pfad-Statistik, nicht Werte. Wenn P203d-2 die Synthese addiert, sollte der separate Tag `[SYNTH-203d-2]` entstehen, damit Operations-Logs den Pfad nachverfolgen können.
+
+**Tests:** 19 in [`test_p203d_chat_sandbox.py`](zerberus/tests/test_p203d_chat_sandbox.py).
+
+`TestP203d1SourceAudit` (7 Tests):
+
+1. `test_logging_tag_present` — `[SANDBOX-203d]`-Tag in `legacy.py` vorhanden.
+2. `test_first_executable_block_imported` — Pure-Function-Import sichtbar.
+3. `test_execute_in_workspace_imported` — P203c-Wrapper-Import sichtbar.
+4. `test_get_sandbox_manager_used` — Gate auf `config.enabled`.
+5. `test_response_schema_has_code_execution_field` — Pydantic-Field-Check via `model_fields` (v2) oder `__fields__` (v1).
+6. `test_writable_false_default_in_call_site` — Source-Audit: `writable=False` muss im Aufruf-Fenster (~3000 Zeichen rund um `[SANDBOX-203d]`) stehen — schützt gegen "kurz mal writable=True"-Hacks bei zukünftigen Refactors.
+7. `test_code_execution_field_passed_to_response` — Source-Audit: `code_execution=code_execution_payload` im Response-Konstruktor.
+
+`TestE2ECodeExecution` (12 Tests, alle ueber asyncio.run + chat_completions(request, req, settings) mit gemockten Abhängigkeiten):
+
+8. `test_python_block_executed_and_payload_returned` — Happy Path Python: LLM antwortet mit ```python\nprint(2)\n```, Sandbox-Mock liefert stdout="2\n" exit_code=0, Response.code_execution ist populated mit allen Feldern, RO-Default geprüft.
+9. `test_javascript_block_executed` — Analog für JavaScript: ```javascript\nconsole.log('hi')\n```.
+10. `test_nonzero_exit_code_returned_in_payload` — exit_code=7 + stderr="SystemExit: 7": Payload bleibt populated, kein Crash.
+11. `test_no_active_project_skips_sandbox` — Kein `X-Active-Project-Id`-Header → `code_execution=None`, `execute_in_workspace`-Mock wurde nie aufgerufen.
+12. `test_no_code_block_in_answer_skips_sandbox` — Plain-Text-Antwort ohne Fence → kein Sandbox-Call.
+13. `test_disabled_sandbox_skips_call` — `sandbox.config.enabled=False` → kein Sandbox-Call.
+14. `test_archived_project_skips_sandbox` — Projekt archiviert → `project_overlay is None` → Gate 3 blockt → kein Sandbox-Call. Verifiziert die archived-Konservativität.
+15. `test_unknown_language_block_skips_sandbox` — ```rust ... ``` ist nicht in `allowed_languages` → `first_executable_block` returnt None.
+16. `test_execute_in_workspace_returns_none_keeps_payload_none` — Wrapper returnt None (Slug-Reject downstream): `code_execution=None`, aber der Call wurde abgesetzt (calls > 0).
+17. `test_execute_in_workspace_raises_fail_open` — Wrapper raised `RuntimeError`: kein 500-Status, Endpunkt läuft normal weiter, `code_execution=None`, `choices` und `model` bleiben.
+18. `test_response_remains_openai_compatible_without_code` — Plain-Text-Response: alle OpenAI-Schema-Felder unangetastet.
+19. `test_first_block_wins_when_multiple_blocks` — Zwei Code-Blöcke in der LLM-Antwort: nur der erste wird ausgeführt (`code = "print('A')"`).
+
+**Architektur-Lessons (für lessons.md):**
+
+- **Sechs-Stufen-Gates sind gut testbar.** Wenn jede Stufe einen klaren Skip-Pfad hat, kann jeder Skip-Fall einzeln getestet werden — wir haben für P203d-1 sieben Skip-Tests + zwei Happy-Path-Tests + zwei Edge-Cases. Das ist mehr Coverage als ein monolithischer "wenn X dann Y"-Block.
+- **`is None vs. is {}` als Diskriminator-Pattern**: wenn ein Resolver bei zwei verschiedenen Erfolgs-Pfaden Werte mit identischer Falsy-Sicht zurückgibt (`None`, `{}`, beide truthy via `not None` oder beide falsy via `bool()`), dann macht der Verbraucher den Diskriminator über `is not None`-Check. Hier: archiviert-vs-leer-Overlay.
+- **Fail-Open in einer LLM-Pipeline** ist die Regel, nicht die Ausnahme. Wenn die Sandbox crasht, soll der User trotzdem die LLM-Antwort sehen — das `code_execution`-Feld bleibt None, der Chat geht weiter. Pattern: try/except um den ganzen Sandbox-Block, log-warning, kein re-raise.
+- **Mock-Cascade in End-to-End-Tests:** wir mocken vier Schichten gleichzeitig (LLM, `_ORCH_PIPELINE_OK`, `get_sandbox_manager`, `execute_in_workspace`) und können trotzdem das Verhalten der Top-Level-Funktion verifizieren — der Trick ist, dass jeder Mock einen klaren Vertrag hat (Coroutine, Klasse, Funktion mit definierten Returns), nicht ein generisches `MagicMock`.
+- **Source-Audits + End-to-End-Tests komplementär.** Source-Audits (7 Tests) verifizieren Verdrahtungs-Stellen, die ein Refactor unbemerkt rausnehmen könnte. End-to-End-Tests (12 Tests) verifizieren Verhalten. Beide brauchen wir — entweder allein hat blinde Flecken.
+
+---
+
+*Stand: 2026-05-02, Patch 203d-1 — Code-Detection + Sandbox-Roundtrip im Chat-Endpunkt. 1720 passed (+19), 0 NEUE Failures.*
+

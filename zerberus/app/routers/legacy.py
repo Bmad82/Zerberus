@@ -67,6 +67,13 @@ class ChatCompletionResponse(BaseModel):
     # Bleibt None, wenn BERT nicht laeuft oder Pipeline keine Daten liefert.
     # Backward-Compat: OpenAI-Clients ignorieren unbekannte Felder.
     sentiment: dict | None = None
+    # Patch 203d-1: Code-Execution-Field — additiv. Bleibt None wenn kein
+    # Projekt aktiv ist, kein Code-Block in der LLM-Antwort steckt, die
+    # Sandbox deaktiviert ist oder ein Fehler vor dem `docker run` greift.
+    # Schema (siehe SandboxResult): {language, code, exit_code, stdout,
+    # stderr, execution_time_ms, truncated, error}. Backward-Compat:
+    # Clients die nur `choices` lesen, bleiben unbehelligt.
+    code_execution: dict | None = None
 
 
 # ---------- Hilfsfunktionen ----------
@@ -502,6 +509,86 @@ async def chat_completions(
     except Exception as e:
         logger.warning(f"⚠️ store_interaction fehlgeschlagen (non-fatal): {e}")
 
+    # Patch 203d-1 (Phase 5a #5): Code-Detection + Sandbox-Roundtrip im
+    # Workspace des aktiven Projekts. Wenn der LLM-Output einen Fenced-
+    # Code-Block in einer erlaubten Sprache enthaelt UND ein aktives,
+    # nicht-archiviertes Projekt gesetzt ist UND die Sandbox aktiv ist,
+    # wird der Block in der projekt-spezifischen Workspace-Sandbox
+    # ausgefuehrt (RO-Mount aus P203c). Result landet als additives
+    # `code_execution`-Feld in der Response — kein zweiter LLM-Call,
+    # keine Output-Synthese (das macht P203d-2). UI-Render ist P203d-3.
+    #
+    # Gate-Reihenfolge (alles fail-open ausser ein Gate verbietet's):
+    # 1. `active_project_id` aus dem Header (P201) — sonst Datei-Fallback
+    # 2. `project_slug` aus dem Persona-Resolver vorhanden
+    # 3. `project_overlay is not None` — bei archiviertem Projekt liefert
+    #    `resolve_project_overlay` (None, slug); aktive Projekte ohne
+    #    Overlay haben ({}, slug). Wir blocken Code-Execution auf
+    #    archivierten Projekten konservativ — der User hat das Projekt
+    #    bewusst auf Eis gelegt.
+    # 4. Sandbox-Feature (`settings.modules.sandbox.enabled`)
+    # 5. Code-Block via `first_executable_block` in `allowed_languages`
+    # 6. `execute_in_workspace` — None heisst Slug-Reject oder Disabled,
+    #    SandboxResult heisst durchgelaufen (auch bei exit_code != 0).
+    code_execution_payload: dict | None = None
+    if (
+        active_project_id is not None
+        and project_slug
+        and project_overlay is not None
+    ):
+        try:
+            from zerberus.modules.sandbox.manager import get_sandbox_manager
+            from zerberus.utils.code_extractor import first_executable_block
+            from zerberus.core.projects_workspace import execute_in_workspace
+
+            _sandbox = get_sandbox_manager()
+            if _sandbox.config.enabled:
+                _block = first_executable_block(
+                    answer,
+                    list(_sandbox.config.allowed_languages),
+                )
+                if _block is not None:
+                    _base_dir = Path(settings.projects.data_dir)
+                    _result = await execute_in_workspace(
+                        project_id=active_project_id,
+                        code=_block.code,
+                        language=_block.language,
+                        base_dir=_base_dir,
+                        writable=False,
+                    )
+                    if _result is not None:
+                        code_execution_payload = {
+                            "language": _block.language,
+                            "code": _block.code,
+                            "exit_code": _result.exit_code,
+                            "stdout": _result.stdout,
+                            "stderr": _result.stderr,
+                            "execution_time_ms": _result.execution_time_ms,
+                            "truncated": _result.truncated,
+                            "error": _result.error,
+                        }
+                        logger.info(
+                            f"[SANDBOX-203d] project_id={active_project_id} slug={project_slug!r} "
+                            f"language={_block.language} exit_code={_result.exit_code} "
+                            f"stdout_len={len(_result.stdout)} stderr_len={len(_result.stderr)} "
+                            f"time_ms={_result.execution_time_ms} truncated={_result.truncated}"
+                        )
+                    else:
+                        logger.info(
+                            f"[SANDBOX-203d] execute_in_workspace returned None "
+                            f"(slug_reject/disabled/missing) project_id={active_project_id}"
+                        )
+                else:
+                    logger.info(
+                        f"[SANDBOX-203d] kein executable Code-Block project_id={active_project_id}"
+                    )
+            else:
+                logger.info("[SANDBOX-203d] Sandbox disabled — Code-Detection uebersprungen")
+        except Exception as _sandbox_err:
+            logger.warning(
+                f"[SANDBOX-203d] Pipeline-Fehler (fail-open): {_sandbox_err}"
+            )
+
     # Patch 192: Sentiment-Triptychon — BERT-Analyse fuer User + Bot, Konsens
     # mit optionaler Prosodie aus dem X-Prosody-Context Header (one-shot).
     # Fail-open: jeder Fehler setzt sentiment_payload auf None; OpenAI-Schema
@@ -529,11 +616,14 @@ async def chat_completions(
     # Response-Format bleibt exakt OpenAI-kompatibel (Nala-Weiche).
     # Patch 192: zusaetzliches `sentiment`-Feld ist additiv — Clients die nur
     # `choices` lesen (Dictate, SillyTavern, OpenAI-SDK) bleiben kompatibel.
+    # Patch 203d-1: zusaetzliches `code_execution`-Feld ist additiv —
+    # bleibt None wenn kein Projekt aktiv, keine Sandbox oder kein Block.
     return ChatCompletionResponse(
         created=int(datetime.now().timestamp()),
         model=model,
         choices=[Choice(index=0, message=Message(role="assistant", content=answer), finish_reason="stop")],
         sentiment=sentiment_payload,
+        code_execution=code_execution_payload,
     )
 
 
