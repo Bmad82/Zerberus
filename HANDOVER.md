@@ -4,8 +4,8 @@
 **Datum:** 2026-05-02
 **Letzter Patch:** P195 — Phase 5a #1 Hel-UI-Tab "Projekte" (Ziel #1 abgeschlossen)
 **Tests:** 1382 passed, 4 xfailed (pre-existing), 2 pre-existing Failures (unrelated)
-**Commit:** _wird beim Push nachgetragen_
-**Repos synchron:** _nach Push prüfen mit `verify_sync.ps1`_
+**Commit:** 7b05f4a (gepusht zu origin/main)
+**Repos synchron:** Sync läuft im Anschluss (sync_repos.ps1 + verify_sync.ps1)
 
 ---
 
