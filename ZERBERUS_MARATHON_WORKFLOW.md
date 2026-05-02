@@ -1,7 +1,7 @@
 # ZERBERUS_MARATHON_WORKFLOW.md
 
 **Phase:** 5a — Nala-Projekte
-**Letzter Patch:** P194 | **Tests:** 1365 passed (4 xfailed pre-existing)
+**Letzter Patch:** P195 | **Tests:** 1382 passed (4 xfailed pre-existing, 2 pre-existing Failures unrelated)
 
 ---
 
@@ -64,7 +64,7 @@ Die folgende Liste beschreibt WAS, nicht WIE. Die Architektur ist deine Sache.
 
 | # | Ziel | Kontext | Braucht | Status |
 |---|------|---------|---------|--------|
-| 1 | **Projekte existieren als Entität** — Persistenz, CRUD, sichtbar in Hel | Fundament für alles | — | 🟨 (Backend P194 ✅, Hel-UI offen → P195) |
+| 1 | **Projekte existieren als Entität** — Persistenz, CRUD, sichtbar in Hel | Fundament für alles | — | ✅ (Backend P194, Hel-UI P195) |
 | 2 | **Projekte haben Struktur** — Template-Dateien, Ordner, optional Git | Damit Projekte nicht leer starten | #1 | ⬜ |
 | 3 | **Projekte haben eigenes Wissen** — isolierter RAG-Index pro Projekt | Code-LLM braucht Projektkontext | #1 | ⬜ |
 | 4 | **Dateien kommen ins Projekt** — Upload in Nala-Chat, Indexierung | Dateien müssen rein | #1 | ⬜ |
@@ -98,6 +98,7 @@ Guard Mistral Small 3 (P120/P180) ✅
 Prosodie Gemma E2B (P189-191) ✅
 Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 **Projekte-Backend (P194):** Tabellen `projects` + `project_files` in `bunker_memory.db`, Repo `zerberus/core/projects_repo.py`, Hel-CRUD `/hel/admin/projects/*` (Basic-Auth) ✅
+**Projekte-UI (P195):** Hel-Tab `📁 Projekte` mit Liste/Form/Persona-Overlay-Editor ✅
 
 ---
 
@@ -115,6 +116,9 @@ Sentiment-Triptychon (P192) + Whisper-Enrichment (P193) ✅
 | 5 | git push + sync_repos.ps1 für P194 | P194 | ⬜ | — |
 | 6 | Server-Restart: `init_db`-Bootstrap für `projects` + `project_files` ohne Fehler im Log (`[PATCH-92]`/`✅ Datenbank bereit`) | P194 | ⬜ | — |
 | 7 | `curl -u admin:<pw> https://localhost:5000/hel/admin/projects` → `{"projects":[],"count":0}` | P194 | ⬜ | — |
+| 8 | Hel öffnen → Tab `📁 Projekte` sichtbar, Liste lädt, "+ Projekt anlegen" funktioniert (Anlegen + Edit + Archive + Delete) | P195 | ⬜ | — |
+| 9 | Hel-Tab `📁 Projekte` auf iPhone: Tabelle scrollbar, Form-Overlay nicht abgeschnitten, Touch-Targets klickbar | P195 | ⬜ | — |
+| 10 | Persona-Overlay-Form: `tone_hints` als Komma-Liste eingeben, Speichern, Edit öffnen → Werte korrekt deserialisiert (kein doppeltes Komma, keine leeren Strings) | P195 | ⬜ | — |
 
 ---
 

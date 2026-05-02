@@ -1,10 +1,18 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 194 (2026-05-02) – Phase 5a #1 Backend (Projekte als Entität)*
+*Letzte Aktualisierung: Patch 195 (2026-05-02) – Phase 5a #1 Hel-UI-Tab Projekte*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 195** — Phase 5a #1: Hel-UI-Tab "Projekte" — schließt Ziel #1 ab (2026-05-02)
+
+UI-Hülle über das P194-Backend. Neuer Tab `📁 Projekte` im Hel-Dashboard zwischen Huginn und Links. Liste, Anlegen-Modal (Form-Overlay statt extra CSS-Lib), Edit/Archive/Unarchive/Delete inline, Datei-Liste read-only (Upload kommt P196). Persona-Overlay-Editor: `system_addendum` (Textarea) + `tone_hints` (Komma-Liste). Mobile-first: 44px Touch-Targets durchgehend, scrollbare Tab-Nav, Form-Overlay mit `flex-start`-Top für kleine Screens. Slug-Override nur beim Anlegen editierbar (Slug ist immutable per Repo-Vertrag P194). Lazy-Load via `activateTab('projects')`.
+
+- **Tests:** 20 Source-Inspection-Tests in [`test_projects_ui.py`](zerberus/tests/test_projects_ui.py) (Pattern wie `test_patch170_hel_kosmetik.py`). Decken Tab-Reihenfolge, Section-Markup, JS-Funktionen (`loadProjects`, `saveProjectForm`, `archive/unarchive/delete`, `loadProjectFiles`), 44px-Touch-Targets, Lazy-Load-Verdrahtung.
+- **Teststand:** 1365 → **1382 passed** (+17, da `test_projects_endpoints.py` schon mitgezählt war), 0 neue Failures, 4 xfailed (pre-existing), 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — nicht blockierend).
+- **Phase 5a Ziel #1:** ✅ vollständig (Backend P194 + UI P195). Nächste Patches greifen sukzessive Ziele #2 (Templates), #3 (RAG-Index pro Projekt), #4 (Datei-Upload-Endpoint).
 
 **Patch 194** — Phase 5a #1: Projekte als Entität, Backend-Layer (2026-05-02)
 
@@ -35,6 +43,7 @@ Vollständige Patch-Historie in [`docs/PROJEKTDOKUMENTATION.md`](docs/PROJEKTDOK
 
 | Patch | Datum | Zusammenfassung |
 |-------|-------|-----------------|
+| **P195** | 2026-05-02 | Phase 5a #1: Hel-UI-Tab "Projekte" (schließt Ziel #1 ab) — Liste/Form/Persona-Overlay + 20 Tests |
 | **P194** | 2026-05-02 | Phase 5a #1: Projekte als Entität (Backend) — Schema + Repo + Hel-CRUD + 46 Tests |
 | P192–P193 | 2026-05-01 | Sentiment-Triptychon + Whisper-Enrichment + Phase-4-Abschluss + Doku-Konsolidierung |
 | P189–P191 | 2026-05-01 | Prosodie-Pipeline komplett: Gemma-Client + Pipeline + Consent-UI + Worker-Protection |
@@ -73,14 +82,14 @@ Vollständige Patch-Historie in [`docs/PROJEKTDOKUMENTATION.md`](docs/PROJEKTDOK
 
 | # | Feature | Beschreibung |
 |---|---------|-------------|
-| P194 | Projekt-DB + Workspace | SQLite-Schema, CRUD, Hel-Tab |
-| P195 | Template-Generierung | `ZERBERUS_X.md`, Ordnerstruktur, Git-Init |
-| P196 | Projekt-RAG-Index | Isolierter FAISS pro Projekt |
-| P197 | Datei-Upload im Chat | Tag-Indexierung, Drag-and-Drop |
-| P198 | Code-Execution-Pipeline | Intent `PROJECT_CODE` → LLM → Sandbox |
-| P199 | HitL-Gate für Code | Sicherheit vor Ausführung (Default-ON) |
-| P200 | Sancho-Panza v2 | Erweiterte Veto-Logik, Wandschlag-Erkennung |
-| P201 | Spec-to-Task Contract | Erst klären, dann coden |
+| P194 | Projekt-DB (Backend) | SQLite-Schema, Repo, Hel-CRUD-Endpoints ✅ |
+| P195 | Hel-UI-Tab Projekte | Liste + Anlegen/Edit/Archive/Delete + Persona-Overlay-Editor ✅ |
+| P196 | Datei-Upload-Endpoint + UI | `POST /hel/admin/projects/{id}/files` + Drop-Zone |
+| P197 | Persona-Merge-Layer | System → User → Projekt-Overlay im LLM-Prompt aktivieren |
+| P198 | Template-Generierung | `ZERBERUS_X.md`, Ordnerstruktur, Git-Init |
+| P199 | Projekt-RAG-Index | Isolierter FAISS pro Projekt |
+| P200 | Code-Execution-Pipeline | Intent `PROJECT_CODE` → LLM → Sandbox |
+| P201 | HitL-Gate für Code | Sicherheit vor Ausführung (Default-ON) |
 | P202 | Snapshot/Backup-System | `.bak` + Rollback vor jeder Dateiänderung |
 | P203 | Diff-View | User sieht jede Änderung vor Bestätigung |
 

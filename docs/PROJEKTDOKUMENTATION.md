@@ -5106,5 +5106,50 @@ Hel-UI-Tab "📁 Projekte" — Liste, Anlegen-Form, Detail-Modal mit Persona-Ove
 
 ---
 
-*Stand: 2026-05-02, Patch 194 — Phase 5a #1 Backend. UI-Tab folgt in P195. 1365 passed, 0 neue Failures.*
+## Patch 195 — Phase 5a #1: Hel-UI-Tab "Projekte" (2026-05-02)
+
+### Ziel
+Schließt Phase-5a-Ziel #1 ("Projekte existieren als Entität") vollständig ab. P194 hat die Tabellen + das Repo + die Hel-CRUD-Endpoints geliefert; P195 setzt die UI-Hülle drüber, sodass Chris Projekte ohne `curl` über das Hel-Dashboard anlegen, editieren, archivieren und löschen kann. Persona-Overlay-Editor ist Teil derselben Form — damit ist Decision 3 (Merge-Layer System → User → Projekt) UI-seitig komplett vorbereitet, nur der Merge im LLM-Prompt fehlt noch (P197).
+
+### Was die UI tut
+Neuer Tab `📁 Projekte` in der Hel-Tab-Navigation, eingefügt zwischen `🐦 Huginn` und `🔗 Links`. Beim Aktivieren lädt `loadProjects()` die Projekt-Liste über `GET /hel/admin/projects?include_archived=…`. Eine Checkbox "Archivierte anzeigen" toggelt den Query-Parameter und triggert ein Reload.
+
+Die Liste rendert als Tabelle mit den Spalten Slug (monospace, türkis), Name (klickbar — öffnet die Datei-Liste des Projekts), Updated (lokale Zeit), Status (Badge "aktiv"/"archiviert") und Aktionen (Edit, Archivieren bzw. Reaktivieren, Löschen). Die Aktions-Buttons nutzen 36px-min-height (Sekundär-Aktion) gegenüber den 44px-Hauptbuttons — sie sind klein, aber noch touch-tauglich.
+
+Form-Overlay statt eigenes Modal-Lib: `<div id="projectFormOverlay">` mit `position:fixed`, dunklem Backdrop, einer Card oben zentriert und `overflow-y:auto` für kleine Screens. Felder: Name (Pflicht), Beschreibung, Slug-Override (nur beim Anlegen aktiv — Slug ist immutable per Repo-Vertrag aus P194; beim Edit wird das Feld auf `disabled` gesetzt und mit dem aktuellen Slug vorbefüllt). Persona-Overlay als eigenes `<fieldset>` mit zwei Inputs: `system_addendum` als Textarea, `tone_hints` als Komma-getrennter Single-Line-Input. Die Tone-Hints werden beim Submit per `split(',').map(trim).filter(Boolean)` in ein Array konvertiert; ist beides leer, wird `persona_overlay: null` gesendet, sonst ein Dict mit beiden Feldern.
+
+Submit-Logik: ID-Feld leer → `POST /hel/admin/projects` (mit optionalem `slug`-Override im Body); ID-Feld gesetzt → `PATCH /hel/admin/projects/{id}` (ohne Slug, nur `name/description/persona_overlay`). Fehler werden im Form-Status-Element angezeigt (rot), Erfolg schließt das Overlay und reloaded die Liste.
+
+Detail-Card unter der Tabelle: `display:none` per Default, wird durch Klick auf einen Projekt-Namen sichtbar, lädt `GET /hel/admin/projects/{id}/files` und zeigt die Datei-Metadaten (Pfad, Größe, MIME). Read-only — der eigentliche Datei-Upload kommt in P196 (`POST /hel/admin/projects/{id}/files` mit `multipart/form-data`).
+
+Lösch-Bestätigung: `confirm()`-Dialog mit dem Wort "UNWIDERRUFLICH" und dem Hinweis, dass Datei-Metadaten mitgelöscht werden, die Bytes im Storage aber bleiben (Cleanup ist separater Job, weil derselbe `sha256` in einem anderen Projekt referenziert sein kann — siehe `delete_project`-Docstring im Repo).
+
+### Mobile-First-Konventionen
+- Alle Hauptbuttons (`+ Projekt anlegen`, `Reload`, `Speichern`, `Abbrechen`) haben `min-height:44px`.
+- Form-Inputs (Name, Slug, Tone-Hints) haben ebenfalls `min-height:44px`.
+- Form-Overlay nutzt `align-items:flex-start` + `padding:20px` + `overflow-y:auto`, damit die Form auf kleinen Screens nicht abgeschnitten wird.
+- Aktions-Buttons in der Liste haben 36px (kompakt), Tabelle bekommt einen `<div style="overflow-x:auto">`-Wrapper für sehr schmale Screens.
+
+### Tests
+[`test_projects_ui.py`](../zerberus/tests/test_projects_ui.py) — 20 Source-Inspection-Tests im Pattern von [`test_patch170_hel_kosmetik.py`](../zerberus/tests/test_patch170_hel_kosmetik.py). Liest `hel.py` als Text und assertet auf Strings/Markup. Klassen:
+
+- **`TestTabButton`** (3): Tab-Existenz, Folder-Icon (`&#128193;`), Reihenfolge zwischen Huginn und Nav-Tab.
+- **`TestSectionBody`** (7): `section-projects`-IDs, Anlegen-Button, Archivierte-Checkbox, Tabellen-Spalten, Form-Overlay, Persona-Overlay-Felder, Detail-Card mit P196-Hinweis.
+- **`TestJsFunctions`** (8): `loadProjects` mit Query-Param, POST-Pfad in `saveProjectForm`, PATCH-Pfad, Archive/Unarchive/Delete-Funktionen, Confirm-Dialog mit "UNWIDERRUFLICH", `loadProjectFiles`, Form-Open/Close, Persona-Overlay-Serialisierung (Komma-Split).
+- **`TestActivateTabIntegration`** (1): Lazy-Load-Verdrahtung (`if (id === 'projects') loadProjects()`) in `activateTab`.
+- **`TestMobileFirst`** (1): mindestens 4 `min-height:44px`-Vorkommen im Section-Block.
+
+Funktionale Endpoint-Tests sind bereits durch [`test_projects_endpoints.py`](../zerberus/tests/test_projects_endpoints.py) (P194, 18 Tests) abgedeckt.
+
+Teststand 1365 → **1382 passed** (+17 — die 20 neuen UI-Tests minus 3 Tests, die in P194 schon mitgezählt waren). 4 xfailed (pre-existing). 2 pre-existing Failures (SentenceTransformer-Mock + edge-tts-Install — nicht blockierend, in HANDOVER-Schulden vermerkt).
+
+### Optional ausgelassen
+Playwright-E2E in Loki wurde für P195 nicht aufgesetzt. Source-Inspection deckt Markup-Existenz und JS-Funktions-Signaturen, aber keine echten Browser-Interaktionen. Wenn der manuelle Test (Chris auf iPhone) Probleme zeigt, ist Loki/Playwright der nächste Schritt. Bis dahin bleibt der manuelle Test in WORKFLOW.md die einzige End-to-End-Verifikation.
+
+### Was P196 macht
+Datei-Upload-Endpoint `POST /hel/admin/projects/{id}/files` mit `multipart/form-data`: Bytes lesen, `compute_sha256()` aus P194-Helper, `storage_path_for()` für den Pfad, Bytes ablegen, `register_file()` für die Metadaten. UI-Seite: Drop-Zone in der Detail-Card, Progress-Anzeige, Liste reloaded nach Upload. Rejection-Liste (z.B. `.exe`, > 50MB) sollte schon hier definiert werden.
+
+---
+
+*Stand: 2026-05-02, Patch 195 — Phase 5a #1 vollständig abgeschlossen (Backend P194 + UI P195). 1382 passed, 0 neue Failures.*
 

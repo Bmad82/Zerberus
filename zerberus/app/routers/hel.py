@@ -557,6 +557,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             <button type="button" class="hel-tab" data-tab="sysctl" onclick="activateTab('sysctl')">&#128147; System</button>
             <button type="button" class="hel-tab" data-tab="provider" onclick="activateTab('provider')">&#10060; Provider</button>
             <button type="button" class="hel-tab" data-tab="huginn" onclick="activateTab('huginn')">&#128020; Huginn</button>
+            <button type="button" class="hel-tab" data-tab="projects" onclick="activateTab('projects')">&#128193; Projekte</button>
             <button type="button" class="hel-tab" data-tab="nav" onclick="activateTab('nav')">&#128279; Links</button>
             <button type="button" class="hel-tab" data-tab="about" onclick="activateTab('about')">&#8505;&#65039; About</button>
         </nav>
@@ -1156,6 +1157,77 @@ ADMIN_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
+        <!-- Patch 195 (Phase 5a #1): Projekte-Verwaltung -->
+        <div class="hel-section" data-tab="projects" id="section-projects">
+          <div class="hel-section-header" onclick="toggleSection('projects')">
+            <span class="section-arrow">&#9654;</span> &#128193; Projekte
+          </div>
+          <div class="hel-section-body" id="body-projects">
+            <div class="card">
+                <h2>&#128193; Projekte</h2>
+                <p style="color:#aaa; font-size:0.9em; margin-bottom:12px;">
+                    Projekt-Verwaltung (Phase 5a #1). Backend P194: Tabellen + CRUD-Endpoints.
+                    Persona-Overlay als Merge-Layer (System &rarr; User &rarr; Projekt).
+                </p>
+                <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;">
+                    <button onclick="openProjectForm()" style="padding:10px 18px;min-height:44px;background:#1a3a5c;color:#ffd700;border:1px solid #ffd700;border-radius:8px;">+ Projekt anlegen</button>
+                    <label style="display:inline-flex;align-items:center;gap:6px;color:#aaa;font-size:0.9em;">
+                        <input type="checkbox" id="projectsShowArchived" onchange="loadProjects()"> Archivierte anzeigen
+                    </label>
+                    <button onclick="loadProjects()" style="padding:8px 14px;min-height:44px;">&#128260; Reload</button>
+                </div>
+                <div id="projectsStatus" style="margin-bottom:10px;color:#4ecdc4;font-size:0.9em;"></div>
+                <div style="overflow-x:auto;">
+                    <table id="projectsTable" style="width:100%;border-collapse:collapse;">
+                        <thead>
+                            <tr style="background:#1f1f1f;color:#ffd700;">
+                                <th style="text-align:left;padding:8px;">Slug</th>
+                                <th style="text-align:left;padding:8px;">Name</th>
+                                <th style="text-align:left;padding:8px;">Updated</th>
+                                <th style="text-align:left;padding:8px;">Status</th>
+                                <th style="text-align:left;padding:8px;">Aktionen</th>
+                            </tr>
+                        </thead>
+                        <tbody id="projectsTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Detail-Panel (zeigt Dateien des aktuell gewaehlten Projekts) -->
+            <div class="card" id="projectDetailCard" style="display:none;">
+                <h2>&#128196; Dateien <span id="projectDetailName" style="color:#aaa;font-weight:normal;font-size:0.85em;"></span></h2>
+                <p style="color:#888;font-size:0.85em;margin-bottom:8px;">Upload kommt in P196.</p>
+                <div id="projectFilesList" style="font-family:monospace;font-size:0.88em;color:#ddd;"></div>
+            </div>
+
+            <!-- Form-Overlay (Modal-aehnlich, ohne extra CSS-Lib) -->
+            <div id="projectFormOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000;align-items:flex-start;justify-content:center;overflow-y:auto;padding:20px;">
+                <div style="background:#2d2d2d;border-radius:12px;padding:20px;max-width:600px;width:100%;margin-top:40px;">
+                    <h2 id="projectFormTitle" style="margin-top:0;">Projekt anlegen</h2>
+                    <input type="hidden" id="projectFormId">
+                    <label style="display:block;margin-top:10px;color:#DAA520;">Name *</label>
+                    <input type="text" id="projectFormName" placeholder="z.B. Akte Mutzenbacher" style="width:100%;padding:10px;min-height:44px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                    <label style="display:block;margin-top:10px;color:#DAA520;">Beschreibung</label>
+                    <textarea id="projectFormDescription" rows="2" placeholder="Optional, freier Text" style="width:100%;padding:10px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;"></textarea>
+                    <label style="display:block;margin-top:10px;color:#DAA520;">Slug-Override <span style="color:#888;font-weight:normal;">(optional, nur bei Anlegen)</span></label>
+                    <input type="text" id="projectFormSlug" placeholder="ableitung-aus-name" style="width:100%;padding:10px;min-height:44px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                    <fieldset style="margin-top:14px;border:1px solid #444;border-radius:8px;padding:12px;">
+                        <legend style="color:#DAA520;padding:0 6px;">Persona-Overlay</legend>
+                        <label style="display:block;color:#aaa;font-size:0.88em;">System-Addendum</label>
+                        <textarea id="projectFormSystemAddendum" rows="3" placeholder="Zusaetzlicher System-Prompt-Text (Projekt-Kontext)" style="width:100%;padding:8px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;font-family:monospace;font-size:0.88em;"></textarea>
+                        <label style="display:block;margin-top:8px;color:#aaa;font-size:0.88em;">Tone-Hints <span style="color:#888;">(Komma-Liste)</span></label>
+                        <input type="text" id="projectFormToneHints" placeholder="z.B. praezise, fachsprachlich, knapp" style="width:100%;padding:8px;min-height:44px;background:#121212;color:#eee;border:1px solid #444;border-radius:6px;">
+                    </fieldset>
+                    <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;">
+                        <button onclick="saveProjectForm()" style="padding:10px 18px;min-height:44px;background:#1a5c1a;color:#fff;border:1px solid #4ecdc4;border-radius:8px;">&#128190; Speichern</button>
+                        <button onclick="closeProjectForm()" style="padding:10px 18px;min-height:44px;">Abbrechen</button>
+                    </div>
+                    <div id="projectFormStatus" style="margin-top:10px;color:#f88;"></div>
+                </div>
+            </div>
+          </div>
+        </div>
+
     </div>
 
     <script>
@@ -1243,6 +1315,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                 if (id === 'provider') loadProviderBlacklist();
                 if (id === 'huginn') huginnReload();
                 if (id === 'llm') visionReload();
+                if (id === 'projects') loadProjects();
             }
             // Aktiven Tab in die Mitte scrollen, falls Overflow
             const activeBtn = document.querySelector('.hel-tab.active');
@@ -2985,6 +3058,216 @@ ADMIN_HTML = """<!DOCTYPE html>
                 }
             } catch(e) { el.innerHTML = '<span style="color:#ff6b6b;">Fehler: ' + e.message + '</span>'; }
         }
+
+        // ==================== Patch 195 (Phase 5a #1): Projekte-UI ====================
+        let _projectsCache = [];
+
+        function _projectStatusBadge(isArchived) {
+            if (isArchived) {
+                return '<span style="background:#5c2f2f;color:#f88;padding:2px 8px;border-radius:4px;font-size:0.78em;">archiviert</span>';
+            }
+            return '<span style="background:#1a5c1a;color:#4ecdc4;padding:2px 8px;border-radius:4px;font-size:0.78em;">aktiv</span>';
+        }
+
+        function _projectFmtDate(iso) {
+            if (!iso) return '-';
+            try {
+                const d = new Date(iso);
+                return d.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+            } catch(_) { return iso; }
+        }
+
+        function _escapeHtml(s) {
+            if (s === null || s === undefined) return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        async function loadProjects() {
+            const tbody = document.getElementById('projectsTableBody');
+            const status = document.getElementById('projectsStatus');
+            if (!tbody || !status) return;
+            const includeArchived = document.getElementById('projectsShowArchived').checked;
+            status.textContent = 'Lade Projekte...';
+            status.style.color = '#aaa';
+            try {
+                const r = await fetch('/hel/admin/projects?include_archived=' + (includeArchived ? 'true' : 'false'));
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const data = await r.json();
+                _projectsCache = data.projects || [];
+                if (_projectsCache.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="padding:14px;color:#888;text-align:center;">Noch keine Projekte. &laquo;+ Projekt anlegen&raquo; oben klicken.</td></tr>';
+                } else {
+                    tbody.innerHTML = _projectsCache.map(p => {
+                        const archiveBtn = p.is_archived
+                            ? '<button onclick="unarchiveProject(' + p.id + ')" style="padding:6px 10px;min-height:36px;">&#9851; Reaktivieren</button>'
+                            : '<button onclick="archiveProject(' + p.id + ')" style="padding:6px 10px;min-height:36px;">&#128451;&#65039; Archivieren</button>';
+                        return '<tr style="border-bottom:1px solid #333;">'
+                            + '<td style="padding:8px;font-family:monospace;color:#4ecdc4;">' + _escapeHtml(p.slug) + '</td>'
+                            + '<td style="padding:8px;cursor:pointer;color:#ffd700;" onclick="loadProjectFiles(' + p.id + ')" title="Dateien anzeigen">' + _escapeHtml(p.name) + '</td>'
+                            + '<td style="padding:8px;color:#aaa;font-size:0.88em;">' + _projectFmtDate(p.updated_at) + '</td>'
+                            + '<td style="padding:8px;">' + _projectStatusBadge(p.is_archived) + '</td>'
+                            + '<td style="padding:8px;display:flex;gap:6px;flex-wrap:wrap;">'
+                                + '<button onclick="editProject(' + p.id + ')" style="padding:6px 10px;min-height:36px;">&#9999;&#65039; Edit</button>'
+                                + archiveBtn
+                                + '<button onclick="deleteProject(' + p.id + ')" style="padding:6px 10px;min-height:36px;background:#5c2f2f;color:#f88;">&#128465;&#65039; Loeschen</button>'
+                            + '</td>'
+                            + '</tr>';
+                    }).join('');
+                }
+                status.textContent = _projectsCache.length + ' Projekt(e) geladen.';
+                status.style.color = '#4ecdc4';
+            } catch (e) {
+                status.textContent = 'Fehler: ' + e.message;
+                status.style.color = '#f88';
+            }
+        }
+
+        function openProjectForm(project) {
+            document.getElementById('projectFormTitle').textContent = project ? ('Projekt bearbeiten: ' + project.slug) : 'Projekt anlegen';
+            document.getElementById('projectFormId').value = project ? project.id : '';
+            document.getElementById('projectFormName').value = project ? (project.name || '') : '';
+            document.getElementById('projectFormDescription').value = project ? (project.description || '') : '';
+            const slugInput = document.getElementById('projectFormSlug');
+            slugInput.value = project ? (project.slug || '') : '';
+            slugInput.disabled = !!project; // Slug ist immutable, nur bei Anlage editierbar
+            const overlay = (project && project.persona_overlay) || { system_addendum: '', tone_hints: [] };
+            document.getElementById('projectFormSystemAddendum').value = overlay.system_addendum || '';
+            document.getElementById('projectFormToneHints').value = (overlay.tone_hints || []).join(', ');
+            document.getElementById('projectFormStatus').textContent = '';
+            document.getElementById('projectFormOverlay').style.display = 'flex';
+        }
+
+        function closeProjectForm() {
+            document.getElementById('projectFormOverlay').style.display = 'none';
+        }
+
+        async function saveProjectForm() {
+            const id = document.getElementById('projectFormId').value;
+            const name = document.getElementById('projectFormName').value.trim();
+            const description = document.getElementById('projectFormDescription').value.trim();
+            const slug = document.getElementById('projectFormSlug').value.trim();
+            const systemAddendum = document.getElementById('projectFormSystemAddendum').value;
+            const toneHintsRaw = document.getElementById('projectFormToneHints').value;
+            const statusEl = document.getElementById('projectFormStatus');
+            if (!name) {
+                statusEl.textContent = 'Name darf nicht leer sein.';
+                statusEl.style.color = '#f88';
+                return;
+            }
+            const toneHints = toneHintsRaw.split(',').map(s => s.trim()).filter(Boolean);
+            const personaOverlay = (systemAddendum || toneHints.length > 0)
+                ? { system_addendum: systemAddendum, tone_hints: toneHints }
+                : null;
+            const payload = { name, description, persona_overlay: personaOverlay };
+            try {
+                let r;
+                if (id) {
+                    r = await fetch('/hel/admin/projects/' + id, {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload),
+                    });
+                } else {
+                    if (slug) payload.slug = slug;
+                    r = await fetch('/hel/admin/projects', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload),
+                    });
+                }
+                if (!r.ok) {
+                    const errBody = await r.json().catch(() => ({}));
+                    throw new Error(errBody.detail || ('HTTP ' + r.status));
+                }
+                statusEl.textContent = 'Gespeichert.';
+                statusEl.style.color = '#4ecdc4';
+                closeProjectForm();
+                await loadProjects();
+            } catch (e) {
+                statusEl.textContent = 'Fehler: ' + e.message;
+                statusEl.style.color = '#f88';
+            }
+        }
+
+        function editProject(id) {
+            const project = _projectsCache.find(p => p.id === id);
+            if (!project) return;
+            openProjectForm(project);
+        }
+
+        async function archiveProject(id) {
+            if (!confirm('Projekt archivieren? Bleibt erhalten, wird ausgeblendet.')) return;
+            try {
+                const r = await fetch('/hel/admin/projects/' + id + '/archive', { method: 'POST' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                await loadProjects();
+            } catch (e) {
+                document.getElementById('projectsStatus').textContent = 'Fehler: ' + e.message;
+                document.getElementById('projectsStatus').style.color = '#f88';
+            }
+        }
+
+        async function unarchiveProject(id) {
+            try {
+                const r = await fetch('/hel/admin/projects/' + id + '/unarchive', { method: 'POST' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                await loadProjects();
+            } catch (e) {
+                document.getElementById('projectsStatus').textContent = 'Fehler: ' + e.message;
+                document.getElementById('projectsStatus').style.color = '#f88';
+            }
+        }
+
+        async function deleteProject(id) {
+            const project = _projectsCache.find(p => p.id === id);
+            const label = project ? (project.slug + ' (' + project.name + ')') : ('#' + id);
+            if (!confirm('Projekt ' + label + ' UNWIDERRUFLICH loeschen? Datei-Metadaten werden mitgeloescht (Bytes bleiben im Storage).')) return;
+            try {
+                const r = await fetch('/hel/admin/projects/' + id, { method: 'DELETE' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                document.getElementById('projectDetailCard').style.display = 'none';
+                await loadProjects();
+            } catch (e) {
+                document.getElementById('projectsStatus').textContent = 'Fehler: ' + e.message;
+                document.getElementById('projectsStatus').style.color = '#f88';
+            }
+        }
+
+        async function loadProjectFiles(projectId) {
+            const project = _projectsCache.find(p => p.id === projectId);
+            const card = document.getElementById('projectDetailCard');
+            const list = document.getElementById('projectFilesList');
+            const nameEl = document.getElementById('projectDetailName');
+            if (!card || !list) return;
+            card.style.display = 'block';
+            nameEl.textContent = project ? '— ' + project.slug : '';
+            list.innerHTML = '<span style="color:#888;">Lade...</span>';
+            try {
+                const r = await fetch('/hel/admin/projects/' + projectId + '/files');
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const data = await r.json();
+                const files = data.files || [];
+                if (files.length === 0) {
+                    list.innerHTML = '<span style="color:#888;">Keine Dateien (Upload kommt in P196).</span>';
+                } else {
+                    list.innerHTML = files.map(f => {
+                        const kb = (f.size_bytes / 1024).toFixed(1);
+                        return '<div style="padding:4px 0;border-bottom:1px solid #2a2a2a;">'
+                            + '<span style="color:#4ecdc4;">' + _escapeHtml(f.relative_path) + '</span> '
+                            + '<span style="color:#888;">(' + kb + ' KB, ' + _escapeHtml(f.mime_type || 'unknown') + ')</span>'
+                            + '</div>';
+                    }).join('');
+                }
+            } catch (e) {
+                list.innerHTML = '<span style="color:#f88;">Fehler: ' + e.message + '</span>';
+            }
+        }
+        // ==================== /Patch 195 ====================
     </script>
 </body>
 </html>
