@@ -5,9 +5,9 @@
 **Letzter Patch:** P212 — Secrets bleiben geheim (Phase 5a Ziel #12 ABGESCHLOSSEN)
 **Tests:** 2256 passed (+40 P212 aus 2216 baseline), 4 xfailed (pre-existing), 3 failed (alle pre-existing — `edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info.test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`), 1 skipped (existing)
 **Manuelle Tests:** 1 / 99 ✅
-**Commit:** <wird nach Push nachgetragen>
-**Repos synchron:** <wird nach sync_repos.ps1 + verify_sync.ps1 nachgetragen>
-**Huginn-RAG-Sync:** <wird nach `python -m tools.sync_huginn_rag` nachgetragen>
+**Commit:** 1be6ca8 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude — alle drei gepusht (Ratatoskr `23c0934`, Claude `491c8f2` unveraendert, 0 unpushed Commits in allen drei). `verify_sync.ps1` meldet Zerberus working-tree dirty: `system_prompt_chris.json` bleibt unangetastet (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste, Stand identisch zu allen Vorgaenger-HANDOVERS seit P205. Naechster Coda kann sie ggf. via `git checkout system_prompt_chris.json` zuruecksetzen oder via `git rm --cached` + `.gitignore` aus dem Tracking nehmen).
+**Huginn-RAG-Sync:** beim Versuch fehlgeschlagen — Server nicht erreichbar (`RemoteProtocolError: Server disconnected` auf DELETE, `ReadError` auf POST). Erwartetes Verhalten wenn Zerberus-Server nicht läuft. Fix: nächster Coda mit laufendem Server `python -m tools.sync_huginn_rag` oder `scripts/sync_huginn_rag.ps1` aufrufen — Stand-Anker im Doku-Header ist auf P212 aktualisiert, sobald der Sync läuft kennt Huginn den neuen Stand.
 
 ---
 
