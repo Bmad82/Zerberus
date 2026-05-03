@@ -184,6 +184,14 @@ class ProjectsConfig(BaseModel):
     # Mount-Pfad. Tests koennen das Flag abschalten, wenn der
     # Hardlink-Pfad in CI-Sandboxen Probleme macht.
     workspace_enabled: bool = True
+    # Patch 206 (Phase 5a #6): HitL-Gate vor Sandbox-Code-Execution.
+    # Wenn ``True``, blockt der Chat-Endpunkt nach erkanntem Code-Block
+    # und wartet auf User-Approval via ``/v1/hitl/resolve``. ``False``
+    # heisst: P203d-1-Verhalten ohne Gate (direkt durch). Timeout in
+    # Sekunden begrenzt das Long-Poll-Fenster pro Request — Timeout =
+    # implizites Reject (User hat nicht reagiert).
+    hitl_enabled: bool = True
+    hitl_timeout_seconds: int = 60
 
 
 class SandboxConfig(BaseModel):

@@ -534,6 +534,10 @@ async def chat_completions(
     # 6. `execute_in_workspace` — None heisst Slug-Reject oder Disabled,
     #    SandboxResult heisst durchgelaufen (auch bei exit_code != 0).
     code_execution_payload: dict | None = None
+    # Patch 206: HitL-Gate-Variablen — pending_id fuer Audit-Trail-Korrelation,
+    # hitl_status fuer Synthese-Skip + Audit-Row.
+    hitl_pending_id: str | None = None
+    hitl_status_for_audit: str | None = None
     if (
         active_project_id is not None
         and project_slug
@@ -551,35 +555,104 @@ async def chat_completions(
                     list(_sandbox.config.allowed_languages),
                 )
                 if _block is not None:
-                    _base_dir = Path(settings.projects.data_dir)
-                    _result = await execute_in_workspace(
-                        project_id=active_project_id,
-                        code=_block.code,
-                        language=_block.language,
-                        base_dir=_base_dir,
-                        writable=False,
-                    )
-                    if _result is not None:
+                    # Patch 206 (Phase 5a #6): HitL-Gate VOR Sandbox-Run.
+                    # Long-Poll innerhalb der Chat-Completions-Request:
+                    # Pending wird angelegt, das Frontend pollt parallel
+                    # ``GET /v1/hitl/poll`` und rendert die Confirm-Karte.
+                    # User klickt → ``POST /v1/hitl/resolve`` → Event.set →
+                    # wir wachen auf und fuehren aus (oder skippen). Bei
+                    # ``hitl_enabled=False`` laeuft der alte P203d-1-Pfad
+                    # (Status ``bypassed`` im Audit).
+                    _hitl_decision: str
+                    if getattr(settings.projects, "hitl_enabled", True):
+                        from zerberus.core.hitl_chat import get_chat_hitl_gate
+                        _gate = get_chat_hitl_gate()
+                        _pending = await _gate.create_pending(
+                            session_id=session_id,
+                            project_id=active_project_id,
+                            project_slug=project_slug,
+                            code=_block.code,
+                            language=_block.language,
+                        )
+                        hitl_pending_id = _pending.id
+                        _timeout = float(
+                            getattr(settings.projects, "hitl_timeout_seconds", 60)
+                        )
+                        _hitl_decision = await _gate.wait_for_decision(
+                            _pending.id, _timeout,
+                        )
+                        # Cleanup nach Auswertung — sonst waechst der
+                        # In-Memory-Store monoton bei jedem Code-Block.
+                        _gate.cleanup(_pending.id)
+                        logger.info(
+                            f"[HITL-206] decision id={_pending.id} "
+                            f"session={session_id} status={_hitl_decision}"
+                        )
+                    else:
+                        _hitl_decision = "bypassed"
+                        logger.info(
+                            f"[HITL-206] bypassed session={session_id} "
+                            f"(hitl_enabled=False)"
+                        )
+                    hitl_status_for_audit = _hitl_decision
+
+                    if _hitl_decision in ("approved", "bypassed"):
+                        _base_dir = Path(settings.projects.data_dir)
+                        _result = await execute_in_workspace(
+                            project_id=active_project_id,
+                            code=_block.code,
+                            language=_block.language,
+                            base_dir=_base_dir,
+                            writable=False,
+                        )
+                        if _result is not None:
+                            code_execution_payload = {
+                                "language": _block.language,
+                                "code": _block.code,
+                                "exit_code": _result.exit_code,
+                                "stdout": _result.stdout,
+                                "stderr": _result.stderr,
+                                "execution_time_ms": _result.execution_time_ms,
+                                "truncated": _result.truncated,
+                                "error": _result.error,
+                                "skipped": False,
+                                "hitl_status": _hitl_decision,
+                            }
+                            logger.info(
+                                f"[SANDBOX-203d] project_id={active_project_id} slug={project_slug!r} "
+                                f"language={_block.language} exit_code={_result.exit_code} "
+                                f"stdout_len={len(_result.stdout)} stderr_len={len(_result.stderr)} "
+                                f"time_ms={_result.execution_time_ms} truncated={_result.truncated}"
+                            )
+                        else:
+                            logger.info(
+                                f"[SANDBOX-203d] execute_in_workspace returned None "
+                                f"(slug_reject/disabled/missing) project_id={active_project_id}"
+                            )
+                    else:
+                        # rejected | timeout — Skip-Payload mit Reason,
+                        # damit Frontend die Code-Card mit Skip-Banner
+                        # rendern kann (P203d-3 Renderer ist additiv).
+                        _skip_reason = (
+                            "Vom User abgebrochen"
+                            if _hitl_decision == "rejected"
+                            else "Keine User-Bestaetigung (Timeout)"
+                        )
                         code_execution_payload = {
                             "language": _block.language,
                             "code": _block.code,
-                            "exit_code": _result.exit_code,
-                            "stdout": _result.stdout,
-                            "stderr": _result.stderr,
-                            "execution_time_ms": _result.execution_time_ms,
-                            "truncated": _result.truncated,
-                            "error": _result.error,
+                            "exit_code": -1,
+                            "stdout": "",
+                            "stderr": "",
+                            "execution_time_ms": 0,
+                            "truncated": False,
+                            "error": _skip_reason,
+                            "skipped": True,
+                            "hitl_status": _hitl_decision,
                         }
                         logger.info(
-                            f"[SANDBOX-203d] project_id={active_project_id} slug={project_slug!r} "
-                            f"language={_block.language} exit_code={_result.exit_code} "
-                            f"stdout_len={len(_result.stdout)} stderr_len={len(_result.stderr)} "
-                            f"time_ms={_result.execution_time_ms} truncated={_result.truncated}"
-                        )
-                    else:
-                        logger.info(
-                            f"[SANDBOX-203d] execute_in_workspace returned None "
-                            f"(slug_reject/disabled/missing) project_id={active_project_id}"
+                            f"[HITL-206] skipped session={session_id} "
+                            f"status={_hitl_decision} language={_block.language}"
                         )
                 else:
                     logger.info(
@@ -591,6 +664,7 @@ async def chat_completions(
             logger.warning(
                 f"[SANDBOX-203d] Pipeline-Fehler (fail-open): {_sandbox_err}"
             )
+            hitl_status_for_audit = "error"
 
     # Patch 203d-2 (Phase 5a #5): Output-Synthese. Wenn der P203d-1-Pfad
     # ein ``code_execution_payload`` produziert hat UND der Trigger-Gate
@@ -603,7 +677,11 @@ async def chat_completions(
     # Code-Block); das ``code_execution``-Feld ist trotzdem in der
     # Response, damit das Frontend den Roh-Output ggf. selbst rendern
     # kann (P203d-3 UI-Render).
-    if code_execution_payload is not None:
+    # Patch 206: Skip-Synthese wenn HitL den Code-Block geblockt hat
+    # (skipped=True). Es gibt nichts auszuwerten, und die Original-Antwort
+    # zeigt dem User noch den Code-Block — die HitL-Skip-Begruendung kommt
+    # im ``code_execution.error``-Feld plus Frontend-Skip-Banner.
+    if code_execution_payload is not None and not code_execution_payload.get("skipped"):
         try:
             from zerberus.modules.sandbox.synthesis import synthesize_code_output
 
@@ -628,6 +706,26 @@ async def chat_completions(
         await update_interaction()
     except Exception as e:
         logger.warning(f"⚠️ store_interaction(assistant) fehlgeschlagen (non-fatal): {e}")
+
+    # Patch 206 (Phase 5a #6): Audit-Trail-Zeile in ``code_executions``.
+    # Schreibt nur wenn ein Code-Block erkannt wurde (Payload ist nicht None
+    # ODER ein hitl_status fuer den Pipeline-Pfad gesetzt wurde). Der
+    # Helper schluckt jeden Fehler — Hauptpfad bleibt grün.
+    if code_execution_payload is not None and hitl_status_for_audit is not None:
+        try:
+            from zerberus.core.hitl_chat import store_code_execution_audit
+            await store_code_execution_audit(
+                session_id=session_id,
+                project_id=active_project_id,
+                project_slug=project_slug,
+                payload=code_execution_payload,
+                pending_id=hitl_pending_id,
+                hitl_status=hitl_status_for_audit,
+            )
+        except Exception as _audit_err:
+            logger.warning(
+                f"[HITL-206] Audit-Schreiben fehlgeschlagen (non-fatal): {_audit_err}"
+            )
 
     # Patch 192: Sentiment-Triptychon — BERT-Analyse fuer User + Bot, Konsens
     # mit optionaler Prosodie aus dem X-Prosody-Context Header (one-shot).
@@ -664,6 +762,75 @@ async def chat_completions(
         choices=[Choice(index=0, message=Message(role="assistant", content=answer), finish_reason="stop")],
         sentiment=sentiment_payload,
         code_execution=code_execution_payload,
+    )
+
+
+# ---------- Patch 206 — HitL-Gate-Endpoints fuer Chat-Code-Execution ----------
+#
+# Two-Endpoint-Pattern: Frontend pollt ``/v1/hitl/poll`` waehrend der Chat-
+# Completions-Request long-pollt, rendert die Confirm-Karte sobald ein
+# Pending zur Session existiert, und schickt die Entscheidung via
+# ``/v1/hitl/resolve``. Beide Endpoints sind /v1/-auth-frei (Dictate-Lane-
+# Invariante) — Ownership ueber session_id (poll) bzw. UUID4-pending_id +
+# session_id-Match (resolve).
+
+
+class HitlResolveRequest(BaseModel):
+    pending_id: str
+    decision: str  # "approved" | "rejected"
+    session_id: str | None = None  # Defense-in-Depth: Cross-Session-Resolve blocken
+
+
+class HitlPollResponse(BaseModel):
+    pending: dict | None = None  # to_public_dict() oder None wenn keiner anliegt
+
+
+class HitlResolveResponse(BaseModel):
+    ok: bool
+    decision: str | None = None
+
+
+@router.get("/hitl/poll", response_model=HitlPollResponse)
+async def hitl_poll(request: Request):
+    """Liefert das aelteste pending HitL-Item dieser Session (oder None).
+
+    Frontend pollt diesen Endpoint im Sekunden-Takt, solange der Chat-
+    Completions-Request offen ist. Mehrere Pendings pro Session sind in
+    der aktuellen Implementierung nicht erwartbar (ein Code-Block pro
+    Chat-Turn), aber wir liefern bewusst nur den aeltesten — der Caller
+    sieht ein FIFO-Verhalten.
+    """
+    session_id = request.headers.get("X-Session-ID") or "legacy-default"
+    from zerberus.core.hitl_chat import get_chat_hitl_gate
+    gate = get_chat_hitl_gate()
+    pendings = gate.list_for_session(session_id)
+    if not pendings:
+        return HitlPollResponse(pending=None)
+    pendings.sort(key=lambda p: p.created_at)
+    return HitlPollResponse(pending=pendings[0].to_public_dict())
+
+
+@router.post("/hitl/resolve", response_model=HitlResolveResponse)
+async def hitl_resolve(req: HitlResolveRequest, request: Request):
+    """Setzt die Entscheidung zu einem Pending. Idempotent.
+
+    Resolve gilt nur wenn der Pending noch ``pending`` ist — Doppel-Klick
+    aus dem UI macht keinen Schaden, gibt aber ``ok=False`` zurueck. Der
+    optionale ``session_id``-Parameter (oder ``X-Session-ID``-Header) wird
+    gegen den im Pending vermerkten verglichen — ein anderer Tab kann
+    mein Pending nicht resolven.
+    """
+    session_id = req.session_id or request.headers.get("X-Session-ID") or None
+    from zerberus.core.hitl_chat import get_chat_hitl_gate
+    gate = get_chat_hitl_gate()
+    ok = await gate.resolve(
+        req.pending_id,
+        req.decision,
+        session_id=session_id,
+    )
+    return HitlResolveResponse(
+        ok=ok,
+        decision=req.decision if ok else None,
     )
 
 

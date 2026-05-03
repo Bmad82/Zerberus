@@ -203,6 +203,12 @@ class TestE2ECodeExecution:
         """Patcht alle externen Abhaengigkeiten in einem Aufruf."""
         from zerberus.app.routers import legacy as legacy_mod
         from zerberus.core.llm import LLMService
+        from zerberus.core.config import get_settings
+
+        # Patch 206: HitL-Gate ist neuer Default. P203d-1-Tests pruefen
+        # nur Code-Detection + Sandbox-Roundtrip — wir bypassen das Gate,
+        # damit der Sandbox-Pfad direkt durchlaeuft (Status ``bypassed``).
+        monkeypatch.setattr(get_settings().projects, "hitl_enabled", False)
 
         monkeypatch.setattr(LLMService, "call", _make_fake_llm(llm_answer))
         monkeypatch.setattr(legacy_mod, "_ORCH_PIPELINE_OK", False)

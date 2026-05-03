@@ -1,10 +1,71 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 205 (2026-05-03) – RAG-Toast in Hel-UI nach Datei-Upload (Phase 5a Schuld aus P199)*
+*Letzte Aktualisierung: Patch 206 (2026-05-03) – HitL-Gate vor Code-Execution + HANDOVER-Teststand-Konvention (Phase 5a Ziel #6 ABGESCHLOSSEN)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 206** — HitL-Gate vor Code-Execution + HANDOVER-Teststand-Konvention (Phase 5a Ziel #6 ABGESCHLOSSEN) (2026-05-03)
+
+Bisher (P203d-1) lief jeder erkannte Code-Block direkt in die Sandbox — RO-Mount machte das vergleichsweise sicher, aber Phase-5a-Ziel #6 fordert explizite User-Confirmation. P206 schliesst das Ziel mit einem In-Memory-Long-Poll-Gate und einer Confirm-Karte im Nala-Frontend. Plus integriert die kleine Teststand-Reminder-Konvention aus dem Feature-Request (HANDOVER-Header zeigt `**Manuelle Tests:** X / Y ✅`).
+
+**Architektur: drei Schichten plus Feature-Flag plus Audit-Tabelle.**
+
+- **Pure-Mechanik** in [`zerberus/core/hitl_chat.py`](zerberus/core/hitl_chat.py): `ChatHitlGate`-Singleton mit dict-Registry + `asyncio.Event` pro Pending. `create_pending(session_id, project_id, project_slug, code, language)` legt UUID4-hex-IDs an, `wait_for_decision(pending_id, timeout)` blockt via `asyncio.wait_for(event.wait(), timeout=N)`, `resolve(pending_id, decision, *, session_id)` flippt status + setzt Event mit Cross-Session-Defense, `cleanup(pending_id)` raeumt nach Resolve. In-Memory-only — Long-Poll-Requests sterben beim Server-Restart sowieso, persistente Pendings wuerden zu "Geister-Karten" fuehren. Plus `store_code_execution_audit(...)`-Helper schreibt eine Audit-Zeile mit 8 KB Truncate fuer code/stdout/stderr.
+- **Audit-Tabelle** `code_executions` in [`zerberus/core/database.py`](zerberus/core/database.py) — schliesst die HANDOVER-Schuld P203d-1 ("code_execution ist nicht in der DB"). Spalten: `pending_id`/`session_id`/`project_id`/`project_slug`/`language`/`exit_code`/`execution_time_ms`/`truncated`/`skipped`/`hitl_status`/`code_text`/`stdout_text`/`stderr_text`/`error_text`/`created_at`/`resolved_at`. SQLite-friendly mit `Integer` 0/1 fuer Boolean. `init_db`-Bootstrap legt sie automatisch an.
+- **Verdrahtung in [`legacy.py::chat_completions`](zerberus/app/routers/legacy.py)** zwischen `first_executable_block` und `execute_in_workspace`:
+
+```python
+if getattr(settings.projects, "hitl_enabled", True):
+    _gate = get_chat_hitl_gate()
+    _pending = await _gate.create_pending(...)
+    _hitl_decision = await _gate.wait_for_decision(_pending.id, _timeout)
+    _gate.cleanup(_pending.id)
+else:
+    _hitl_decision = "bypassed"
+
+if _hitl_decision in ("approved", "bypassed"):
+    _result = await execute_in_workspace(..., writable=False)
+    code_execution_payload = {..., "skipped": False, "hitl_status": _hitl_decision}
+else:
+    code_execution_payload = {..., "skipped": True, "hitl_status": _hitl_decision,
+                              "exit_code": -1, "error": "Vom User abgebrochen"}
+```
+
+Synthese-Gate (P203d-2) erweitert: `if code_execution_payload is not None and not code_execution_payload.get("skipped"):` — kein zweiter LLM-Call bei Skip.
+
+- **Zwei neue auth-freie Endpoints** in `legacy.py` (per `/v1/`-Invariante kein JWT):
+  - `GET /v1/hitl/poll` — liefert das aelteste Pending der Session als JSON (oder `{"pending": null}`). Header `X-Session-ID` als Owner-Diskriminator.
+  - `POST /v1/hitl/resolve` — Body `{pending_id, decision, session_id}`, idempotent + Cross-Session-Block. Antwort `{ok, decision}`.
+- **Nala-Frontend** in [`nala.py`](zerberus/app/routers/nala.py):
+  - **CSS** (~70 Zeilen): `.hitl-card` mit Kintsugi-Gold-Border `rgba(240,180,41,0.55)` + Inset-Shadow, `.hitl-actions` Flex-Row mit `gap: 8px`, `.hitl-approve`/`.hitl-reject` mit `min-height: 44px`/`min-width: 44px` (Mobile-first Touch). Post-Klick-States `.hitl-approved`/`.hitl-rejected` schimmern gruen/rot. `.hitl-resolved` als zentrierter italic-Text. Plus `.exit-badge.exit-skipped` fuer Code-Card im Skip-State.
+  - **JS-Funktionen** (~120 Zeilen): `startHitlPolling(abortSignal, snapshotSessionId)` (1-Sekunden-Intervall, sofortige erste Runde, stoppt bei AbortSignal oder Session-Wechsel), `stopHitlPolling()`, `renderHitlCard(pending)` mit `escapeHtml(String(pending.code))` als XSS-Schutz, `resolveHitlPending(pendingId, decision)` (Buttons sperren, POST `/v1/hitl/resolve` mit `{pending_id, decision, session_id: sessionId}`, Card-State-Update), `clearHitlState()` als State-Reset.
+  - **`sendMessage`-Verdrahtung:** vor dem Chat-Fetch wird `clearHitlState()` + `startHitlPolling(myAbort.signal, reqSessionId)` aufgerufen, im `finally`-Block `stopHitlPolling()`. Card bleibt nach Klick als Audit-Spur im DOM stehen.
+  - **`renderCodeExecution`-Erweiterung:** liest `codeExec.skipped` und `codeExec.hitl_status`, ersetzt Exit-Badge bei Skip durch `⏸ uebersprungen` (rejected) oder `⏱ timeout` — Reason-Text kommt aus dem `error`-Feld.
+- **Feature-Flag** `projects.hitl_enabled: bool = True` plus `hitl_timeout_seconds: int = 60` in `ProjectsConfig`. Bei `false` laeuft P203d-1-Verhalten ohne Gate (Audit-Status `bypassed`).
+- **Doku-Pflicht-Erweiterung** in [`ZERBERUS_MARATHON_WORKFLOW.md`](ZERBERUS_MARATHON_WORKFLOW.md): HANDOVER-Header bekommt die Zeile `**Manuelle Tests:** X / Y ✅`. Implementierung der Feature-Request-Konvention aus dem Chris-Brief vom 2026-05-03 — kein Reminder-Text, keine Eskalation, nur die Zahl.
+
+**Was P206 bewusst NICHT macht:**
+
+- **Persistenz ueber Server-Restart** — bewusste Entscheidung, siehe oben. Bei zukuenftigen "Background-Code-Run-Modes" (LLM-getriggertes Cron-Job) muesste man das nochmal anschauen.
+- **Edit-Vor-Run-Funktion** — User sieht den Code, kann aber nicht editieren. Falls UX-Feedback "Ich will den Code anpassen": Card mit Inplace-Textarea waere eine eigene UX-Schicht.
+- **Telegram-Pfad** — Huginn nutzt sein eigenes P167-System (`HitlManager` mit DB-Persist). Architektur-Trennung ist Absicht (transient vs. delayed-Callback).
+- **HitL fuer Output-Synthese** — zweites Gate waere Overkill. Die Synthese liest nur stdout/stderr und macht eine Zusammenfassung — kein Sicherheitsrisiko.
+
+**Logging-Tag:** `[HITL-206]` mit `pending_create id=... session=... project_id=... language=... code_len=N` / `decision id=... session=... status=approved|rejected|timeout` / `bypassed session=... (hitl_enabled=False)` / `skipped session=... status=... language=...` / `audit_written session=... project_id=... hitl_status=... skipped=... exit_code=...`. Worker-Protection-konform: keine Code-Inhalte oder Output-Inhalte im Log.
+
+**Tests:** 55 in [`test_p206_hitl_chat_gate.py`](zerberus/tests/test_p206_hitl_chat_gate.py). Acht Klassen: Pure-Gate-Mechanik (13), Audit-Trail-DB-Insert (3), Endpoint-Direktaufrufe (7), Source-Audit `legacy.py` (8), Source-Audit `nala.py` inkl. XSS + 44x44px (12), End-to-End mit gemocktem `wait_for_decision` (6), JS-Integrity per `node --check` (1), Smoke (3).
+
+**Kollateral-Fix:** `test_p203d_chat_sandbox.py::_setup_common` und `test_p203d2_chat_synthesis.py::_setup` plus `test_synthesis_failure_keeps_original_answer` setzen jetzt `monkeypatch.setattr(get_settings().projects, "hitl_enabled", False)` — sonst wuerde das neue HitL-Gate (Default ON) im Test 60s auf eine Decision warten, die nie kommt.
+
+**Teststand:** 1817 baseline (P205) → **1872 passed** (+55 P206-Tests), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info` durch `config.yaml`-Drift), 0 neue Failures aus P206. 1 skipped (existing).
+
+**Effekt fuer den User:** Nala-Chat mit aktivem Projekt + Code-erzeugendem Prompt (z.B. "Lies /workspace/data.txt"). Statt direkter Sandbox-Ausfuehrung erscheint eine Gold-umrandete Confirm-Karte mit Code-Vorschau und zwei 44x44px-Buttons. ✅ Ausfuehren → Karte wird gruen ("Code laeuft..."), Sandbox lauft, Output-Card erscheint. ❌ Abbrechen → Karte wird rot ("Abgebrochen"), Sandbox bleibt aus, Code-Card zeigt Skip-Badge `⏸ uebersprungen`. Audit-Trail in `code_executions`-Tabelle erlaubt spaeter Hel-Admin-Reports ueber Approve-Rate, Reject-Reasons, Timeout-Haeufigkeit pro Projekt.
+
+---
+
+## Vorheriger Patch
 
 **Patch 205** — RAG-Toast in Hel-UI nach Datei-Upload (Phase 5a Schuld aus P199) (2026-05-03)
 
@@ -68,7 +129,7 @@ Fail-quiet auf jeder Stufe: kaputter JSON-Body bricht den Upload-Loop nicht ab; 
 
 ---
 
-## Vorheriger Patch
+## Aeltere Patches
 
 **Patch 203d-3** — UI-Render im Nala-Frontend fuer Sandbox-Code-Execution (Phase 5a Ziel #5 ABGESCHLOSSEN) (2026-05-03)
 

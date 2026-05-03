@@ -6875,3 +6875,106 @@ Der P203b-Bug war ein einzelner SyntaxError in einem inline `<script>`-Block, de
 
 *Stand: 2026-05-03, Patch 205 — RAG-Toast in Hel-UI nach Datei-Upload. Phase 5a Schuld aus P199 geschlossen. 1817 passed (+20), 0 neue Failures.*
 
+---
+
+## Patch 206 — HitL-Gate vor Code-Execution + HANDOVER-Teststand-Konvention (Phase 5a Ziel #6 ABGESCHLOSSEN)
+
+**Datum:** 2026-05-03
+**Phase:** 5a — Nala-Projekte
+**Ziel #6 abgeschlossen:** Mensch bestätigt vor Ausführung
+**Tests:** 1817 baseline (P205) → 1872 passed (+55), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 neue Failures aus P206. 1 skipped (existing).
+
+### Motivation
+
+Nach P203d-1/2/3 lief jeder vom LLM erzeugte Code-Block direkt in die Docker-Sandbox. Der Read-Only-Workspace-Mount aus P203c machte das vergleichsweise sicher (kein Schreiben in den Workspace ohne explizites `writable=True`), und die Six-Stage-Gate aus P203d-1 (Project-Header / Slug / nicht-archived / Sandbox aktiv / Code-Block erkannt / Workspace existiert) blockte die offensichtlichen Skip-Cases. Aber das Sicherheitsnetz "User klickt vorher Yay/Nay" fehlte — der LLM konnte einen Code-Block produzieren, der Daten aus dem Workspace liest und in `stdout` schreibt, und der User sah erst NACH der Execution, was der Code wollte. Phase-5a-Ziel #6 fordert das explizite Confirm-Klick vor jeder Execution.
+
+P206 schließt das Ziel mit einem In-Memory-Long-Poll-Gate plus einer Confirm-Karte im Nala-Frontend. Plus integriert die Teststand-Reminder-Konvention aus dem Feature-Request vom 2026-05-03 (HANDOVER-Header zeigt `**Manuelle Tests:** X / Y ✅`).
+
+### Architektur
+
+Drei Schichten + Audit-Tabelle + Feature-Flag.
+
+#### 1. Pure-Mechanik in `zerberus/core/hitl_chat.py` (neu)
+
+`ChatHitlGate`-Singleton mit dict-Registry und `asyncio.Event` pro Pending. **In-Memory-only** — keine DB-Persistenz, weil Long-Poll-Requests beim Server-Restart sowieso sterben. Persistente Pendings wuerden zu "Geister-Karten" fuehren, die nach Hours-spaeterem Reconnect ploetzlich auftauchen — das ist nicht das gewuenschte UX. Die Telegram-HitL aus P167 (`HitlManager` mit DB-Persist) ist anders: Telegram-Callbacks kommen Stunden spaeter und brauchen Persistenz; der Chat-Long-Poll ist binnen 60s.
+
+API:
+
+```python
+async def create_pending(*, session_id: str, project_id: int,
+                         project_slug: str, code: str, language: str,
+                        ) -> ChatHitlPending:
+    """UUID4-hex als ID, asyncio.Event als Notification-Shortcut."""
+
+async def wait_for_decision(pending_id: str, timeout: float) -> str:
+    """Blockt bis Resolve oder Timeout.
+    Returns: 'approved' | 'rejected' | 'timeout' | 'unknown'.
+    Bei Timeout: status flippt auf 'timeout'."""
+
+async def resolve(pending_id: str, decision: str,
+                  *, session_id: Optional[str] = None) -> bool:
+    """approved | rejected. Idempotent — Doppel-Resolve liefert False.
+    Cross-Session-Defense: session_id-Match Pflicht."""
+
+def list_for_session(session_id: str) -> List[ChatHitlPending]:
+    """Pending-Tasks dieser Session, status=pending only."""
+
+def cleanup(pending_id: str) -> None:
+    """Memory-Leak-Schutz nach Resolve."""
+```
+
+Plus `store_code_execution_audit(...)`-Helper (8 KB Truncate fuer code/stdout/stderr, silent skip wenn DB nicht initialisiert).
+
+#### 2. Audit-Tabelle `code_executions` in `zerberus/core/database.py`
+
+Schließt die HANDOVER-Schuld aus P203d-1 ("code_execution ist nicht in der DB"). Spalten: `pending_id`/`session_id`/`project_id`/`project_slug`/`language`/`exit_code`/`execution_time_ms`/`truncated`/`skipped`/`hitl_status`/`code_text`/`stdout_text`/`stderr_text`/`error_text`/`created_at`/`resolved_at`. SQLite-friendly mit `Integer` 0/1 fuer Boolean. `init_db`-Bootstrap legt sie automatisch an — keine Alembic-Migration noetig.
+
+#### 3. Verdrahtung in `legacy.py::chat_completions`
+
+Zwischen `first_executable_block` und `execute_in_workspace`: bei `settings.projects.hitl_enabled=True` (Default) → Pending erzeugen, `wait_for_decision` blockt long-poll-style. Bei `approved`/`bypassed` → Sandbox laeuft normal mit `code_execution_payload[skipped]=False`. Bei `rejected`/`timeout` → Sandbox uebersprungen, Skip-Payload mit `skipped=True`/`exit_code=-1`/`error="Vom User abgebrochen"` oder `"Keine User-Bestaetigung (Timeout)"`. **Synthese-Gate (P203d-2) erweitert**: `if code_execution_payload is not None and not code_execution_payload.get("skipped"):` — kein zweiter LLM-Call bei Skip. **Audit-Schreibung** am Ende via `store_code_execution_audit(...)`.
+
+#### 4. Zwei neue auth-freie Endpoints
+
+`GET /v1/hitl/poll` (Frontend-Long-Poll, liefert das aelteste Pending der Session als JSON oder `{"pending": null}`, Header `X-Session-ID` als Owner-Diskriminator) und `POST /v1/hitl/resolve` (Body `{pending_id, decision, session_id}`, idempotent + Cross-Session-Block, Antwort `{ok, decision}`). Beide auth-frei per `/v1/`-Invariante.
+
+#### 5. Nala-Frontend in `nala.py`
+
+CSS `.hitl-card` (Kintsugi-Gold-Border + Inset-Shadow), `.hitl-actions` Flex-Row, `.hitl-approve`/`.hitl-reject` mit `min-height: 44px` + `min-width: 44px` (Mobile-first). Post-Klick-States `.hitl-approved`/`.hitl-rejected` schimmern gruen/rot. JS-Funktionen `startHitlPolling`/`stopHitlPolling`/`renderHitlCard`/`resolveHitlPending`/`clearHitlState`. `sendMessage`-Verdrahtung: vor Chat-Fetch starten, im `finally` stoppen. Card bleibt nach Klick als Audit-Spur im DOM. `renderCodeExecution`-Erweiterung: Skip-Badge `⏸ uebersprungen` (rejected) oder `⏱ timeout` ersetzt regulaeres Exit-Code-Badge.
+
+#### 6. Feature-Flag
+
+`projects.hitl_enabled: bool = True` plus `hitl_timeout_seconds: int = 60` in `ProjectsConfig`. Bei `false` laeuft P203d-1-Verhalten ohne Gate (Audit-Status `bypassed`).
+
+#### 7. HANDOVER-Teststand-Konvention
+
+In `ZERBERUS_MARATHON_WORKFLOW.md` Doku-Pflicht-Sektion: HANDOVER-Header bekommt die Zeile `**Manuelle Tests:** X / Y ✅` (X = ✅-Count, Y = Gesamt aus der Manuelle-Tests-Tabelle). Implementierung der Feature-Request-Konvention aus Chris' Brief vom 2026-05-03. Kein Reminder-Text, keine Eskalation, nur die Zahl.
+
+### Was P206 bewusst NICHT macht
+
+- **Persistenz ueber Server-Restart** — bewusste Entscheidung. Long-Poll-Requests sterben beim Restart sowieso. Bei zukuenftigen "Background-Code-Run-Modes" muesste man das nochmal anschauen — dann ist Telegram-HitL-Pattern (P167 mit DB-Persist) das richtige Vorbild.
+- **Edit-Vor-Run-Funktion** in der Confirm-Card. User sieht den Code, kann aber nicht editieren bevor er zustimmt. Falls UX-Feedback "Ich will den Code anpassen": Card mit Inplace-Textarea waere eine eigene UX-Schicht.
+- **Telegram-Pfad** — Huginn nutzt sein eigenes P167-System (`HitlManager` mit DB-Persist). Architektur-Trennung Absicht (transient vs. delayed-Callback).
+- **HitL fuer Output-Synthese** — zweites Gate waere Overkill.
+
+### Tests
+
+55 in `zerberus/tests/test_p206_hitl_chat_gate.py`: 13 `TestChatHitlGate` (Pure-async-Mechanik), 3 `TestStoreCodeExecutionAudit` (DB-Insert + Truncate + silent-skip), 7 `TestHitlEndpoints` (Poll/Resolve direkt aufgerufen), 8 `TestLegacySourceAudit` (Verdrahtungs-Audit, Synthese-Skip, Endpoints registriert), 12 `TestNalaSourceAudit` (JS, CSS, 44x44px, XSS, sendMessage-Wiring), 6 `TestE2EHitlGateInChat` (Mock-LLM + monkeypatched `wait_for_decision`: approved/rejected/timeout/bypassed/audit-row-approved/audit-row-rejected), 1 `TestJsSyntaxIntegrity` (skipped wenn node fehlt), 3 `TestSmoke`.
+
+### Kollateral-Fix
+
+`test_p203d_chat_sandbox.py::_setup_common` und `test_p203d2_chat_synthesis.py::_setup` plus `test_synthesis_failure_keeps_original_answer` setzen jetzt `monkeypatch.setattr(get_settings().projects, "hitl_enabled", False)` — sonst wuerde das neue Gate (Default ON) im Test 60s auf eine Decision warten, die nie kommt.
+
+### Logging
+
+`[HITL-206]` mit `pending_create`/`decision`/`bypassed`/`skipped`/`audit_written`/`audit_failed`. Worker-Protection-konform (keine Code-/Output-Inhalte im Log).
+
+### Effekt für den User
+
+Nala-Chat mit aktivem Projekt + Code-erzeugendem Prompt. Statt direkter Sandbox-Ausfuehrung erscheint eine Gold-umrandete Confirm-Karte mit Code-Vorschau und zwei 44x44px-Buttons.
+
+✅ Ausfuehren → Karte wird gruen ("Code laeuft..."), Sandbox lauft, Output-Card erscheint. ❌ Abbrechen → Karte wird rot ("Abgebrochen"), Sandbox bleibt aus, Code-Card zeigt Skip-Badge `⏸ uebersprungen`. Audit-Trail in `code_executions`-Tabelle erlaubt spaeter Hel-Admin-Reports ueber Approve-Rate / Reject-Reasons / Timeout-Haeufigkeit pro Projekt.
+
+---
+
+*Stand: 2026-05-03, Patch 206 — HitL-Gate vor Code-Execution + HANDOVER-Teststand-Konvention. Phase 5a Ziel #6 ABGESCHLOSSEN. 1872 passed (+55), 0 neue Failures.*
+

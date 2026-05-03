@@ -701,6 +701,80 @@ NALA_HTML = """<!DOCTYPE html>
             color: #8aa0c0;
             font-style: italic;
         }
+        /* Patch 206: HitL-Confirm-Card vor Sandbox-Run.
+           Nutzt das gleiche Card-Vokabular wie .code-card aus P203d-3,
+           aber mit auffaelligem Gold-Schimmer (Border + Akzent) und
+           prominenten 44x44 Touch-Buttons. .hitl-approved/.hitl-rejected
+           sind Post-Klick-States — die Karte bleibt sichtbar als
+           Audit-Spur im Chat-Verlauf. */
+        .hitl-card {
+            margin-top: 8px;
+            background: #08111f;
+            border: 1px solid rgba(240,180,41,0.55);
+            border-radius: 10px;
+            overflow: hidden;
+            font-size: 0.86em;
+            box-shadow: 0 0 0 1px rgba(240,180,41,0.10) inset;
+        }
+        .hitl-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            padding: 8px 12px;
+            background: rgba(240,180,41,0.16);
+            border-bottom: 1px solid rgba(240,180,41,0.32);
+            color: var(--color-gold);
+            font-weight: 600;
+        }
+        .hitl-header .lang-tag {
+            margin-left: auto;
+            font-weight: 400;
+        }
+        .hitl-actions {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(8,17,31,0.6);
+            border-top: 1px solid rgba(240,180,41,0.18);
+        }
+        .hitl-actions button {
+            flex: 1;
+            min-height: 44px;
+            min-width: 44px;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 0.92em;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .hitl-approve {
+            background: rgba(108,212,161,0.18);
+            border: 1px solid rgba(108,212,161,0.55);
+            color: #6cd4a1;
+        }
+        .hitl-approve:active { background: rgba(108,212,161,0.28); transform: translateY(1px); }
+        .hitl-approve:disabled { opacity: 0.5; cursor: default; }
+        .hitl-reject {
+            background: rgba(229,115,115,0.18);
+            border: 1px solid rgba(229,115,115,0.55);
+            color: #e57373;
+        }
+        .hitl-reject:active { background: rgba(229,115,115,0.28); transform: translateY(1px); }
+        .hitl-reject:disabled { opacity: 0.5; cursor: default; }
+        .hitl-resolved {
+            display: block;
+            text-align: center;
+            padding: 10px 12px;
+            font-size: 0.92em;
+            font-style: italic;
+            color: #b8c8e0;
+        }
+        .hitl-card.hitl-approved { border-color: rgba(108,212,161,0.45); }
+        .hitl-card.hitl-rejected { border-color: rgba(229,115,115,0.45); }
+        .hitl-card.hitl-rejected .hitl-resolved { color: #e57373; }
+        .hitl-card.hitl-approved .hitl-resolved { color: #6cd4a1; }
+        .exit-badge.exit-skipped { color: #c8941f; }
         /* Patch 124: Buttons wirken leicht erhoben - 3D-Feedback bei :active. */
         button:not(.expand-toggle), .btn {
             transition: transform 0.12s ease, box-shadow 0.12s ease;
@@ -2561,6 +2635,11 @@ NALA_HTML = """<!DOCTYPE html>
         window.__nalaSseWatchdogReset = resetWatchdog;
         resetWatchdog();
 
+        // Patch 206: HitL-State pro Turn zuruecksetzen, dann parallel zum
+        // Chat-Long-Poll auf Pendings dieser Session pollen.
+        clearHitlState();
+        startHitlPolling(myAbort.signal, reqSessionId);
+
         try {
             // Patch 191: Prosodie-Header durchreichen (Consent + Context aus letzter Audio-Analyse).
             const _chatHeaders = profileHeaders({ 'Content-Type': 'application/json' });
@@ -2629,6 +2708,9 @@ NALA_HTML = """<!DOCTYPE html>
                 window.__nalaSseWatchdogReset = null;
             }
             if (currentChatAbort === myAbort) currentChatAbort = null;
+            // Patch 206: HitL-Polling stoppen — Antwort ist da (oder Abort/Fehler).
+            // Die Karte selbst (falls gerendert) bleibt im DOM stehen.
+            stopHitlPolling();
             // Input nur freigeben wenn kein Timeout-Bubble aktiv ist (User soll Retry sehen können).
             // Bei Timeout bleibt Bubble + Retry-Button stehen — Input wird trotzdem freigegeben damit
             // User auch eine neue Nachricht tippen kann.
@@ -3066,18 +3148,28 @@ NALA_HTML = """<!DOCTYPE html>
         const truncated = !!codeExec.truncated;
         const errorMsg = codeExec.error ? String(codeExec.error) : '';
         const timeMs = (typeof codeExec.execution_time_ms === 'number') ? codeExec.execution_time_ms : null;
+        // Patch 206: HitL-Skip-State. Wenn der Backend-HitL-Gate die Ausfuehrung
+        // geblockt hat (rejected/timeout), zeigen wir die Code-Card mit
+        // Skip-Badge statt exit-Code, und der ``error``-Reason landet im Banner.
+        const skipped = !!codeExec.skipped;
+        const hitlStatus = codeExec.hitl_status ? String(codeExec.hitl_status) : '';
 
         const codeCard = document.createElement('div');
         codeCard.className = 'code-card';
-        const exitClass = exitCode === 0 ? 'exit-ok' : 'exit-fail';
-        const metaSpan = (timeMs !== null)
+        let exitClass = exitCode === 0 ? 'exit-ok' : 'exit-fail';
+        let exitLabel = 'exit ' + String(exitCode);
+        if (skipped) {
+            exitClass = 'exit-skipped';
+            exitLabel = hitlStatus === 'timeout' ? '⏱ timeout' : '⏸ uebersprungen';
+        }
+        const metaSpan = (!skipped && timeMs !== null)
             ? ('<span class="exec-meta" title="Laufzeit">' + escapeHtml(String(timeMs)) + ' ms</span>')
             : '';
         const header = document.createElement('div');
         header.className = 'code-card-header';
         header.innerHTML =
             '<span class="lang-tag">' + escapeHtml(lang) + '</span>'
-            + '<span class="exit-badge ' + exitClass + '">exit ' + escapeHtml(String(exitCode)) + '</span>'
+            + '<span class="exit-badge ' + exitClass + '">' + escapeHtml(exitLabel) + '</span>'
             + metaSpan;
         codeCard.appendChild(header);
 
@@ -3145,6 +3237,143 @@ NALA_HTML = """<!DOCTYPE html>
             wrapperEl.appendChild(codeCard);
             if (outputCard) wrapperEl.appendChild(outputCard);
         }
+    }
+
+    // ── Patch 206: HitL-Gate vor Sandbox-Code-Execution ──────────────────
+    //
+    // Backend (legacy.py) blockt nach erkanntem Code-Block im Chat-Response
+    // long-poll-style auf Approval. Frontend pollt parallel /v1/hitl/poll
+    // (alle 1s), rendert beim ersten Pending eine Confirm-Karte mit
+    // ✅/❌-Buttons (44x44 Touch-Target), schickt Klick via /v1/hitl/resolve.
+    // Karte bleibt nach Klick im Chat als Audit-Spur sichtbar.
+    let _hitlActiveCard = null;
+    let _hitlActivePendingId = null;
+    let _hitlPollHandle = null;
+
+    function startHitlPolling(abortSignal, snapshotSessionId) {
+        stopHitlPolling();  // idempotent
+        let stopped = false;
+        let intervalId = null;
+        async function tick() {
+            if (stopped) return;
+            if (abortSignal && abortSignal.aborted) return;
+            if (snapshotSessionId !== sessionId) {
+                stopHitlPolling();
+                return;
+            }
+            if (_hitlActiveCard) return;  // bereits gerendert
+            try {
+                const r = await fetch('/v1/hitl/poll', {
+                    headers: profileHeaders(),
+                    signal: abortSignal,
+                });
+                if (!r.ok) return;
+                const data = await r.json();
+                if (data && data.pending && !_hitlActiveCard) {
+                    renderHitlCard(data.pending);
+                    stopHitlPolling();  // einer reicht pro Turn
+                }
+            } catch (_) { /* fail-quiet — nochmal in 1s */ }
+        }
+        intervalId = setInterval(tick, 1000);
+        tick();  // sofort erste Runde
+        _hitlPollHandle = function() {
+            stopped = true;
+            if (intervalId) clearInterval(intervalId);
+        };
+    }
+
+    function stopHitlPolling() {
+        if (_hitlPollHandle) {
+            try { _hitlPollHandle(); } catch (_) {}
+            _hitlPollHandle = null;
+        }
+    }
+
+    function renderHitlCard(pending) {
+        if (!pending || _hitlActiveCard) return;
+        _hitlActivePendingId = pending.id;
+
+        const card = document.createElement('div');
+        card.className = 'hitl-card';
+
+        const header = document.createElement('div');
+        header.className = 'hitl-header';
+        const lang = pending.language ? String(pending.language) : 'code';
+        header.innerHTML =
+            '<span class="hitl-shield">🛡</span> '
+            + 'Code-Ausfuehrung freigeben?'
+            + '<span class="lang-tag">' + escapeHtml(lang) + '</span>';
+        card.appendChild(header);
+
+        const codeBlock = document.createElement('pre');
+        codeBlock.className = 'code-content';
+        codeBlock.innerHTML = '<code>' + escapeHtml(String(pending.code || '')) + '</code>';
+        card.appendChild(codeBlock);
+
+        const actions = document.createElement('div');
+        actions.className = 'hitl-actions';
+
+        const approveBtn = document.createElement('button');
+        approveBtn.type = 'button';
+        approveBtn.className = 'hitl-approve';
+        approveBtn.textContent = '✅ Ausfuehren';
+        approveBtn.addEventListener('click', function() {
+            resolveHitlPending(pending.id, 'approved');
+        });
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.type = 'button';
+        rejectBtn.className = 'hitl-reject';
+        rejectBtn.textContent = '❌ Abbrechen';
+        rejectBtn.addEventListener('click', function() {
+            resolveHitlPending(pending.id, 'rejected');
+        });
+
+        actions.appendChild(approveBtn);
+        actions.appendChild(rejectBtn);
+        card.appendChild(actions);
+
+        messagesDiv.appendChild(card);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        _hitlActiveCard = card;
+    }
+
+    async function resolveHitlPending(pendingId, decision) {
+        if (!_hitlActiveCard) return;
+        // Buttons sofort sperren — kein Doppel-Klick.
+        _hitlActiveCard.querySelectorAll('button').forEach(function(b) {
+            b.disabled = true;
+        });
+        try {
+            await fetch('/v1/hitl/resolve', {
+                method: 'POST',
+                headers: profileHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                    pending_id: pendingId,
+                    decision: decision,
+                    session_id: sessionId,
+                }),
+            });
+        } catch (_) { /* fail-quiet — Backend-Timeout-Pfad uebernimmt */ }
+
+        // Card-State updaten (bleibt sichtbar als Audit-Spur).
+        const actions = _hitlActiveCard.querySelector('.hitl-actions');
+        if (actions) {
+            if (decision === 'approved') {
+                _hitlActiveCard.classList.add('hitl-approved');
+                actions.innerHTML = '<span class="hitl-resolved">✅ Freigegeben — Code laeuft...</span>';
+            } else {
+                _hitlActiveCard.classList.add('hitl-rejected');
+                actions.innerHTML = '<span class="hitl-resolved">❌ Abgebrochen</span>';
+            }
+        }
+    }
+
+    function clearHitlState() {
+        _hitlActiveCard = null;
+        _hitlActivePendingId = null;
+        stopHitlPolling();
     }
 
     // Patch 76 + Patch 102 (B-03): Typing-Indicator mit Spinner + Status-Text

@@ -190,6 +190,42 @@ class HitlTask(Base):
     details = Column(Text, nullable=True)
 
 
+class CodeExecution(Base):
+    """Patch 206 (Phase 5a #6) — Audit-Trail fuer Sandbox-Code-Execution
+    aus dem Chat-Endpunkt.
+
+    Erfasst pro Roundtrip: Projekt, Sprache, exit_code, Laufzeit, plus den
+    HitL-Status des Patch-206-Gates (``approved`` / ``rejected`` /
+    ``timeout`` / ``bypassed`` wenn HitL deaktiviert war / ``error`` bei
+    Pipeline-Fehlern). ``code_text``/``stdout_text``/``stderr_text`` sind
+    optional — bei langen Outputs trunciert vor dem Insert. Die
+    User-sichtbare Synthese aus P203d-2 wird hier NICHT gespiegelt
+    (steht in ``interactions`` als assistant-Row).
+
+    P203d-1-Schuld geschlossen: ``code_execution`` ist jetzt in der DB
+    (HANDOVER-Backlog "P203d-1: code_execution ist nicht in der DB").
+    """
+    __tablename__ = "code_executions"
+
+    id = Column(Integer, primary_key=True)
+    pending_id = Column(String(36), nullable=True, index=True)  # UUID4 hex aus hitl_chat
+    session_id = Column(String(64), nullable=True, index=True)
+    project_id = Column(Integer, nullable=True, index=True)
+    project_slug = Column(String(120), nullable=True)
+    language = Column(String(32), nullable=True)
+    exit_code = Column(Integer, nullable=True)
+    execution_time_ms = Column(Integer, nullable=True)
+    truncated = Column(Integer, default=0)  # 0/1 boolean (SQLite-friendly)
+    skipped = Column(Integer, default=0)
+    hitl_status = Column(String(16), nullable=True, index=True)  # approved|rejected|timeout|bypassed|error
+    code_text = Column(Text, nullable=True)
+    stdout_text = Column(Text, nullable=True)
+    stderr_text = Column(Text, nullable=True)
+    error_text = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+
 _engine = None
 _async_session_maker = None
 

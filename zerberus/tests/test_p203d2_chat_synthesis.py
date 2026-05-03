@@ -538,6 +538,12 @@ class TestE2ESynthesis:
                execute_raises=None):
         from zerberus.app.routers import legacy as legacy_mod
         from zerberus.core.llm import LLMService
+        from zerberus.core.config import get_settings
+
+        # Patch 206: HitL-Gate ist neuer Default. Synthese-E2E-Tests sind
+        # NICHT ueber HitL — wir bypassen das Gate, damit der Sandbox-Pfad
+        # weiterhin direkt durchlaeuft (Status ``bypassed`` im Audit).
+        monkeypatch.setattr(get_settings().projects, "hitl_enabled", False)
 
         fake_call, counter = _make_two_step_llm(llm_answers)
         monkeypatch.setattr(LLMService, "call", fake_call)
@@ -722,6 +728,10 @@ class TestE2ESynthesis:
         (mit Code-Block) bleibt + code_execution ist da."""
         from zerberus.app.routers import legacy as legacy_mod
         from zerberus.core.llm import LLMService
+        from zerberus.core.config import get_settings
+
+        # Patch 206: HitL bypassen — Test ist nicht ueber HitL
+        monkeypatch.setattr(get_settings().projects, "hitl_enabled", False)
 
         # Eigener LLM, der beim zweiten Call crasht.
         counter = {"i": 0}
