@@ -365,6 +365,24 @@ class SandboxManager:
         stdout_text = stdout_bytes.decode("utf-8", errors="replace")
         stderr_text = stderr_bytes.decode("utf-8", errors="replace")
 
+        # Patch 212 (Phase 5a #12): Secret-Maskierung VOR Truncate. Wenn der
+        # ausgefuehrte Code aus Versehen einen env-Var-Wert in stdout/stderr
+        # leakt (z.B. ``print(os.environ['OPENAI_API_KEY'])``, oder ein
+        # Stack-Trace, der die Variable mitprintet), wuerde der Wert sonst
+        # an den Caller zurueckgehen und in der Chat-Response landen.
+        # Defense-in-Depth: Sandbox + Synthese-Side maskieren beide.
+        # Fail-open — jeder Maskierungs-Fehler darf den Sandbox-Pfad nicht
+        # blocken, wir behalten dann den Roh-Text (Fallback ist konservativ
+        # weil die zweite Schicht noch greift).
+        try:
+            from zerberus.core.secrets_filter import mask_and_audit
+            stdout_text = await mask_and_audit(stdout_text, source="sandbox")
+            stderr_text = await mask_and_audit(stderr_text, source="sandbox")
+        except Exception as _sec_err:
+            logger.warning(
+                "[SECRETS-212] sandbox-mask failed (fail-open): %s", _sec_err,
+            )
+
         max_chars = int(self.config.max_output_chars)
         stdout_out, stdout_trunc = _truncate(stdout_text, max_chars)
         stderr_out, stderr_trunc = _truncate(stderr_text, max_chars)

@@ -348,6 +348,30 @@ class GpuQueueAudit(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class SecretRedactionAudit(Base):
+    """Patch 212 (Phase 5a #12) — Audit-Trail fuer Secret-Maskierungen.
+
+    Eine Zeile pro Maskierungs-Vorgang mit positivem Treffer-Count: wo
+    (sandbox|synthesis|response) wurden wieviele env-Var-Werte aus dem
+    Output ersetzt, in welcher Session.
+
+    Wenn diese Tabelle waechst, ist das ein Bug-Indikator: irgendeine
+    Pipeline blutet einen Klartext-Secret in Richtung LLM/User. Die
+    P212-Maskierung faengt es ab — der Audit-Eintrag macht das Leak
+    nachweisbar, damit es spaeter im Code geschlossen werden kann.
+
+    Eintraege mit ``redaction_count == 0`` werden NICHT geschrieben — sie
+    waeren leeres Rauschen.
+    """
+    __tablename__ = "secret_redactions"
+
+    id = Column(Integer, primary_key=True)
+    redaction_count = Column(Integer, nullable=False)
+    source = Column(String(32), nullable=False, index=True)  # sandbox|synthesis|response
+    session_id = Column(String(64), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 _engine = None
 _async_session_maker = None
 

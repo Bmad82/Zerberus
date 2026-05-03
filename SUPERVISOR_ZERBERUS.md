@@ -1,10 +1,65 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 211 (2026-05-03) – GPU-Queue für VRAM-Konsumenten (Phase 5a Ziel #11 ABGESCHLOSSEN)*
+*Letzte Aktualisierung: Patch 212 (2026-05-04) – Secrets bleiben geheim (Phase 5a Ziel #12 ABGESCHLOSSEN)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 212** — Secrets bleiben geheim / Output-Maskierung für Sandbox+Synthese (Phase 5a Ziel #12 ABGESCHLOSSEN) (2026-05-04)
+
+Vor P212 konnte ein vom Haupt-LLM generierter Code-Block, der absichtlich oder versehentlich `os.environ['OPENAI_API_KEY']` ausführte, den Klartext-Schlüssel via `code_execution.stdout` an's Frontend zurückliefern UND den Synthese-LLM dazu bringen, den Schlüssel in seiner menschenlesbaren Antwort zu wiederholen — der User hätte den `sk-…`-Wert in der Chat-Bubble gelesen. P212 baut zwei Defense-in-Depth-Schichten: die Sandbox maskiert ihren stdout/stderr-Output BEVOR der Caller ihn sieht, und die Output-Synthese maskiert das `code_execution`-Dict NOCHMAL bevor es dem Synthese-LLM in den Prompt gegeben wird.
+
+**Architektur: Pure-Function-Schicht plus Cache plus Convenience-Async-Wrapper plus Audit-Tabelle plus Verdrahtung in Sandbox+Synthese.**
+
+- **Modul** [`zerberus/core/secrets_filter.py`](zerberus/core/secrets_filter.py):
+  - **Pure-Function-Heuristik** — `is_secret_key(name)` prüft case-insensitive gegen die Whitelist `SECRET_KEY_NAMES` (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `JWT_SECRET`, `DATABASE_URL`, plus die Generika `PASSWORD`/`TOKEN`/`SECRET`/`API_KEY`), die Suffix-Tabelle `SECRET_KEY_SUFFIXES` (`_KEY`, `_SECRET`, `_TOKEN`, `_PASSWORD`, `_PASS`, `_PASSPHRASE`, `_CREDENTIAL`, `_CREDENTIALS`) und die Prefix-Tabelle `SECRET_KEY_PREFIXES` (`API_`, `AUTH_`).
+  - **Wert-Extraktion** — `extract_secret_values(env_dict, *, min_length=MIN_SECRET_LENGTH=8)` sammelt alle Werte mit Secret-Indikator im Key und filtert Werte unter 8 Zeichen heraus (Falsch-Positive durch z.B. `DEBUG_TOKEN=1` vermeiden — echte API-Keys sind in der Regel ≥ 20 Zeichen).
+  - **Maskierung** — `mask_secrets_in_text(text, secrets, *, replacement="***REDACTED***") -> tuple[str, int]` mit zwei Invarianten: (a) **longest-first-Sortierung** damit ein Secret `OPENAI_API_KEY` nicht zu `***REDACTED***_KEY` ueberlebt, weil ein anderes Secret `OPENAI_API` zuerst gematched wuerde, (b) **Replacement-Skip** wenn ein Secret zufaellig dem Replacement-Text gleicht (verhindert Endlosschleifen + macht die Maskierung idempotent).
+  - **Cache-Schicht** — `load_secret_values(*, env=None, force_reload=False) -> frozenset[str]`. Lazy-cached: erster Aufruf liest `os.environ` (oder das gegebene `env`-Dict), extrahiert die Secret-Werte, friert sie als `frozenset` ein. Folgende Aufrufe geben den Cache zurück — env-Aenderungen zur Laufzeit werden NICHT beobachtet (gewollt: `.env` wird einmal beim Start geladen, danach ist die Liste stabil). `reset_cache_for_tests()` als Test-Hatch.
+  - **Convenience** — `mask_and_audit(text, *, source, session_id=None) -> str` async wrapper: lädt Secrets, maskiert, schreibt Audit-Eintrag (nur wenn count > 0), gibt maskierten Text zurück. Fail-open: jeder Maskierungs-Fehler wird geloggt + verschluckt, Caller bekommt im Worst-Case den Original-Text. `mask_and_audit_sync(text, *, source) -> tuple[str, int]` für Pfade ausserhalb des asyncio-Loops oder pure Maskierung ohne Audit.
+
+- **Audit-Tabelle** `secret_redactions` in [`database.py`](zerberus/core/database.py): `redaction_count`/`source` (sandbox|synthesis)/`session_id`/`created_at`. Best-Effort-Insert via `store_secret_redaction()` — Eintraege mit `redaction_count <= 0` werden NICHT geschrieben (waren leeres Rauschen), DB-Fehler werden geschluckt. **Sinn der Tabelle:** wenn jemals ein Klartext-Secret im Output landen wuerde, ist das ein Bug-Indikator. Die P212-Maskierung faengt es ab — der Audit-Eintrag macht das Leak nachweisbar, damit es spaeter im Code geschlossen werden kann.
+
+- **Verdrahtung in zwei Stellen** (Defense-in-Depth):
+  1. [`sandbox/manager.py._run_in_container`](zerberus/modules/sandbox/manager.py) — Direkt nach dem `decode("utf-8", errors="replace")`-Schritt (also VOR `_truncate`) werden `stdout_text` und `stderr_text` durch `await mask_and_audit(text, source="sandbox")` gejagt. Kein `session_id`, weil der `SandboxManager` die Chat-Session nicht kennt. Wenn Sandbox-Code stdout-Output mit Klartext-Secret produziert, sieht der Caller bereits maskierte Werte — Frontend, Synthese und alle weiteren Verbraucher kriegen automatisch die saubere Variante.
+  2. [`sandbox/synthesis.py.synthesize_code_output`](zerberus/modules/sandbox/synthesis.py) — Bevor `llm_service.call(messages, session_id)` aufgerufen wird, werden die drei Felder `payload["code"]`, `payload["stdout"]` und `payload["stderr"]` in-place auf dem payload-Dict durch `await mask_and_audit(val, source="synthesis", session_id=session_id)` ersetzt. Wenn die Sandbox-Maskierung perfekt war, ist count=0 und es wird kein zweiter Audit geschrieben — die zweite Schicht ist Zero-Cost-Defense-in-Depth. Wenn jemand zukünftig die Sandbox-Side bypassed (neue Output-Quelle, anderer Caller-Pfad), greift die Synthese-Schicht trotzdem und stoppt das Leak.
+
+**Was P212 bewusst NICHT macht:**
+
+- **`.env`-Verschlüsselung** — eigener Patch P212b oder später. Hier geht es nur um Output-Maskierung, nicht um Storage-Verschlüsselung.
+- **Pattern-basiertes Matching ohne env-Lookup** (z.B. `sk-…`-Prefix-Heuristik). Wenn ein Secret nicht in `.env` steht, kennen wir es nicht — Defense-in-Depth über zusätzliche Pattern wäre ein eigener Patch.
+- **Multi-Pass-LLM-Filter** — eine Maskierung am Output reicht. Der Synthese-LLM sieht den Klartext-Secret nie, weil das payload vor dem LLM-Call gewaschen wird.
+- **Container-Isolation** — P171/P203c reicht. Die Sandbox läuft mit `--network none` und ohne Host-env-Mount, der Code sollte den Schlüssel eigentlich gar nicht erst sehen.
+- **Dynamische `.env`-Reloads** — `load_secret_values` cached einmalig. Das ist gewollt: `.env` wird beim Server-Start geladen, danach ist die Liste stabil. Wer eine `.env`-Änderung will, restartet den Server.
+- **Sync-Variante des Maskierens innerhalb von `mask_and_audit`** — `mask_and_audit_sync` existiert für reine Pure-Function-Maskierung ohne Audit, der async-Pfad bleibt der primäre Eintritt.
+
+**Lessons (5):**
+
+1. **Defense-in-Depth ist Zero-Cost wenn die Pure-Function-Schicht klein ist.** `mask_secrets_in_text` ist 15 Zeilen, `load_secret_values` cached die Secrets im `frozenset`. Eine zweite Maskierungs-Schicht in der Synthese kostet einen O(n)-Scan über drei kleine Strings. Das ist billig genug, dass die Defense-in-Depth-Logik trivial in den Pfad zu integrieren ist — kein Performance-Argument gegen "doppelt maskieren".
+2. **Longest-first-Replace ist die nicht-offensichtliche Invariante.** Ein naiver `text.replace(secret, replacement)`-Loop in zufaelliger Reihenfolge zerschiesst lange Secrets, wenn deren Prefix auch in der Set ist. Die Tabelle muss VOR jedem Replace-Loop nach Laenge absteigend sortiert werden — das ist eine Zeile Code, aber wenn man sie vergisst, gibt es subtile Bugs (`OPENAI_API_KEY` → `***REDACTED***_KEY`).
+3. **Cache mit Test-Hatch ist die richtige Antwort auf "load .env once".** Ein dynamisches `os.environ`-Re-Read bei jedem Aufruf wäre Overhead und unnötig — `.env` ändert sich zur Laufzeit nicht. Aber Tests müssen den Cache invalidieren können, sonst sind sie order-dependent. `reset_cache_for_tests()` + `force_reload=True` + `env=...`-Override löst alle drei Test-Bedürfnisse.
+4. **Audit nur bei count > 0 schreiben — sonst wird die Tabelle leeres Rauschen.** 99% aller `mask_and_audit`-Aufrufe finden nichts (kein Secret im Output). Wenn jeder Aufruf eine Zeile schreiben würde, wäre die Tabelle nutzlos für die eigentliche Diagnose-Aufgabe ("welcher Pfad blutet?"). Ein `count <= 0`-Skip am Anfang von `store_secret_redaction()` reicht.
+5. **MIN_SECRET_LENGTH=8 fängt die Falsch-Positive durch leere/short-Werte ab.** `.env` enthält oft `DEBUG=1` oder `LOG_LEVEL=INFO` — wenn der Filter diese mitnehmen würde (weil `LEVEL` zufällig ein Suffix-Match wäre), würde jeder `INFO`-String im Output zu `***REDACTED***` werden. Der Min-Length-Filter ist die billige Heuristik, die das verhindert: echte Secrets sind ≥ 20 Zeichen, alles unter 8 ist mit hoher Wahrscheinlichkeit Konfiguration, kein Geheimnis.
+
+**Tests:** 40 in [`test_p212_secrets_filter.py`](zerberus/tests/test_p212_secrets_filter.py).
+
+`TestIsSecretKey` (5) — known-names / suffixes / prefixes / empty-or-none / non-secret.
+`TestExtractSecretValues` (5) — empty-dict / mixed / short-filtered / min-length-override / empty-value.
+`TestMaskSecretsInText` (8) — empty-text / no-secrets / single / multiple-occurrences-counted / longest-first-invariant / empty-secret-skipped / replacement-not-re-replaced / custom-replacement.
+`TestLoadSecretValues` (3) — uses-custom-env / cache-snapshot / force-reload-picks-up-new-env.
+`TestStoreAudit` (2) — zero-count-skips-insert / silent-when-DB-not-initialized.
+`TestMaskAndAudit` (4) — no-secrets-no-change / with-secret-replaces-and-audits / empty-text-returns-empty / fail-open-on-load-error.
+`TestMaskAndAuditSync` (2) — no-secrets-zero-count / with-secret-replaces.
+Verdrahtungs-Source-Audits (5) — Sandbox-Imports + sandbox-source-Aufruf, Synthese-Imports + synthesis-source-Aufruf + Pre-LLM-Order-Invariante.
+End-to-End (3) — payload-secrets-masked-before-llm-sees-them / synthesis-skips-when-no-payload / sandbox-mask-chain-replaces-secrets.
+`TestSmoke` (3) — Module-Exports / DB-Tabelle-Schema / Konstanten-Konsistenz.
+
+Lokal: 2216 baseline (P211) → **2256 passed** (+40 P212), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts` + `test_rag_dual_switch.test_fallback_logic` + `test_patch185_runtime_info` durch `config.yaml`-Drift `deepseek-v4-pro`), 0 NEUE Failures aus P212.
+
+---
+
+## Vorheriger Patch
 
 **Patch 211** — GPU-Queue für VRAM-Konsumenten / Kooperatives Scheduling (Phase 5a Ziel #11 ABGESCHLOSSEN) (2026-05-03)
 

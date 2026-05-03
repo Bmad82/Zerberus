@@ -2,10 +2,10 @@
 
 ## Aktueller Stand (Stand-Anker für RAG-Lookup)
 
-- **Letzter Patch:** P211 — GPU-Queue für VRAM-Konsumenten (Phase 5a Ziel #11 ABGESCHLOSSEN).
-- **Phase:** 5a (Nala-Projekte). 9 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18 (Huginn-Selbstwissen-Sync) als nachträglich aufgenommen.
-- **Tests:** 2216 grün (Stand 2026-05-03), +40 P211 aus 2176 baseline.
-- **Datum dieser Datei:** 2026-05-03.
+- **Letzter Patch:** P212 — Secrets bleiben geheim (Phase 5a Ziel #12 ABGESCHLOSSEN).
+- **Phase:** 5a (Nala-Projekte). 10 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18 (Huginn-Selbstwissen-Sync) als nachträglich aufgenommen.
+- **Tests:** 2256 grün (Stand 2026-05-04), +40 P212 aus 2216 baseline.
+- **Datum dieser Datei:** 2026-05-04.
 
 Wer fragt "bei welchem Patch sind wir?" oder "wie ist der aktuelle Stand?", findet die Antwort in diesem Block. Diese Sektion wird bei jedem Patch automatisch durch das Sync-Skript `scripts/sync_huginn_rag.ps1` (P210) aktualisiert und in den FAISS-Index nachgeladen, sodass Huginn keinen veralteten Patch-Stand mehr nennt.
 

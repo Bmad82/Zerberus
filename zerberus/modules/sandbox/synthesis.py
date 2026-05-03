@@ -167,6 +167,28 @@ async def synthesize_code_output(
     """
     if not should_synthesize(payload):
         return None
+    # Patch 212 (Phase 5a #12): Defense-in-Depth-Maskierung VOR LLM-Call.
+    # Die Sandbox-Side maskiert stdout/stderr bereits (P212/manager.py),
+    # aber der ``code``-Block kommt vom Haupt-LLM und koennte theoretisch
+    # einen Klartext-Secret enthalten (sehr unwahrscheinlich, aber). Wir
+    # waschen ALLE drei Felder hier nochmal, mit Session-Korrelation —
+    # wenn die Sandbox-Side perfekt funktioniert, ist count=0 und es wird
+    # kein Audit geschrieben. Fail-open: Maskierungs-Fehler veraendern
+    # den payload nicht, der Synthese-LLM bekommt im Worst-Case den
+    # Original-Text — schlechter als maskiert, aber besser als kein
+    # Synthese-Output.
+    try:
+        from zerberus.core.secrets_filter import mask_and_audit
+        for _field in ("stdout", "stderr", "code"):
+            _val = payload.get(_field)
+            if isinstance(_val, str) and _val:
+                payload[_field] = await mask_and_audit(
+                    _val, source="synthesis", session_id=session_id,
+                )
+    except Exception as _sec_err:
+        logger.warning(
+            f"{SYNTH_LOG_TAG} secret-mask failed (fail-open): {_sec_err}"
+        )
     try:
         messages = build_synthesis_messages(user_prompt, payload)
         result = await llm_service.call(messages, session_id)
