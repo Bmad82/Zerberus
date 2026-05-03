@@ -7697,5 +7697,95 @@ In `config.py::ProjectsConfig`:
 
 ---
 
-*Stand: 2026-05-03, Patch 209 — Zweite Meinung vor Ausführung / Sancho Panza. Phase 5a Ziel #7 ABGESCHLOSSEN. 2123 passed (+88), 0 neue Failures.*
+## Patch 210 (2026-05-03) — Huginn-RAG-Auto-Sync (Phase 5a Ziel #18 ABGESCHLOSSEN)
+
+User-Pain-Patch ausserhalb der ursprünglichen 17 Phase-5a-Ziele eingeschoben. Ziel #18 wurde nachträglich aufgenommen, weil Huginn konsistent veraltete Patch-Stände meldete und das Vertrauen in seine Antworten unterminierte.
+
+### Was war kaputt
+
+Huginn antwortete wiederholt "Patch 178" auf "bei welchem Patch sind wir?", obwohl die Doku längst auf P209 stand. Die Diagnose ergab zwei voneinander unabhängige Ursachen:
+
+1. **Doku ohne expliziten Stand-Anker.** `docs/huginn_kennt_zerberus.md` beschrieb bewusst nur den "aktuellen Zustand", nicht die Patch-Historie (Zeile 5: "Wenn etwas hier steht, gilt es jetzt"). Konsequenz: keine Zeile wie "Letzter Patch: P209" im Index. Bei "welcher Patch?"-Fragen griff Huginn auf die prominentesten Patch-Tags im Doku-Text — `[HUGINN-178]` als Logging-Tag aus einer Audit-Tag-Liste in Zeile 189 — und antwortete konsistent "178". Das ist Halluzination auf prominenten Strings, nicht RAG-Lookup.
+
+2. **Index-Mtime-Drift.** `data/vectors/metadata.json` war 21 Minuten älter als `docs/huginn_kennt_zerberus.md`. Coda updated die Doku am Session-Ende, aber der manuelle `curl`-Upload durch Chris passierte nicht zuverlässig — der Bot las den alten Index.
+
+### Was P210 baut
+
+**Pure-Function-Schicht + Async-Wrapper + CLI + PowerShell-Wrapper.**
+
+- **Sync-Modul** [`tools/sync_huginn_rag.py`](../tools/sync_huginn_rag.py) mit:
+  - `build_sync_plan(source_path, *, source_name, category, run_reindex)` — pure, plant 2 oder 3 `SyncStep`-Objekte. Reihenfolge: DELETE → POST [→ REINDEX]. Validiert die Doku-Datei vorab via `validate_doc_header`.
+  - `validate_doc_header(text) -> (bool, str)` — pure, prüft ob `## Aktueller Stand`-Block existiert UND eine `**Letzter Patch:** P###`-Zeile enthält. Diagnose-Helper.
+  - `extract_current_patch(text) -> Optional[str]` — pure, liest die Patchnummer für Logging.
+  - `parse_auth_string(raw)` / `load_auth_from_env(env, env_file_path)` / `resolve_base_url(env)` — alle pure mit injectable `env`-Dict für Tests. `.env`-Parser ist trivial (KEY=VALUE, # für Kommentare, optional Quotes) — kein python-dotenv als Dependency.
+  - `execute_sync_plan(plan, base_url, *, auth, http_client, timeout)` — async, mit `httpx.AsyncClient`. Fail-soft bei DELETE-404 (Erst-Upload-Idempotenz), fail-fast bei UPLOAD-Fehler. Exceptions werden als `SyncResult.errors`-Liste eingesammelt statt zu propagieren — der ganze Plan läuft auch bei Einzel-Step-Crashes durch.
+  - **CLI** `python -m tools.sync_huginn_rag` mit `--source/--source-name/--category/--base-url/--reindex/--env-file/--dry-run`. Exit-Codes: `0`=ok, `1`=Sync-Fehler, `2`=Plan-Fehler.
+
+- **Reihenfolge-Invariante DELETE → UPLOAD.** Würde man umkehren, würde DELETE die gerade hochgeladenen neuen Chunks soft-löschen (selber `source`-String). Test `test_delete_before_upload` schützt explizit gegen diese Refactoring-Falle.
+
+- **PowerShell-Wrapper** [`scripts/sync_huginn_rag.ps1`](../scripts/sync_huginn_rag.ps1) — analog `verify_sync.ps1`. Setzt CWD auf Repo-Root, ruft Python-Modul, reicht Exit-Code durch. Switches `-Reindex`, `-DryRun`, `-Source`, `-BaseUrl` als Pass-Through.
+
+- **Doku-Header-Pflicht** — neuer `## Aktueller Stand`-Block in [`docs/huginn_kennt_zerberus.md`](huginn_kennt_zerberus.md) und Spiegel-Kopie [`docs/RAG Testdokumente/huginn_kennt_zerberus.md`](RAG%20Testdokumente/huginn_kennt_zerberus.md). Vier Pflicht-Bullets: Letzter Patch, Phase, Tests, Datum. Source-Audit-Tests prüfen Existenz UND P##-Mindestnummer.
+
+- **WORKFLOW.md erweitert** — neue Doku-Pflicht-Tabellenzeile "RAG-Sync für `huginn_kennt_zerberus.md`", neuer ausführlicher Regel-Block (Pflicht-Header, Sync-Skript-Aufruf, Auth via Env-Var, Spiegel-Kopie nicht mitsynct), neues Phase-5a-Ziel #18 "Huginn kennt sich selbst zuverlässig" (✅ markiert).
+
+- **Auth via Env-Var** — `HUGINN_RAG_AUTH=User:Pass` aus `os.environ` schlägt `.env`-Datei. Server-URL via `ZERBERUS_URL` (Default `http://localhost:5000`). Beides optional bei dry-run, notwendig für live-run.
+
+- **Endpoints** wiederverwendet aus Hel-Admin-Router:
+  - `DELETE /hel/admin/rag/document?source=<name>` (P116 Soft-Delete) — markiert Chunks als `deleted: true` in `metadata.json`. 404 wenn keine Chunks zur Source existieren — fuer den Sync OK (Erst-Upload-Fall).
+  - `POST /hel/admin/rag/upload` (P108 + P111 mit Auto-Detect — explizit `category=system` gesetzt fuer Huginn-RAG-Filter aus P178).
+  - `POST /hel/admin/rag/reindex` (Default OFF — Soft-Delete reicht für Lookup, Reindex spart eigentlich nur Disk-Space).
+
+### Was P210 bewusst NICHT macht
+
+- **Spiegel-Kopie mitsync** — die Test-Set-Variante unter `docs/RAG Testdokumente/` ist nicht im Live-RAG, dient nur als RAG-Test-Material. Sync-Skript synct sie NICHT, der Stand-Anker wird aber parallel mitgepflegt (Doku-Pflicht).
+- **Auto-Trigger nach git commit** — kein Hook in `.git/hooks/`. Stattdessen explizit im Marathon-Push-Zyklus dokumentiert (vor `sync_repos.ps1`). Hook würde User-side-effect-Magie erzeugen.
+- **Multi-Datei-Sync** — fokussiert auf `huginn_kennt_zerberus.md`. Wenn weitere Doku-Files in den RAG sollen, muss der Plan-Builder erweitert werden (trivial: Liste statt einzelner Pfad).
+- **Server-Status-Check vorab** — wenn der Server down ist, schlägt der erste HTTP-Call eh fehl. Kein separater Health-Probe.
+- **Cron / Schedule-Integration** — Coda macht das am Session-Ende, nicht zeitgesteuert. Wenn der Server gerade nicht läuft, bleibt der Index alt — der nächste manuelle Sync-Aufruf fixt es.
+- **Auto-Bumping der Patchnummer im Header** — Coda muss den Header bewusst aktualisieren (Doku-Pflicht). Sonst würde der Stand-Anker mechanisch jede gewünschte Nummer kriegen — die Pflege-Disziplin ist sicherer.
+
+### Lessons (aus P210)
+
+1. **Doku ohne expliziten Stand-Anker laesst das LLM raten.** Wenn Huginn auf eine spezifische Frage IMMER falsch antwortet, ist die Antwort wahrscheinlich gar nicht im RAG — sondern wird halluziniert auf Basis prominenter Strings in den Chunks die zufaellig hochranken. Fix-Pattern: Pflicht-Header `## Aktueller Stand` ganz oben, vier Bullet-Points (Patch / Phase / Tests / Datum), Source-Audit-Test prueft Existenz UND Mindestnummer.
+2. **Index-Mtime-Drift bedeutet stille Falschauskunft.** Bei "der Bot kennt das neue Feature nicht" IMMER `stat -c '%y' faiss.index huginn_kennt_zerberus.md` checken bevor man am Code rumdebuggt. Coda hat die Verantwortung den Sync zu triggern, nicht der Mensch — `scripts/sync_huginn_rag.ps1` im Push-Zyklus eingebaut. Idempotenz-Pattern: DELETE soll 404 als OK behandeln (Erst-Upload-Fall), UPLOAD muss 200 sein.
+3. **Reihenfolge-Invariante DELETE → UPLOAD ist tueckisch wenn man sie umkehrt.** Würde der Sync erst UPLOAD und dann DELETE machen, würde DELETE die gerade hochgeladenen neuen Chunks soft-loeschen (selber `source`-String). Pure-Function `build_sync_plan` macht die Reihenfolge im Code lesbar, aber der Test `test_delete_before_upload` macht sie unbreakable.
+4. **Pure-Function-Schicht macht Sync-Tools genauso testbar wie Server-Code.** `build_sync_plan` ist ohne Netzwerk testbar, `validate_doc_header` ist ohne FS testbar, `parse_auth_string` ist ohne Env testbar. Async-Wrapper `execute_sync_plan` nimmt einen injizierbaren `http_client`-Parameter (Mock im Test, echter `httpx.AsyncClient` in der CLI).
+5. **`MockClient` mit `responses`-Liste und `calls`-Trace** ist ein 30-Zeilen-Pattern das fuer JEDEN HTTP-Test der nicht echte Calls braucht reicht.
+6. **Source-Audit-Tests fangen Drift zwischen Doku und Code-Realitaet.** `TestDocSourceAudit::test_main_doc_patch_is_recent` ueberprueft dass die Patchnummer im Stand-Anker `>= 210` ist — wenn ein zukuenftiger Coda P211 implementiert ohne den Header zu pflegen, schlaegt der Test fehl. Generelles Pattern: bei jedem Patch der von Doku-Pflege abhaengt, einen Source-Audit-Test schreiben der die Pflege ueberwacht.
+7. **Auth-Lookup mit Env-Var-Override und .env-Fallback ist die User-freundliche Variante.** `HUGINN_RAG_AUTH=User:Pass` aus `os.environ` gewinnt gegen `.env`-Datei (Standard-Unix-Konvention). `.env`-Parser ist trivial — KEINE python-dotenv-Dependency, sonst hat der Sync-Tool-User pip install zu machen, und das Tool soll lighter sein. Bei fehlender Auth: Tool laeuft trotzdem, Server gibt 401 zurueck, Sync-Result hat den Fehler — kein eigenes Pre-Check noetig.
+8. **Konvention "Coda macht das automatisch am Session-Ende" muss in der Doku-Pflicht stehen, sonst vergisst die nachste Coda-Instanz es.** Marathon-Workflow lebt von der Doku, nicht von Memory-Eintraegen — Memory ist user-spezifisch und wird nicht zwischen Marathon-Sessions geteilt. Doku-Pflicht-Tabellenzeile + ausfuehrlicher Regel-Block in WORKFLOW.md ist die Single-Source-of-Truth fuer den Sync-Schritt.
+
+### Tests — 53 in `test_p210_huginn_rag_sync.py`
+
+9 Klassen, strukturiert nach Schichten:
+
+| Klasse | Tests | Was |
+|--------|-------|-----|
+| `TestBuildSyncPlan` | 11 | default-2-steps / delete-source-param / delete-accepts-404 / upload-only-200 / upload-category / upload-file / reindex-optional / missing-file / missing-header / missing-patch / delete-before-upload |
+| `TestValidateDocHeader` | 5 | valid / empty / missing-header / missing-patch / header-mid-file |
+| `TestExtractCurrentPatch` | 4 | p210 / uppercase / no-match / 3-or-4-digit |
+| `TestParseAuthString` | 5 | basic / colon-in-password / empty / no-colon / empty-user |
+| `TestLoadAuthFromEnv` | 5 | env-var / no-source / file / env-beats-file / quoted-value |
+| `TestResolveBaseUrl` | 3 | default / from-env / strip-slash |
+| `TestExecuteSyncPlan` | 10 | happy / 404-ok / 500-fail / 403-fail / exception / method-carry / multipart / payload-recorded / with-reindex |
+| `TestCli` | 3 | dry-run / missing-file / invalid-doc |
+| `TestDocSourceAudit` | 3 | main-stand-anker / main-recent-patch / mirror-stand-anker |
+| `TestWorkflowSourceAudit` | 2 | sync-in-doku-pflicht / goal-18 |
+| `TestSmoke` | 3 | module-exports / constants / ps1-wrapper |
+
+**Lokal**: 2123 baseline → **2176 passed** (+53 P210), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 NEUE Failures aus P210.
+
+**Logging-Tag**: `[SYNC-210]` mit "Quelle:", "Server:", "Source-Name:", "Kategorie:", "Reindex:", "Auth: gesetzt|NICHT gesetzt", "Dry-Run — N geplante Schritte:", "Sync erfolgreich.", "Sync fehlgeschlagen (N Step(s)).", "Plan-Fehler: ...". Pure-User-CLI-Logs (kein Server-Side-Logging — Server schreibt seine eigenen `[RAG-108/111/116/169]`-Tags).
+
+### Helper für P211/P212
+
+- **`build_sync_plan` + `execute_sync_plan`-Pattern** — Pure-Function-Plan + Async-IO-Execute mit injectable `http_client`. Anwendbar auf jeden HTTP-Bulk-Workflow (RAG-Reindex, Multi-File-Upload, etc.).
+- **`MockClient`-Pattern** — 30-Zeilen-Test-Helper für jeden httpx-basierten Code.
+- **`validate_doc_header`-Pattern** — Pflicht-Check für strukturierte Markdown-Files. Klont sich für andere RAG-Dokus (lessons.md, PROJEKTDOKUMENTATION.md falls die je in den RAG kommen).
+- **Source-Audit-Test-Pattern** mit `TestDocSourceAudit` + `TestWorkflowSourceAudit` — verhindert dass die nächste Coda-Instanz die Pflege-Konvention vergisst.
+
+---
+
+*Stand: 2026-05-03, Patch 210 — Huginn-RAG-Auto-Sync. Phase 5a Ziel #18 ABGESCHLOSSEN. 2176 passed (+53), 0 neue Failures.*
 

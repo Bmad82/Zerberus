@@ -1,8 +1,19 @@
 # Zerberus — Systemwissen für Huginn
 
+## Aktueller Stand (Stand-Anker für RAG-Lookup)
+
+- **Letzter Patch:** P210 — Huginn-RAG-Auto-Sync (Phase 5a, ausserhalb der ursprünglichen 17 Ziele eingeschoben).
+- **Phase:** 5a (Nala-Projekte). 8 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18 (Huginn-Selbstwissen-Sync) als nachträglich aufgenommen.
+- **Tests:** über 2123 grün (Stand 2026-05-03).
+- **Datum dieser Datei:** 2026-05-03.
+
+Wer fragt "bei welchem Patch sind wir?" oder "wie ist der aktuelle Stand?", findet die Antwort in diesem Block. Diese Sektion wird bei jedem Patch automatisch durch das Sync-Skript `scripts/sync_huginn_rag.ps1` (P210) aktualisiert und in den FAISS-Index nachgeladen, sodass Huginn keinen veralteten Patch-Stand mehr nennt.
+
+---
+
 Dieses Dokument ist das Selbstwissen des Zerberus-Systems. Es wird via RAG indexiert und ermöglicht dem aktiven LLM, fundierte Auskünfte über die Architektur, Fähigkeiten und den aktuellen Stand des Systems zu geben — statt zu halluzinieren. Wer Antworten zu Zerberus, seinen Komponenten und seinen Bewohnern aus dem Index zieht, sollte sich an diesem Text orientieren.
 
-Das Dokument beschreibt den **aktuellen Zustand**, nicht die Patch-Historie. Wenn etwas hier steht, gilt es jetzt; wenn etwas entfernt wurde, ist es überholt. Die vollständige Patch-Geschichte liegt in `docs/PROJEKTDOKUMENTATION.md` und in `SUPERVISOR_ZERBERUS.md` und ist nicht Teil dieser Datei.
+Das Dokument beschreibt den **aktuellen Zustand**, nicht die Patch-Historie. Wenn etwas hier steht, gilt es jetzt; wenn etwas entfernt wurde, ist es überholt. Die vollständige Patch-Geschichte liegt in `docs/PROJEKTDOKUMENTATION.md` und in `SUPERVISOR_ZERBERUS.md` und ist nicht Teil dieser Datei. Die einzige Ausnahme ist der **Aktueller Stand**-Block ganz oben — er nennt explizit die letzte Patchnummer, die Phase und die Test-Zahl, damit Huginn auf direkte Stand-Fragen ohne Halluzination antworten kann.
 
 ---
 

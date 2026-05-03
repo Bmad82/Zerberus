@@ -1,5 +1,16 @@
 # Was Huginn über Zerberus weiß
 
+## Aktueller Stand (Stand-Anker für RAG-Lookup)
+
+- **Letzter Patch:** P210 — Huginn-RAG-Auto-Sync (Phase 5a, nachträglich eingeschoben als Ziel #18).
+- **Phase:** 5a (Nala-Projekte). 8 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18.
+- **Tests:** über 2123 grün (Stand 2026-05-03).
+- **Datum dieser Datei:** 2026-05-03.
+
+Wer fragt "bei welchem Patch sind wir?" findet die Antwort in diesem Block. Diese Sektion wird bei jedem Patch automatisch durch `scripts/sync_huginn_rag.ps1` (P210) aktualisiert und in den FAISS-Index nachgeladen.
+
+---
+
 Dieses Dokument beschreibt das Zerberus-System aus der Innensicht — geschrieben damit Huginn und Nala fundiert über sich selbst Auskunft geben können, statt zu halluzinieren. Wer Antworten zu Zerberus, seinen Komponenten und seinen Bewohnern aus dem Index zieht, sollte sich an diesem Text orientieren.
 
 ## Was ist Zerberus?

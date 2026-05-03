@@ -1,10 +1,45 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 209 (2026-05-03) – Zweite Meinung vor Ausführung / Sancho Panza (Phase 5a Ziel #7 ABGESCHLOSSEN)*
+*Letzte Aktualisierung: Patch 210 (2026-05-03) – Huginn-RAG-Auto-Sync (Phase 5a Ziel #18 ABGESCHLOSSEN)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 210** — Huginn-RAG-Auto-Sync / Selbstwissen-Aktualität (Phase 5a Ziel #18 ABGESCHLOSSEN) (2026-05-03)
+
+User-Pain-Patch ausserhalb der ursprünglichen 17 Phase-5a-Ziele eingeschoben. Huginn antwortete konsistent "Patch 178" auf "bei welchem Patch sind wir?", obwohl die Doku längst auf P209 stand. Diagnose ergab zwei Ursachen: (1) `docs/huginn_kennt_zerberus.md` hatte keinen expliziten Stand-Anker — Huginn rät auf prominente Logging-Tags, der häufigste war `[HUGINN-178]` (Patch 178 = Huginn-RAG-Lookup-Feature selbst), (2) Index-Mtime-Drift — Coda updated die Doku, aber Chris musste manuell hochladen und vergaß es regelmässig. P210 fixt beide Ursachen: Doku-Header bekommt `## Aktueller Stand`-Block (immer als erster Chunk indexiert, rankt bei Stand-Fragen oben), Auto-Sync-Skript löscht alte Chunks + lädt neue automatisch, eingebaut in den Marathon-Push-Zyklus.
+
+**Architektur: Pure-Function-Schicht plus Async-Wrapper plus CLI plus PowerShell-Wrapper.**
+
+- **Sync-Modul** [`tools/sync_huginn_rag.py`](tools/sync_huginn_rag.py) mit:
+  - **Pure-Function** — `build_sync_plan(source_path, *, source_name, category, run_reindex)` plant 2 oder 3 Steps (DELETE → POST [→ REINDEX]); `validate_doc_header(text) -> (bool, str)` prüft Pflicht-Block; `extract_current_patch(text) -> Optional[str]` Diagnose-Helper liest "P###"; `parse_auth_string(raw)` / `load_auth_from_env(env, env_file_path)` / `resolve_base_url(env)` injectable für Tests.
+  - **Async-Wrapper** — `execute_sync_plan(plan, base_url, *, auth, http_client)` mit `httpx.AsyncClient`, fail-soft bei DELETE-404 (Erst-Upload-Idempotenz), fail-fast bei UPLOAD-Fehler, Exceptions werden als `errors`-Liste eingesammelt statt zu propagieren.
+  - **SyncStep / SyncResult-Dataclasses** — `SyncStep(method, path, params, files, data, success_codes, description)`, `SyncResult(success, steps_executed, steps_failed, errors, response_payloads)`.
+  - **CLI** — `python -m tools.sync_huginn_rag` mit `--source`, `--source-name`, `--category`, `--base-url`, `--reindex`, `--env-file`, `--dry-run`. Exit-Codes: 0=ok, 1=Sync-Fehler, 2=Plan-Fehler.
+- **Reihenfolge-Invariante** — DELETE vor UPLOAD. Würde man umkehren, würde DELETE die gerade hochgeladenen neuen Chunks soft-löschen (Off-by-One-Fail). Test `test_delete_before_upload` schützt explizit.
+- **PowerShell-Wrapper** [`scripts/sync_huginn_rag.ps1`](scripts/sync_huginn_rag.ps1) — analog `verify_sync.ps1`. Setzt CWD auf Repo-Root, ruft Python-Modul, reicht Exit-Code durch. Switches `-Reindex`, `-DryRun`, `-Source`, `-BaseUrl` als Pass-Through.
+- **Doku-Header-Pflicht** — neuer `## Aktueller Stand`-Block in [`docs/huginn_kennt_zerberus.md`](docs/huginn_kennt_zerberus.md) und Spiegel-Kopie [`docs/RAG Testdokumente/huginn_kennt_zerberus.md`](docs/RAG%20Testdokumente/huginn_kennt_zerberus.md). Vier Pflicht-Bullets: Letzter Patch, Phase, Tests, Datum. Source-Audit-Tests prüfen Existenz und P##-Mindestnummer.
+- **WORKFLOW.md erweitert** — neue Doku-Pflicht-Tabellenzeile "RAG-Sync für `huginn_kennt_zerberus.md`", neuer ausführlicher Regel-Block (Pflicht-Header, Sync-Skript-Aufruf, Auth via Env-Var, Spiegel-Kopie nicht mitsynct), neues Phase-5a-Ziel #18 "Huginn kennt sich selbst zuverlässig" (✅ markiert).
+- **Auth via Env-Var** — `HUGINN_RAG_AUTH=User:Pass` aus `os.environ` schlägt `.env`-Datei. Server-URL via `ZERBERUS_URL` (Default `http://localhost:5000`). Beides optional — bei dry-run irrelevant, bei live-run notwendig.
+- **Endpoints** — wiederverwendet aus Hel-Admin-Router: `DELETE /hel/admin/rag/document?source=<name>` (P116 Soft-Delete), `POST /hel/admin/rag/upload` (P108 + P111 mit Auto-Detect — explizit `category=system` gesetzt), `POST /hel/admin/rag/reindex` (Default OFF — Soft-Delete reicht für Lookup, Reindex spart eigentlich nur Disk).
+
+**Was P210 bewusst NICHT macht:**
+
+- **Spiegel-Kopie mitsync** — die Test-Set-Variante unter `docs/RAG Testdokumente/` ist nicht im Live-RAG, dient nur als RAG-Test-Material. Sync-Skript synct sie NICHT, der Stand-Anker wird aber parallel mitgepflegt (Doku-Pflicht).
+- **Auto-Trigger nach git commit** — kein Hook in `.git/hooks/`. Stattdessen explizit im Marathon-Push-Zyklus dokumentiert (vor `sync_repos.ps1`). Hook würde User-side-effect-Magie erzeugen.
+- **Multi-Datei-Sync** — fokussiert auf `huginn_kennt_zerberus.md`. Wenn weitere Doku-Files in den RAG sollen, muss der Plan-Builder erweitert werden (trivial: Liste statt einzelner Pfad).
+- **Server-Status-Check vorab** — wenn der Server down ist, schlägt der erste HTTP-Call eh fehl. Kein separater Health-Probe.
+- **Cron / Schedule-Integration** — Coda macht das am Session-Ende, nicht zeitgesteuert. Wenn der Server gerade nicht läuft, bleibt der Index alt — der nächste manuelle Sync-Aufruf fixt es.
+- **Auto-Bumping der Patchnummer im Header** — Coda muss den Header bewusst aktualisieren (Doku-Pflicht). Sonst würde der Stand-Anker mechanisch jede gewünschte Nummer kriegen — die Pflege-Disziplin ist sicherer.
+
+**Tests:** 53 in [`test_p210_huginn_rag_sync.py`](zerberus/tests/test_p210_huginn_rag_sync.py). Strukturiert in 9 Klassen: `TestBuildSyncPlan` (11 — default-2-steps/delete-source-param/delete-accepts-404/upload-only-200/upload-category/upload-file/reindex-optional/missing-file/missing-header/missing-patch/delete-before-upload), `TestValidateDocHeader` (5 — valid/empty/missing-header/missing-patch/header-mid-file), `TestExtractCurrentPatch` (4 — p210/uppercase/no-match/3-or-4-digit), `TestParseAuthString` (5 — basic/colon-in-password/empty/no-colon/empty-user), `TestLoadAuthFromEnv` (5 — env-var/no-source/file/env-beats-file/quoted-value), `TestResolveBaseUrl` (3 — default/from-env/strip-slash), `TestExecuteSyncPlan` (10 — happy/404-ok/500-fail/403-fail/exception/method-carry/multipart/payload-recorded/with-reindex), `TestCli` (3 — dry-run/missing-file/invalid-doc), `TestDocSourceAudit` (3 — main-stand-anker/main-recent-patch/mirror-stand-anker), `TestWorkflowSourceAudit` (2 — sync-in-doku-pflicht/goal-18), `TestSmoke` (3 — module-exports/constants/ps1-wrapper).
+
+**Lokal:** 2123 Baseline → **2176 passed** (+53 P210), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 NEUE Failures aus P210.
+
+**Logging-Tag:** `[SYNC-210]` mit "Quelle:", "Server:", "Source-Name:", "Kategorie:", "Reindex:", "Auth: gesetzt|NICHT gesetzt", "Dry-Run — N geplante Schritte:", "Sync erfolgreich.", "Sync fehlgeschlagen (N Step(s)).", "Plan-Fehler: ...". Pure-User-CLI-Logs (kein Server-Side-Logging — Server schreibt seine eigenen `[RAG-108/111/116/169]`-Tags).
+
+---
 
 **Patch 209** — Zweite Meinung vor Ausführung / Sancho Panza (Phase 5a Ziel #7 ABGESCHLOSSEN) (2026-05-03)
 
