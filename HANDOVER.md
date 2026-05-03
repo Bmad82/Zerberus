@@ -4,8 +4,8 @@
 **Datum:** 2026-05-03
 **Letzter Patch:** P205 — RAG-Toast in Hel-UI nach Datei-Upload (Phase 5a Schuld aus P199)
 **Tests:** 1817 passed (+20 neue P205 aus 1797 baseline), 4 xfailed (pre-existing), 3 failed (alle pre-existing — `edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info.test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`), 1 skipped (existing)
-**Commit:** _PENDING_ — wird nach Push nachgetragen
-**Repos synchron:** _PENDING_ — wird nach `sync_repos.ps1` + `verify_sync.ps1` bestätigt. Bekannter Drift: `system_prompt_chris.json` wurde von Hel/Persona-Editor live geaendert (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste). Die Datei ist NICHT Teil von P205 und bleibt unangetastet. Naechster Coda kann sie ggf. via `git checkout system_prompt_chris.json` zuruecksetzen oder via `git rm --cached` + `.gitignore` aus dem Tracking nehmen.
+**Commit:** 28e4f3c — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude — alle drei gepusht (Ratatoskr `033a18d`, Claude `4dd29b2`, 0 unpushed Commits in allen drei). `verify_sync.ps1` meldet Zerberus working-tree dirty: `system_prompt_chris.json` wurde von Hel/Persona-Editor live geaendert (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste). Die Datei ist NICHT Teil von P205 und bleibt unangetastet. Stand identisch zum Vorgaenger-HANDOVER nach P203d-3. Naechster Coda kann sie ggf. via `git checkout system_prompt_chris.json` zuruecksetzen oder via `git rm --cached` + `.gitignore` aus dem Tracking nehmen.
 
 ---
 
