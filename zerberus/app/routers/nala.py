@@ -1026,6 +1026,82 @@ NALA_HTML = """<!DOCTYPE html>
         .spec-card.spec-bypassed .spec-resolved { color: #f0d18a; }
         .spec-card.spec-cancelled { border-color: rgba(229,115,115,0.45); }
         .spec-card.spec-cancelled .spec-resolved { color: #e57373; }
+        /* Patch 209: Wandschlag-Banner / Veto-Card. Wenn das zweite Modell
+           den Code blockt, rendern wir KEINE Code-Card + Output-Card,
+           sondern nur diese Veto-Card. Rote Border, Begruendung prominent,
+           kein Approve-Button — Read-only Audit-Spur. Code-Snippet ist
+           collapsible (Default collapsed) damit lange Codes die UI nicht
+           sprengen. */
+        .veto-card {
+            margin-top: 8px;
+            background: #08111f;
+            border: 1px solid rgba(229,115,115,0.55);
+            border-radius: 10px;
+            overflow: hidden;
+            font-size: 0.86em;
+            box-shadow: 0 0 0 1px rgba(229,115,115,0.10) inset;
+        }
+        .veto-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            padding: 8px 12px;
+            background: rgba(229,115,115,0.16);
+            border-bottom: 1px solid rgba(229,115,115,0.32);
+            color: #e57373;
+            font-weight: 600;
+        }
+        .veto-card-header .veto-lang-tag {
+            margin-left: auto;
+            font-weight: 400;
+            font-size: 0.86em;
+            color: #b8c8e0;
+        }
+        .veto-reason {
+            padding: 12px;
+            color: var(--color-text-light);
+            font-weight: 500;
+            white-space: pre-wrap;
+            word-break: break-word;
+            border-bottom: 1px solid rgba(229,115,115,0.18);
+        }
+        .veto-meta {
+            padding: 6px 12px;
+            color: #8aa0c0;
+            font-size: 0.8em;
+            font-style: italic;
+            border-bottom: 1px solid rgba(229,115,115,0.10);
+        }
+        .veto-code-toggle {
+            display: block;
+            width: 100%;
+            min-height: 44px;
+            padding: 8px 12px;
+            background: rgba(229,115,115,0.08);
+            border: none;
+            border-bottom: 1px solid rgba(229,115,115,0.18);
+            color: #e57373;
+            font-size: 0.88em;
+            font-weight: 600;
+            text-align: left;
+            cursor: pointer;
+        }
+        .veto-code-toggle:active { background: rgba(229,115,115,0.18); }
+        .veto-code-block {
+            margin: 0;
+            padding: 8px 12px;
+            background: transparent;
+            color: #d8e2f5;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.82em;
+            line-height: 1.45;
+            white-space: pre;
+            overflow-x: auto;
+            max-height: 280px;
+            overflow-y: auto;
+        }
+        .veto-card.veto-collapsed .veto-code-block { display: none; }
         /* Patch 124: Buttons wirken leicht erhoben - 3D-Feedback bei :active. */
         button:not(.expand-toggle), .btn {
             transition: transform 0.12s ease, box-shadow 0.12s ease;
@@ -3398,6 +3474,17 @@ NALA_HTML = """<!DOCTYPE html>
         if (!wrapperEl || !codeExec || typeof codeExec !== 'object') return;
         const codeStr = codeExec.code === null || codeExec.code === undefined ? '' : String(codeExec.code);
         if (!codeStr.trim()) return;
+        // Patch 209: Veto vom zweiten Modell. Wandschlag-Banner statt
+        // Code-Card + Output-Card. Card steht alleine — Begruendung
+        // prominent, Code-Snippet collapsible, kein Approve-Button.
+        const vetoInfo = (codeExec.veto && typeof codeExec.veto === 'object') ? codeExec.veto : null;
+        if (vetoInfo && vetoInfo.vetoed === true) {
+            try {
+                const triptychEl = wrapperEl.querySelector('.sentiment-triptych');
+                renderVetoCard(wrapperEl, codeExec, triptychEl);
+            } catch (_e) {}
+            return;
+        }
         const lang = codeExec.language ? String(codeExec.language) : 'code';
         const exitCode = (typeof codeExec.exit_code === 'number') ? codeExec.exit_code : -1;
         const stdout = codeExec.stdout ? String(codeExec.stdout) : '';
@@ -3504,6 +3591,68 @@ NALA_HTML = """<!DOCTYPE html>
             try {
                 renderDiffCard(wrapperEl, codeExec, triptych);
             } catch (_e) {}
+        }
+    }
+
+    // Patch 209: Veto-Card / Wandschlag-Banner. Rendert wenn
+    // codeExec.veto.vetoed === true. KEINE Buttons (Read-only Audit-Spur),
+    // Begruendung prominent, Code-Snippet collapsible. Insertion vor dem
+    // Triptychon analog zur code-card.
+    function renderVetoCard(wrapperEl, codeExec, triptych) {
+        if (!wrapperEl || !codeExec) return;
+        const vetoInfo = codeExec.veto || {};
+        const reason = vetoInfo.reason ? String(vetoInfo.reason) : '';
+        const codeStr = codeExec.code ? String(codeExec.code) : '';
+        const lang = codeExec.language ? String(codeExec.language) : 'code';
+        const latencyMs = (typeof vetoInfo.latency_ms === 'number') ? vetoInfo.latency_ms : null;
+
+        const card = document.createElement('div');
+        card.className = 'veto-card veto-collapsed';
+
+        const header = document.createElement('div');
+        header.className = 'veto-card-header';
+        const headerIcon = document.createElement('span');
+        headerIcon.textContent = '🛑 Veto vom zweiten Modell';
+        header.appendChild(headerIcon);
+        const langTag = document.createElement('span');
+        langTag.className = 'veto-lang-tag';
+        langTag.textContent = lang;
+        header.appendChild(langTag);
+        card.appendChild(header);
+
+        const reasonEl = document.createElement('div');
+        reasonEl.className = 'veto-reason';
+        reasonEl.textContent = reason || 'Code wurde geblockt — keine Begruendung geliefert.';
+        card.appendChild(reasonEl);
+
+        if (latencyMs !== null) {
+            const meta = document.createElement('div');
+            meta.className = 'veto-meta';
+            meta.textContent = 'Veto-Probe in ' + escapeHtml(String(latencyMs)) + ' ms';
+            card.appendChild(meta);
+        }
+
+        if (codeStr.trim()) {
+            const toggleBtn = document.createElement('button');
+            toggleBtn.type = 'button';
+            toggleBtn.className = 'veto-code-toggle';
+            toggleBtn.textContent = '▼ Code anzeigen';
+            toggleBtn.addEventListener('click', function() {
+                const isCollapsed = card.classList.toggle('veto-collapsed');
+                toggleBtn.textContent = isCollapsed ? '▼ Code anzeigen' : '▲ Code verbergen';
+            });
+            card.appendChild(toggleBtn);
+
+            const codeBlock = document.createElement('pre');
+            codeBlock.className = 'veto-code-block';
+            codeBlock.innerHTML = '<code>' + escapeHtml(codeStr) + '</code>';
+            card.appendChild(codeBlock);
+        }
+
+        if (triptych) {
+            wrapperEl.insertBefore(card, triptych);
+        } else {
+            wrapperEl.appendChild(card);
         }
     }
 

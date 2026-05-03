@@ -7472,5 +7472,230 @@ spec_check_timeout_seconds: int = 60
 
 ---
 
-*Stand: 2026-05-03, Patch 208 — Spec-Contract / Ambiguitäts-Check. Phase 5a Ziel #8 ABGESCHLOSSEN. 2035 passed (+89), 0 neue Failures.*
+## Patch 209 — Zweite Meinung vor Ausführung / Sancho Panza (Phase 5a Ziel #7 ABGESCHLOSSEN)
+
+**Stand:** 2026-05-03
+
+### Motivation
+
+Phase-5a-Ziel #7: "Zweite Meinung vor Ausführung — Veto-Logik, Wandschlag-Erkennung". Bis P208 hatte die Code-Execution-Pipeline drei Schichten: Spec-Probe (P208 — User-Frage klären), Sandbox-Roundtrip (P203d-1 — Code im Container ausführen), HitL-Gate (P206 — User bestätigt vor Run). Was fehlte: eine **automatische** zweite Meinung des **Systems** auf den vom Haupt-LLM produzierten Code. Wenn DeepSeek einen `rm -rf /tmp`-Block produziert oder einen Code-Vorschlag liefert, der gar nicht zur User-Frage passt, sollte das schon erkannt werden, BEVOR der User die HitL-Karte sieht. P209 schiebt eine Veto-Schicht zwischen `first_executable_block` und HitL-Pending: ein zweites LLM (gleicher Provider, gleicher Stack — kein neues Provisioning) bewertet den Code-Vorschlag mit `PASS` oder `VETO` plus optional kurzer Begründung. Bei VETO wird der HitL-Pfad übersprungen und ein Wandschlag-Banner mit Begründung in der Response zurückgegeben — kein User-Approve, kein Sandbox-Run, kein Snapshot. Der Name "Sancho Panza" kommt aus der Marathon-Workflow-Liste: der zweite, skeptische Begleiter, der dem hauptsächlich erzählenden Don Quijote Veto einlegt.
+
+### Architektur
+
+**Drei Schichten, eine DB-Tabelle, ein Frontend-Card.**
+
+#### 1) Pure-Function-Schicht — `zerberus/core/code_veto.py`
+
+- `should_run_veto(code: str, language: str) -> bool` — Trigger-Gate. Spart Tokens bei trivialen 1-Zeilern.
+  - Leerer Code → `False`
+  - Trivialer 1-Zeiler (Pattern: `^\s*print\(`, `^\s*return\s+`, `^\s*pass\s*$`, `^\s*console\.log\(`, `^\s*var\s*=\s*[\d"'\[\{]`) **ohne** Risk-Token → `False`
+  - Code mit Risk-Token (`subprocess`, `eval(`, `rm -rf`, `unlink`, `shutil.rmtree`, `open(`, `requests.post`, `git push --force`, `--no-verify`, `pickle.load`, `fs.unlink`, ...) → `True` (auch bei 1-Zeilern)
+  - Multiline (`>= 2 nicht-leere Zeilen`) → `True`
+  - Borderline-1-Zeiler ohne Trivial-Pattern → `True` (lieber prüfen)
+- `_RISKY_TOKENS` — breite Liste (Substring-Match, case-insensitive): Process/Shell, Filesystem-Destruction, Network, Privilege-Eskalation, Git-Force-Operationen, Serialization-Risiken, JS-FS.
+- `_TRIVIAL_PATTERNS` — Liste von kompilierten `re`-Patterns für die Trivial-1-Zeiler-Erkennung.
+- `build_veto_messages(code, language, user_prompt) -> List[dict]` — Pure-Function Prompt-Builder. Zwei Messages: `system` mit `VETO_SYSTEM_PROMPT` (verlangt GENAU `PASS` oder `VETO` am Anfang plus optional kurze Begründung), `user` mit User-Wunsch + Code-Vorschlag (Sprache normalisiert lowercase, leer → `unknown`). Code wird auf `VETO_CODE_MAX_BYTES=4000` truncated mit `[gekuerzt]`-Marker.
+- `parse_veto_verdict(text: str) -> VetoVerdict` — robust gegen LLM-Idiosynkrasien:
+  - Regex `^[\s"'`*_]*(PASS|VETO)\b\s*[:\-—]?\s*(.*)$` (case-insensitive, dotall) matcht erste Zeile
+  - Fallback: 64-char-Window-Search nach `\b(PASS|VETO)\b` wenn First-Line-Regex nicht matcht
+  - Multi-Line-Reason: erste Zeile + folgende Zeilen bis zur Leerzeile
+  - Fail-open zu `PASS` bei unparseable Output (mit `error="parse_failed"`)
+  - Reason wird auf `VETO_REASON_MAX_BYTES=400` truncated (Bytes-genau, UTF-8-safe)
+- `VetoVerdict`-Dataclass: `veto: bool`, `reason: str`, `raw: Optional[str]`, `latency_ms: Optional[int]`, `error: Optional[str]`. Methode `to_payload_dict() -> {"vetoed": bool, "reason": str, "latency_ms": int|None}` als Frontend-Schema.
+
+#### 2) Async-Wrapper — `run_veto`
+
+```python
+async def run_veto(
+    code: str, language: str, user_prompt: str,
+    llm_service, session_id: str,
+    *, temperature: float = DEFAULT_VETO_TEMPERATURE,  # 0.1
+) -> VetoVerdict
+```
+
+- Ruft `llm_service.call(messages, session_id, temperature_override=temperature)` mit `temperature=0.1` (deterministisch — Veto soll wiederholbare Entscheidungen liefern)
+- `latency_ms` wird per `datetime.utcnow()`-Diff gemessen
+- Fail-open auf jeder Stufe:
+  - LLM-Crash → `VetoVerdict(veto=False, error="llm_call_failed: ...")`
+  - Non-Tuple → `VetoVerdict(veto=False, error="unexpected_type")`
+  - Leere/Non-String-Antwort → `VetoVerdict(veto=False, error="empty_response")`
+- Logging-Tag `[VETO-209]` mit `decision veto=... reason_len=... code_len=... lang=... session=... latency_ms=...`. Worker-Protection-konform: keine Code-/Reason-/Prompt-Inhalte im Log, nur Längen-Metriken.
+
+#### 3) Audit-Trail — `code_vetoes`-Tabelle + `store_veto_audit`
+
+Neue Tabelle in `database.py`:
+
+```python
+class CodeVeto(Base):
+    __tablename__ = "code_vetoes"
+    id = Column(Integer, primary_key=True)
+    audit_id = Column(String(36), nullable=True, index=True)  # UUID4 hex (eigene ID)
+    session_id = Column(String(64), nullable=True, index=True)
+    project_id = Column(Integer, nullable=True, index=True)
+    project_slug = Column(String(120), nullable=True)
+    language = Column(String(32), nullable=True)
+    code_text = Column(Text, nullable=True)
+    user_prompt = Column(Text, nullable=True)
+    verdict = Column(String(16), nullable=True, index=True)  # pass|veto|skipped|error
+    reason = Column(Text, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+```
+
+- `audit_id` ist eine eigene UUID4-hex pro Veto-Call (nicht HitL-Pending-Korrelation — bei VETO entsteht kein HitL-Pending)
+- 8 KB Truncate via `_truncate_for_audit` für `code_text`/`user_prompt`/`reason`
+- Best-Effort-Insert (try/except) — Hauptpfad bleibt grün
+
+### Verdrahtung — `legacy.py::chat_completions`
+
+Position: zwischen `first_executable_block` (Code-Block-Detection aus P203d-1) und HitL-Pending-Erzeugung (P206). Vor dem Veto kommen weiterhin: Source-Detection (P204), Spec-Check (P208), RAG (P199), Persona (P197), Haupt-LLM-Call. Nach dem Veto kommen: HitL-Gate (P206), Sandbox-Roundtrip (P203c), Snapshot/Diff (P207), Output-Synthese (P203d-2), Sentiment-Triptychon (P192).
+
+```python
+if _block is not None:
+    _veto_skip_hitl_and_sandbox = False
+    _veto_payload: dict | None = None
+    if getattr(settings.projects, "code_veto_enabled", True):
+        try:
+            from zerberus.core.code_veto import (should_run_veto, run_veto, new_audit_id)
+            if should_run_veto(_block.code, _block.language):
+                veto_audit_id = new_audit_id()
+                _veto_temp = float(getattr(settings.projects, "code_veto_temperature", 0.1))
+                _verdict = await run_veto(
+                    _block.code, _block.language, last_user_msg,
+                    llm_service, session_id, temperature=_veto_temp,
+                )
+                veto_latency_for_audit = _verdict.latency_ms
+                if _verdict.error:
+                    veto_status_for_audit = "error"
+                    veto_reason_for_audit = _verdict.error
+                elif _verdict.veto:
+                    veto_status_for_audit = "veto"
+                    veto_reason_for_audit = _verdict.reason
+                    _veto_skip_hitl_and_sandbox = True
+                    _veto_payload = {
+                        "language": _block.language, "code": _block.code,
+                        "exit_code": -1, "stdout": "", "stderr": "",
+                        "execution_time_ms": 0, "truncated": False,
+                        "error": _verdict.reason or "Veto vom zweiten Modell",
+                        "skipped": True, "hitl_status": "vetoed",
+                        "veto": _verdict.to_payload_dict(),
+                    }
+                else:
+                    veto_status_for_audit = "pass"
+            else:
+                veto_status_for_audit = "skipped"
+        except Exception as _veto_err:
+            logger.warning(f"[VETO-209] Pipeline-Fehler (fail-open): {_veto_err}")
+            veto_status_for_audit = "error"
+    if _veto_skip_hitl_and_sandbox and _veto_payload is not None:
+        code_execution_payload = _veto_payload
+
+if _block is not None and not _veto_skip_hitl_and_sandbox:
+    # ... bestehender HitL+Sandbox+Snapshot-Pfad aus P206/P203d-1/P207
+```
+
+**Drei Decision-Pfade**:
+- `verdict.veto=True` → `_veto_skip_hitl_and_sandbox=True`, Wandschlag-Payload mit `skipped=True`/`hitl_status="vetoed"`/`veto={vetoed, reason, latency_ms}`. HitL/Sandbox/Snapshot werden übersprungen — `code_executions`-Tabelle bleibt leer für diesen Run.
+- `verdict.veto=False` (PASS) → `veto_status_for_audit="pass"`, weiter zum HitL-Gate.
+- `verdict.error` → `veto_status_for_audit="error"`, weiter zum HitL-Gate (fail-open).
+- `should_run_veto=False` → `veto_status_for_audit="skipped"` (trivialer Code, kein LLM-Call), weiter zum HitL-Gate.
+
+**Audit-Schreiben** am Ende des Hauptpfades:
+
+```python
+if veto_status_for_audit is not None:
+    await store_veto_audit(
+        audit_id=veto_audit_id, session_id=session_id,
+        project_id=active_project_id, project_slug=project_slug,
+        language=veto_language_for_audit,
+        code_text=veto_code_for_audit,
+        user_prompt=last_user_msg,
+        verdict=veto_status_for_audit,
+        reason=veto_reason_for_audit,
+        latency_ms=veto_latency_for_audit,
+    )
+```
+
+Bei `code_veto_enabled=False` bleibt `veto_status_for_audit=None` und kein Audit wird geschrieben — der Veto-Pfad existiert in dem Fall faktisch nicht.
+
+### Frontend — Wandschlag-Banner / Veto-Card
+
+**CSS** in `nala.py` (~85 Zeilen):
+- `.veto-card` mit roter Border (`rgba(229,115,115,0.55)`) — visuell klar als Block (nicht "deine Entscheidung" wie HitL-Gold).
+- `.veto-card-header` mit `🛑 Veto vom zweiten Modell` + Sprach-Tag.
+- `.veto-reason` prominent (`white-space: pre-wrap`, `padding: 12px`, kontrast-stark).
+- `.veto-meta` italic Latency-Anzeige.
+- `.veto-code-toggle` mit `min-height: 44px` (Mobile-first Touch-Target) — **read-only**, kein Approve-Button.
+- `.veto-code-block` collapsible mit `overflow-x: auto`/`max-height: 280px`.
+- `.veto-card.veto-collapsed` Default-State faltet Code ein.
+
+**JS-Funktion** `renderVetoCard(wrapperEl, codeExec, triptych)` analog `renderDiffCard` aus P207:
+- User-/LLM-Strings via `textContent` (XSS-safe by default)
+- Code-Block via `<code>${escapeHtml(codeStr)}</code>` mit `<pre>`-Wrapping
+- Insertion vor dem Triptychon — Visual-Order: bubble → veto-card → triptych → export-row (OHNE Code-Card und Output-Card weil Veto-Pfad)
+- Code-Toggle-Button mit `addEventListener` (kein inline `onclick` — P203b-Lesson)
+- Kein `addEventListener` für Approve/Reject — read-only Audit-Spur
+
+**Verdrahtung** in `renderCodeExecution`: ganz früh wird `codeExec.veto.vetoed === true` geprüft → `renderVetoCard(...)` + `return` (early-exit). Bei `vetoed=false` oder fehlendem Veto-Field läuft der bestehende Code-Card/Output-Card/Diff-Card-Pfad unverändert weiter — Backwards-Compat zu P203d-3/P206/P207.
+
+### Feature-Flags
+
+In `config.py::ProjectsConfig`:
+- `code_veto_enabled: bool = True` — Master-Switch (off → kein Probe, kein Audit, kein Block in der Response)
+- `code_veto_temperature: float = 0.1` — deterministisch für wiederholbare Verdicts (Veto soll nicht zufällig zwischen PASS und VETO schwanken)
+
+### Was P209 NICHT macht
+
+- **Mehr-Modell-Voting** — genau ein Veto-Call pro Run. Mehrere Modelle wären teurer und das Verhältnis Kosten:Robustheit-Gewinn ist fragwürdig.
+- **Lern-Loop über `code_vetoes`-History** — keine automatische Threshold-/Prompt-Adjustierung. Manuelle Auswertung via SQL-Query (`SELECT verdict, COUNT(*) FROM code_vetoes GROUP BY verdict`).
+- **Kosten-Aggregation des Veto-Calls in `interactions.cost`** — Schuld analog P203d-1/P203d-2/P208 (Probe-Calls sind aktuell nicht in `interactions.cost`).
+- **Veto-Override durch User** — kein "ich weiss was ich tue, führe trotzdem aus"-Button. Bei false-positives muss der User die Frage neu stellen oder den Code anders formulieren.
+- **Sprach-spezifische Heuristiken** — `should_run_veto`-Signatur akzeptiert `language` als Parameter, nutzt es aber nicht. Vorbereitung für später (z.B. `bash` aggressiver triggern als `python`).
+- **Persistenz der Veto-Verdicts über Server-Restart** — `VetoVerdict` ist transient. Nur der Audit landet in der DB.
+- **Telegram-Pfad** — Huginn hat eigenen P167-HitL ohne Veto.
+
+### Lessons (aus P209)
+
+1. **Layered Defense: Veto VOR HitL VOR Sandbox.** Drei unabhängige Schichten, jede mit eigenem Audit-Trail. Veto ist die einzige Read-Only-Schicht (User kann nicht überschreiben), HitL ist User-Interaktiv, Sandbox ist Code-Execution. Logisch saubere Trennung.
+2. **Trigger-Gate als Pure-Function spart Tokens.** Triviale 1-Zeiler (print/return/var/pass/console.log) ohne Risk-Tokens passen ohne LLM-Call durch. Die Risk-Token-Liste ist breit gefasst und Substring-basiert — Falsch-Positive (z.B. `"open"` in `"opening"`) sind OK, weil wir lieber prüfen als skippen.
+3. **Verdict-Parser robust gegen LLM-Idiosynkrasien.** Markdown-Bold (`**VETO**`), Quotes, Doppelpunkte/Bindestriche, Lowercase, Multi-Line-Reasons. Fallback für "Mein Verdict: VETO weil...": 64-char-Window-Search. Fail-open zu PASS bei unparseable Output — der Veto soll nicht zur Ausfall-Stelle werden.
+4. **`temperature=0.1` für den Veto-Call** ist deterministischer als die Standard-0.7. Veto soll wiederholbare Entscheidungen liefern.
+5. **VETO-Pfad schreibt KEINE Zeile in `code_executions`.** Audit landet ausschliesslich in `code_vetoes`. Korrelation zwischen den beiden Tabellen über `session_id`/`project_id` — bewusst keine FK, weil die Tabellen unterschiedliche Lifecycles haben.
+6. **Frontend-Card OHNE Approve-Button** ist die saubere visuelle Trennung zur HitL-Card aus P206. Rote Border statt Gold-Border macht den Unterschied auch ohne Lesen klar.
+7. **Default-Verhalten bei `code_veto_enabled=False`**: kein Audit, kein Block, Pfad existiert faktisch nicht. Konsequenz: bestehende E2E-Tests (P203d-2) brauchen explizite Deaktivierung des Veto-Pfades um die LLM-Call-Counter konsistent zu halten.
+
+### Tests — 88 in `test_p209_code_veto.py`
+
+12 Klassen, strukturiert nach Schichten:
+
+| Klasse | Tests | Was |
+|--------|-------|-----|
+| `TestShouldRunVeto` | 13 | leer/trivial-print/return/var/pass/multiline/subprocess/eval/rm-rf/open-write/requests-post/long-oneliner/none-language |
+| `TestRiskyTokens` | 6 | subprocess/eval/no-risky/case-insensitive/force-push/no-verify |
+| `TestTrivialOneliner` | 5 | print/multiline/long-line/pass/return |
+| `TestBuildVetoMessages` | 7 | two-messages/system-pass-veto/user-code-lang/lang-lower/empty-lang/long-truncate/no-persona-leak |
+| `TestParseVetoVerdict` | 13 | pass/veto/dash/lowercase/markdown-bold/quoted/pass-reason-ignored/unparseable-fail-open/empty/multiline-reason/64char-fallback/long-reason-truncate |
+| `TestVetoVerdict` | 2 | payload-dict-pass/payload-dict-veto |
+| `TestRunVeto` | 8 | happy-pass/happy-veto/temperature-passed/default-low/llm-crash/empty/non-tuple/non-string |
+| `TestStoreVetoAudit` | 3 | happy/truncate/no-db |
+| `TestLegacySourceAudit` | 10 | Logging-Tag, Imports, Audit-Aufruf, Feature-Flag, Temperature-Param, Reihenfolge-vor-HitL, Skip-Var, Veto-Field-im-Payload, hitl_status=vetoed, six-Audit-Fields, fail-open |
+| `TestNalaSourceAudit` | 8 | renderVetoCard-Funktion, Aufruf-in-renderCodeExecution, early-Return, CSS-Klassen, rote Border, 44px-Touch, kein Approve-Button, textContent/escapeHtml, veto-collapsed-State |
+| `TestE2EVeto` | 5 | veto-blockt-sandbox / pass-zur-sandbox / trivial-skipt-veto / disabled-skipt-audit / veto-keine-hitl-pending |
+| `TestJsSyntaxIntegrity` | 1 | `node --check` über NALA_HTML, skipped wenn node fehlt |
+| `TestSmoke` | 4 | config-flags / default-temperature-low / code_vetoes-tabelle / module-exports |
+
+**Lokal**: 2035 baseline → **2123 passed** (+88 P209), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info` durch `config.yaml`-Drift `deepseek-v4-pro`), 0 NEUE Failures aus P209.
+
+**Kollateral-Fix**: `test_p203d2_chat_synthesis.py::_setup` setzt jetzt zusätzlich `monkeypatch.setattr(get_settings().projects, "code_veto_enabled", False)` — sonst würde der neue Veto-Pfad (Default ON) bei nicht-trivialen Code-Blöcken einen dritten LLM-Call triggern und den 2-Step-Mock-LLM-Test brechen. Plus: `test_p207_workspace_snapshots.py::TestNalaSourceAudit::test_render_code_execution_calls_diff_renderer` und `test_diff_render_skipped_when_skipped_payload` haben ihr Source-Audit-Window von 6000 auf 7500 Zeichen erhöht — der `renderCodeExecution`-Body ist um den Veto-Early-Return + Kommentar gewachsen.
+
+### Helper für P210/P211
+
+- **`code_vetoes`-Tabelle** mit `audit_id`/`session_id`/`project_id`/`verdict`/`latency_ms` als Audit-Vorlage für GPU-Queue-Audits (P210) oder Secrets-Maskierung (P211).
+- **`.veto-card`-CSS-Pattern** (rote Border + read-only + collapsible Code-Toggle) klont sich trivial zu `.secret-mask-card` (P211 maskierte Outputs) oder `.gpu-queue-card` (P210 Wartezeit-Anzeige).
+- **`renderVetoCard`-Pattern** (früher `return` in `renderCodeExecution` + textContent-only-Render + kein Approve-Button) ist die Vorlage für jede neue **Read-only Audit-Karte** (im Gegensatz zu P206/P207/P208 mit User-Interaktion).
+- **`parse_veto_verdict`-Pattern** (First-Line-Match + Multi-Line-Reason + Fail-open-Fallback + Bytes-Truncate) ist universell für jeden LLM-Verdict-Parser.
+
+---
+
+*Stand: 2026-05-03, Patch 209 — Zweite Meinung vor Ausführung / Sancho Panza. Phase 5a Ziel #7 ABGESCHLOSSEN. 2123 passed (+88), 0 neue Failures.*
 

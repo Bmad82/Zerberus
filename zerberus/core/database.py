@@ -293,6 +293,36 @@ class Clarification(Base):
     resolved_at = Column(DateTime, nullable=True)
 
 
+class CodeVeto(Base):
+    """Patch 209 (Phase 5a #7) — Audit-Trail fuer Veto-Entscheidungen vor
+    der Sandbox-Code-Execution (Sancho Panza).
+
+    Erfasst pro Veto-Call: Audit-ID (UUID4 hex), Session, Projekt, die
+    Sprache, den Code-Vorschlag, den User-Wunsch, das Verdict
+    (``pass``/``veto``/``skipped``/``error``), die Begruendung (nur bei
+    ``veto`` user-relevant) und die Probe-Latenz in Millisekunden.
+
+    Persistente Spur, damit auswertbar wird: wie oft greift Veto, wie
+    oft falsch-positiv (User wollte den Code wirklich), wie oft
+    falsch-negativ (Code war problematisch und wurde nicht geveto't).
+    Grundlage fuer System-Prompt-Tuning des Veto-LLM.
+    """
+    __tablename__ = "code_vetoes"
+
+    id = Column(Integer, primary_key=True)
+    audit_id = Column(String(36), nullable=True, index=True)  # UUID4 hex (eigene ID, kein HitL-Pending)
+    session_id = Column(String(64), nullable=True, index=True)
+    project_id = Column(Integer, nullable=True, index=True)
+    project_slug = Column(String(120), nullable=True)
+    language = Column(String(32), nullable=True)
+    code_text = Column(Text, nullable=True)
+    user_prompt = Column(Text, nullable=True)
+    verdict = Column(String(16), nullable=True, index=True)  # pass|veto|skipped|error
+    reason = Column(Text, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 _engine = None
 _async_session_maker = None
 

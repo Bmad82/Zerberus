@@ -839,7 +839,9 @@ class TestNalaSourceAudit:
         src = self._src()
         idx = src.find("function renderCodeExecution(")
         assert idx > 0
-        window = src[idx:idx + 6000]
+        # P209 hat den renderCodeExecution-Body um den Veto-Early-Return
+        # erweitert — Window auf 7500 erhoeht (war 6000 zu P207-Zeit).
+        window = src[idx:idx + 7500]
         assert "renderDiffCard(" in window
         # Der Aufruf ist gated auf before_snapshot_id (kein Diff-Render
         # bei P206-only-Backends).
@@ -895,7 +897,9 @@ class TestNalaSourceAudit:
         gerendert werden — es gab gar keinen Run."""
         src = self._src()
         idx = src.find("function renderCodeExecution(")
-        body = src[idx:idx + 6000]
+        # P209 hat den renderCodeExecution-Body um den Veto-Early-Return
+        # erweitert — Window auf 7500 erhoeht (war 6000 zu P207-Zeit).
+        body = src[idx:idx + 7500]
         # Im Diff-Trigger-Block: !skipped && Array.isArray(...) && before_snapshot_id
         assert re.search(
             r"!\s*skipped\s*&&\s*Array\.isArray\(codeExec\.diff\)",

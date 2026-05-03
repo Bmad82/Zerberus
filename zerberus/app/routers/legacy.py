@@ -705,6 +705,14 @@ async def chat_completions(
     # hitl_status fuer Synthese-Skip + Audit-Row.
     hitl_pending_id: str | None = None
     hitl_status_for_audit: str | None = None
+    # Patch 209 (Phase 5a #7): Veto-Variablen — audit_id fuer Audit-Korrelation,
+    # status fuer Audit-Row (pass/veto/skipped/error).
+    veto_audit_id: str | None = None
+    veto_status_for_audit: str | None = None
+    veto_reason_for_audit: str | None = None
+    veto_latency_for_audit: int | None = None
+    veto_language_for_audit: str | None = None
+    veto_code_for_audit: str | None = None
     if (
         active_project_id is not None
         and project_slug
@@ -722,6 +730,97 @@ async def chat_completions(
                     list(_sandbox.config.allowed_languages),
                 )
                 if _block is not None:
+                    # Patch 209 (Phase 5a #7): Veto-Probe VOR HitL-Gate.
+                    # Ein zweites Modell beurteilt den Code: macht das,
+                    # was der User wollte UND ist es sicher? Bei VETO
+                    # ueberspringen wir HitL + Sandbox komplett und
+                    # liefern einen Wandschlag-Payload mit Begruendung.
+                    # Trigger-Gate ist eine Pure-Function (skipt triviale
+                    # 1-Zeiler ohne Risk-Tokens). Fail-open: jeder Fehler
+                    # im Probe-Pfad behandelt veto=False (weiter zum
+                    # HitL-Gate). Default-aktiv via
+                    # ``settings.projects.code_veto_enabled``.
+                    _veto_skip_hitl_and_sandbox = False
+                    _veto_payload: dict | None = None
+                    veto_language_for_audit = _block.language
+                    veto_code_for_audit = _block.code
+                    if getattr(settings.projects, "code_veto_enabled", True):
+                        try:
+                            from zerberus.core.code_veto import (
+                                should_run_veto,
+                                run_veto,
+                                new_audit_id,
+                            )
+                            if should_run_veto(_block.code, _block.language):
+                                veto_audit_id = new_audit_id()
+                                _veto_temp = float(
+                                    getattr(
+                                        settings.projects,
+                                        "code_veto_temperature",
+                                        0.1,
+                                    )
+                                )
+                                _verdict = await run_veto(
+                                    _block.code,
+                                    _block.language,
+                                    last_user_msg,
+                                    llm_service,
+                                    session_id,
+                                    temperature=_veto_temp,
+                                )
+                                veto_latency_for_audit = _verdict.latency_ms
+                                if _verdict.error:
+                                    veto_status_for_audit = "error"
+                                    veto_reason_for_audit = _verdict.error
+                                elif _verdict.veto:
+                                    veto_status_for_audit = "veto"
+                                    veto_reason_for_audit = _verdict.reason
+                                    _veto_skip_hitl_and_sandbox = True
+                                    _veto_payload = {
+                                        "language": _block.language,
+                                        "code": _block.code,
+                                        "exit_code": -1,
+                                        "stdout": "",
+                                        "stderr": "",
+                                        "execution_time_ms": 0,
+                                        "truncated": False,
+                                        "error": (
+                                            _verdict.reason
+                                            or "Veto vom zweiten Modell"
+                                        ),
+                                        "skipped": True,
+                                        "hitl_status": "vetoed",
+                                        "veto": _verdict.to_payload_dict(),
+                                    }
+                                    logger.info(
+                                        f"[VETO-209] blocked session={session_id} "
+                                        f"language={_block.language} "
+                                        f"reason_len={len(_verdict.reason or '')}"
+                                    )
+                                else:
+                                    veto_status_for_audit = "pass"
+                                    veto_reason_for_audit = None
+                            else:
+                                veto_status_for_audit = "skipped"
+                                veto_reason_for_audit = None
+                        except Exception as _veto_err:
+                            logger.warning(
+                                f"[VETO-209] Pipeline-Fehler (fail-open): {_veto_err}"
+                            )
+                            veto_status_for_audit = "error"
+                            veto_reason_for_audit = str(_veto_err)
+                    # Wenn code_veto_enabled=False, schreiben wir KEINEN
+                    # Audit — der Veto-Pfad existiert in dem Fall faktisch
+                    # nicht, weder im Hauptpfad noch im Audit-Trail.
+
+                    if _veto_skip_hitl_and_sandbox and _veto_payload is not None:
+                        code_execution_payload = _veto_payload
+                        # Wir setzen hitl_status_for_audit NICHT, weil HitL
+                        # nicht lief — die code_executions-Tabelle bleibt
+                        # leer fuer diesen Run, der Audit landet
+                        # ausschliesslich in code_vetoes.
+
+                if _block is not None and not _veto_skip_hitl_and_sandbox:
                     # Patch 206 (Phase 5a #6): HitL-Gate VOR Sandbox-Run.
                     # Long-Poll innerhalb der Chat-Completions-Request:
                     # Pending wird angelegt, das Frontend pollt parallel
@@ -895,7 +994,7 @@ async def chat_completions(
                             f"[HITL-206] skipped session={session_id} "
                             f"status={_hitl_decision} language={_block.language}"
                         )
-                else:
+                if _block is None:
                     logger.info(
                         f"[SANDBOX-203d] kein executable Code-Block project_id={active_project_id}"
                     )
@@ -966,6 +1065,31 @@ async def chat_completions(
         except Exception as _audit_err:
             logger.warning(
                 f"[HITL-206] Audit-Schreiben fehlgeschlagen (non-fatal): {_audit_err}"
+            )
+
+    # Patch 209 (Phase 5a #7): Audit-Trail-Zeile in ``code_vetoes``.
+    # Schreibt fuer jeden Code-Block, fuer den der Veto-Pfad einen Status
+    # gesetzt hat (pass/veto/skipped/error). Auch bei "skipped"/"pass"
+    # auditieren wir — die Statistik braucht alle drei Werte fuer
+    # System-Prompt-Tuning + Threshold-Anpassung.
+    if veto_status_for_audit is not None:
+        try:
+            from zerberus.core.code_veto import store_veto_audit
+            await store_veto_audit(
+                audit_id=veto_audit_id,
+                session_id=session_id,
+                project_id=active_project_id,
+                project_slug=project_slug,
+                language=veto_language_for_audit,
+                code_text=veto_code_for_audit,
+                user_prompt=last_user_msg,
+                verdict=veto_status_for_audit,
+                reason=veto_reason_for_audit,
+                latency_ms=veto_latency_for_audit,
+            )
+        except Exception as _audit_err:
+            logger.warning(
+                f"[VETO-209] Audit-Schreiben fehlgeschlagen (non-fatal): {_audit_err}"
             )
 
     # Patch 208 (Phase 5a #8): Audit-Trail-Zeile in ``clarifications``.

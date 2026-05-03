@@ -544,6 +544,11 @@ class TestE2ESynthesis:
         # NICHT ueber HitL — wir bypassen das Gate, damit der Sandbox-Pfad
         # weiterhin direkt durchlaeuft (Status ``bypassed`` im Audit).
         monkeypatch.setattr(get_settings().projects, "hitl_enabled", False)
+        # Patch 209: Veto-Probe ist neuer Default fuer nicht-triviale Code-
+        # Bloecke. Synthese-E2E-Tests sind NICHT ueber Veto — wir
+        # deaktivieren den Veto-Pfad, damit der LLM-Call-Counter
+        # unveraendert (Code + Synthese = 2 Calls) bleibt.
+        monkeypatch.setattr(get_settings().projects, "code_veto_enabled", False)
 
         fake_call, counter = _make_two_step_llm(llm_answers)
         monkeypatch.setattr(LLMService, "call", fake_call)
@@ -732,6 +737,8 @@ class TestE2ESynthesis:
 
         # Patch 206: HitL bypassen — Test ist nicht ueber HitL
         monkeypatch.setattr(get_settings().projects, "hitl_enabled", False)
+        # Patch 209: Veto bypassen — Test ist nicht ueber Veto
+        monkeypatch.setattr(get_settings().projects, "code_veto_enabled", False)
 
         # Eigener LLM, der beim zweiten Call crasht.
         counter = {"i": 0}

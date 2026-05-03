@@ -216,6 +216,18 @@ class ProjectsConfig(BaseModel):
     spec_check_enabled: bool = True
     spec_check_threshold: float = 0.65
     spec_check_timeout_seconds: int = 60
+    # Patch 209 (Phase 5a #7): Zweite Meinung vor Ausfuehrung (Sancho
+    # Panza). Wenn ``code_veto_enabled=True``, faehrt nach erkanntem
+    # Code-Block ein zweiter LLM-Call (``temperature_override`` aus
+    # ``code_veto_temperature``), der mit ``PASS`` oder ``VETO`` plus
+    # Begruendung antwortet. Bei VETO wird HitL/Sandbox uebersprungen
+    # und ein Wandschlag-Banner mit Begruendung in der Response
+    # zurueckgegeben. ``code_veto_temperature=0.1`` hoechst-deterministisch
+    # — Veto soll wiederholbare Entscheidungen liefern. Trigger-Gate ist
+    # eine Pure-Function (siehe ``code_veto.should_run_veto``) — triviale
+    # 1-Zeiler ohne Risk-Tokens passen ohne LLM-Call durch.
+    code_veto_enabled: bool = True
+    code_veto_temperature: float = 0.1
 
 
 class SandboxConfig(BaseModel):
