@@ -5,8 +5,8 @@
 **Letzter Patch:** P208 — Spec-Contract / Ambiguitäts-Check (Phase 5a Ziel #8 ABGESCHLOSSEN)
 **Tests:** 2035 passed (+89 P208 aus 1946 baseline), 4 xfailed (pre-existing), 3 failed (alle pre-existing — `edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info.test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`), 1 skipped (existing)
 **Manuelle Tests:** 1 / 85 ✅
-**Commit:** _wird nach Push nachgetragen_
-**Repos synchron:** _wird nach sync_repos.ps1 + verify_sync.ps1 nachgetragen_
+**Commit:** 8083b38 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude — alle drei gepusht (Ratatoskr `e93909b`, Claude `c6ac1aa`, 0 unpushed Commits in allen drei). `verify_sync.ps1` meldet Zerberus working-tree dirty: `system_prompt_chris.json` bleibt unangetastet (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste, Stand identisch zu allen Vorgaenger-HANDOVERS seit P205. Naechster Coda kann sie ggf. via `git checkout system_prompt_chris.json` zuruecksetzen oder via `git rm --cached` + `.gitignore` aus dem Tracking nehmen).
 
 ---
 
