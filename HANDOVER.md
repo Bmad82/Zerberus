@@ -5,8 +5,8 @@
 **Letzter Patch:** P209 — Zweite Meinung vor Ausführung / Sancho Panza (Phase 5a Ziel #7 ABGESCHLOSSEN)
 **Tests:** 2123 passed (+88 P209 aus 2035 baseline), 4 xfailed (pre-existing), 3 failed (alle pre-existing — `edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info.test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`), 1 skipped (existing)
 **Manuelle Tests:** 1 / 88 ✅
-**Commit:** _wird nach Push nachgetragen_
-**Repos synchron:** _wird nach sync_repos.ps1 + verify_sync.ps1 nachgetragen_
+**Commit:** 28eeb9d — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude — alle drei gepusht (Ratatoskr `705183e`, Claude `be2da3b`, 0 unpushed Commits in allen drei). `verify_sync.ps1` meldet Zerberus working-tree dirty: `system_prompt_chris.json` bleibt unangetastet (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste, Stand identisch zu allen Vorgaenger-HANDOVERS seit P205. Naechster Coda kann sie ggf. via `git checkout system_prompt_chris.json` zuruecksetzen oder via `git rm --cached` + `.gitignore` aus dem Tracking nehmen).
 
 ---
 
