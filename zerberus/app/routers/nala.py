@@ -1102,6 +1102,75 @@ NALA_HTML = """<!DOCTYPE html>
             overflow-y: auto;
         }
         .veto-card.veto-collapsed .veto-code-block { display: none; }
+        /* Patch 213 (Phase 5a #13) — Reasoning-Schritte als kleine Karte
+           unter der Bot-Bubble. Default eingeklappt: Header zeigt nur
+           "Schritte (N) ▼ anzeigen", Body listet alle Steps. Mobile-first
+           44px Touch-Target am Toggle, kein onclick-Concat (Event-
+           Delegation auf data-*-Attributen). */
+        .reasoning-card {
+            margin-top: 8px;
+            background: #0b1730;
+            border: 1px solid rgba(120,160,220,0.22);
+            border-radius: 10px;
+            overflow: hidden;
+            font-size: 0.84em;
+        }
+        .reasoning-toggle {
+            display: flex;
+            width: 100%;
+            min-height: 44px;
+            padding: 8px 12px;
+            background: rgba(120,160,220,0.08);
+            border: none;
+            color: #b8c8e0;
+            font-size: 0.86em;
+            font-weight: 600;
+            text-align: left;
+            cursor: pointer;
+            align-items: center;
+            gap: 8px;
+        }
+        .reasoning-toggle .reasoning-toggle-arrow { margin-left: auto; }
+        .reasoning-toggle:active { background: rgba(120,160,220,0.16); }
+        .reasoning-list {
+            list-style: none;
+            margin: 0;
+            padding: 4px 0;
+            border-top: 1px solid rgba(120,160,220,0.12);
+        }
+        .reasoning-card.reasoning-collapsed .reasoning-list { display: none; }
+        .reasoning-step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            color: #d8e2f5;
+            font-size: 0.86em;
+        }
+        .reasoning-step + .reasoning-step {
+            border-top: 1px dashed rgba(120,160,220,0.10);
+        }
+        .reasoning-step .reasoning-icon {
+            display: inline-block;
+            width: 18px;
+            text-align: center;
+            font-size: 0.95em;
+        }
+        .reasoning-step .reasoning-summary { flex: 1; word-break: break-word; }
+        .reasoning-step .reasoning-duration {
+            color: #8aa0c0;
+            font-size: 0.78em;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .reasoning-step.reasoning-running .reasoning-icon { animation: reasonSpin 1.6s linear infinite; }
+        .reasoning-step.reasoning-done    .reasoning-icon { color: #6cd4a1; }
+        .reasoning-step.reasoning-error   .reasoning-icon { color: #e57373; }
+        .reasoning-step.reasoning-skipped .reasoning-icon { color: #8aa0c0; }
+        @keyframes reasonSpin {
+            from { transform: rotate(0deg); }
+            to   { transform: rotate(360deg); }
+        }
         /* Patch 124: Buttons wirken leicht erhoben - 3D-Feedback bei :active. */
         button:not(.expand-toggle), .btn {
             transition: transform 0.12s ease, box-shadow 0.12s ease;
@@ -2973,6 +3042,14 @@ NALA_HTML = """<!DOCTYPE html>
         clearSpecState();
         startSpecPolling(myAbort.signal, reqSessionId);
 
+        // Patch 213 (Phase 5a #13): Reasoning-Schritte parallel pollen.
+        // Karte erscheint sobald der erste Step eintrudelt. Wird beim
+        // Turn-Ende (finally-Block oder Session-Switch) gestoppt; alte
+        // Karte bleibt aber als Audit-Spur sichtbar — clearReasoningState
+        // entfernt sie nur wenn der naechste Turn beginnt.
+        clearReasoningState();
+        startReasoningPolling(myAbort.signal, reqSessionId);
+
         try {
             // Patch 191: Prosodie-Header durchreichen (Consent + Context aus letzter Audio-Analyse).
             const _chatHeaders = profileHeaders({ 'Content-Type': 'application/json' });
@@ -3044,6 +3121,10 @@ NALA_HTML = """<!DOCTYPE html>
             // Patch 206: HitL-Polling stoppen — Antwort ist da (oder Abort/Fehler).
             // Die Karte selbst (falls gerendert) bleibt im DOM stehen.
             stopHitlPolling();
+            // Patch 213: Reasoning-Polling stoppen — Antwort ist da. Die
+            // Reasoning-Karte bleibt im DOM (Audit-Spur), wird beim
+            // naechsten Turn-Start durch clearReasoningState entfernt.
+            stopReasoningPolling();
             // Input nur freigeben wenn kein Timeout-Bubble aktiv ist (User soll Retry sehen können).
             // Bei Timeout bleibt Bubble + Retry-Button stehen — Input wird trotzdem freigegeben damit
             // User auch eine neue Nachricht tippen kann.
@@ -4174,6 +4255,170 @@ NALA_HTML = """<!DOCTYPE html>
         _specActivePendingId = null;
         stopSpecPolling();
     }
+
+    // ── Patch 213 (Phase 5a #13): Reasoning-Schritte sichtbar im Chat ──
+    //
+    // Frontend pollt /v1/reasoning/poll alle 4 s waehrend der Chat-Long-
+    // Poll laeuft, rendert die Steps als Karte unter der Bot-Bubble
+    // (oder, wenn die Bubble noch nicht da ist, als Stand-alone-Karte
+    // unter dem Typing-Indikator). Karte ist Default-collapsed; erster
+    // Klick auf den Header expandiert die Liste. Mobile-first 44px-
+    // Touch-Target am Toggle-Button. Status-Icons:
+    //   running ⏳ (animiert)  done ✅  error ❌  skipped ⏭
+    let _reasoningCardEl = null;
+    let _reasoningPollHandle = null;
+    let _reasoningStepIndex = new Map();  // step_id → li-Element
+    const _REASON_KIND_LABELS = {
+        spec_check:  'Prueft Frage auf Mehrdeutigkeit',
+        rag_query:   'Durchsucht Projekt-Wissen',
+        veto_probe:  'Zweites Modell prueft Code',
+        hitl_wait:   'Wartet auf Bestaetigung',
+        sandbox_run: 'Sandbox laeuft',
+        synthesis:   'Formuliert verstaendliche Antwort',
+        embedder:    'Vektoren werden berechnet',
+        reranker:    'Treffer werden sortiert',
+        guard:       'Antwort-Qualitaet wird geprueft',
+        llm_call:    'Modell formuliert Antwort',
+    };
+    function _reasonIcon(status) {
+        if (status === 'done') return '✅';
+        if (status === 'error') return '❌';
+        if (status === 'skipped') return '⏭';
+        return '⏳';
+    }
+
+    function startReasoningPolling(abortSignal, snapshotSessionId) {
+        stopReasoningPolling();
+        let stopped = false;
+        let intervalId = null;
+        async function tick() {
+            if (stopped) return;
+            if (abortSignal && abortSignal.aborted) return;
+            if (snapshotSessionId !== sessionId) {
+                stopReasoningPolling();
+                return;
+            }
+            try {
+                const r = await fetch('/v1/reasoning/poll', {
+                    headers: profileHeaders(),
+                    signal: abortSignal,
+                });
+                if (!r.ok) return;
+                const data = await r.json();
+                if (data && Array.isArray(data.steps) && data.steps.length > 0) {
+                    renderReasoningSteps(data.steps);
+                }
+            } catch (_) { /* fail-quiet — naechster Tick versucht's nochmal */ }
+        }
+        intervalId = setInterval(tick, 4000);
+        // Erster Poll nach 800 ms — frueh genug fuer ersten Step (Spec-Probe),
+        // spaet genug damit der Backend-Endpoint sich nicht ueberschlaegt.
+        setTimeout(tick, 800);
+        _reasoningPollHandle = function() {
+            stopped = true;
+            if (intervalId) clearInterval(intervalId);
+        };
+    }
+
+    function stopReasoningPolling() {
+        if (_reasoningPollHandle) {
+            try { _reasoningPollHandle(); } catch (_) {}
+            _reasoningPollHandle = null;
+        }
+    }
+
+    function renderReasoningSteps(steps) {
+        if (!Array.isArray(steps) || steps.length === 0) return;
+        if (!_reasoningCardEl) {
+            _reasoningCardEl = document.createElement('div');
+            _reasoningCardEl.className = 'reasoning-card reasoning-collapsed';
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'reasoning-toggle';
+            toggle.setAttribute('data-reasoning-toggle', '1');
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'reasoning-toggle-label';
+            labelSpan.textContent = '🧭 Schritte (' + steps.length + ')';
+            const arrowSpan = document.createElement('span');
+            arrowSpan.className = 'reasoning-toggle-arrow';
+            arrowSpan.textContent = '▼ anzeigen';
+            toggle.appendChild(labelSpan);
+            toggle.appendChild(arrowSpan);
+            const list = document.createElement('ul');
+            list.className = 'reasoning-list';
+            _reasoningCardEl.appendChild(toggle);
+            _reasoningCardEl.appendChild(list);
+            messagesDiv.appendChild(_reasoningCardEl);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        const list = _reasoningCardEl.querySelector('.reasoning-list');
+        const labelSpan = _reasoningCardEl.querySelector('.reasoning-toggle-label');
+        if (labelSpan) labelSpan.textContent = '🧭 Schritte (' + steps.length + ')';
+        steps.forEach(function(step) {
+            if (!step || !step.step_id) return;
+            const status = step.status || 'running';
+            const summary = (typeof step.summary === 'string' && step.summary)
+                ? step.summary
+                : (_REASON_KIND_LABELS[step.kind] || step.kind || 'Schritt');
+            const dur = (typeof step.duration_ms === 'number')
+                ? (step.duration_ms + ' ms')
+                : '';
+            let li = _reasoningStepIndex.get(step.step_id);
+            if (!li) {
+                li = document.createElement('li');
+                li.className = 'reasoning-step reasoning-' + status;
+                li.setAttribute('data-step-id', step.step_id);
+                li.setAttribute('data-step-kind', step.kind || '');
+                li.innerHTML =
+                    '<span class="reasoning-icon">' + escapeHtml(_reasonIcon(status)) + '</span>'
+                    + '<span class="reasoning-summary"></span>'
+                    + '<span class="reasoning-duration"></span>';
+                list.appendChild(li);
+                _reasoningStepIndex.set(step.step_id, li);
+            } else {
+                li.className = 'reasoning-step reasoning-' + status;
+            }
+            const iconEl = li.querySelector('.reasoning-icon');
+            const sumEl  = li.querySelector('.reasoning-summary');
+            const durEl  = li.querySelector('.reasoning-duration');
+            if (iconEl) iconEl.textContent = _reasonIcon(status);
+            if (sumEl)  sumEl.textContent  = summary;
+            if (durEl)  durEl.textContent  = dur;
+        });
+    }
+
+    function clearReasoningState() {
+        stopReasoningPolling();
+        if (_reasoningCardEl && _reasoningCardEl.parentNode) {
+            try { _reasoningCardEl.parentNode.removeChild(_reasoningCardEl); }
+            catch (_) {}
+        }
+        _reasoningCardEl = null;
+        _reasoningStepIndex = new Map();
+        // Backend-State auch leeren — Defensive falls Polling nichts mehr
+        // greift. Fail-quiet, ein 404/Netzfehler ist nicht relevant.
+        try {
+            fetch('/v1/reasoning/clear', {
+                method: 'POST',
+                headers: profileHeaders(),
+            }).catch(function() {});
+        } catch (_) {}
+    }
+
+    // Event-Delegation auf den messages-Container statt onclick-Concat
+    // im innerHTML — der Listener verarbeitet ALLE reasoning-Toggles, auch
+    // dynamisch nachgereichte Karten.
+    document.addEventListener('click', function(e) {
+        const target = e.target && e.target.closest
+            ? e.target.closest('[data-reasoning-toggle]')
+            : null;
+        if (!target) return;
+        const card = target.closest('.reasoning-card');
+        if (!card) return;
+        const isCollapsed = card.classList.toggle('reasoning-collapsed');
+        const arrow = card.querySelector('.reasoning-toggle-arrow');
+        if (arrow) arrow.textContent = isCollapsed ? '▼ anzeigen' : '▲ verbergen';
+    });
 
     // Patch 76 + Patch 102 (B-03): Typing-Indicator mit Spinner + Status-Text
     // Patch 144 (B-007 / F-001): Katzenpfoten statt Text-Indikator.

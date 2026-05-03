@@ -21,6 +21,7 @@ from zerberus.core.dialect import detect_dialect_marker, apply_dialect
 from zerberus.core.cleaner import clean_transcript
 from zerberus.core.event_bus import get_event_bus, Event
 from zerberus.core.database import store_interaction, save_cost
+from zerberus.core.reasoning_steps import emit_step, mark_step_done
 from zerberus.app.pacemaker import update_interaction
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,17 @@ async def chat_completions(
     temperature_override: float | None = getattr(request.state, "temperature", None)
     llm_service = LLMService()
 
+    # Patch 213 (Phase 5a #13): Reasoning-State pro Turn zuruecksetzen,
+    # damit der Frontend-Poll keine Steps der vorherigen Turn sieht. Frontend
+    # ruft zwar ``POST /v1/reasoning/clear`` selbst auf, aber der serverseitige
+    # Reset ist eine zusaetzliche Defensive — z.B. wenn das Frontend in einem
+    # anderen Tab haengt oder der Clear durch Netzwerk verloren geht.
+    try:
+        from zerberus.core.reasoning_steps import get_reasoning_gate
+        get_reasoning_gate().cleanup_session(session_id)
+    except Exception:  # pragma: no cover — defensive
+        pass
+
     # Letzte User-Nachricht ermitteln
     last_user_msg = None
     for msg in reversed(req.messages):
@@ -289,6 +301,11 @@ async def chat_completions(
         and last_user_msg
         and getattr(settings.projects, "rag_enabled", True)
     ):
+        # Patch 213: Reasoning-Step fuer Projekt-RAG-Query.
+        _step_rag = emit_step(
+            session_id, "rag_query",
+            f"Projekt-RAG durchsucht ({project_slug})",
+        )
         try:
             from zerberus.core import projects_rag
 
@@ -304,10 +321,15 @@ async def chat_completions(
             if rag_block:
                 sys_prompt = (sys_prompt or "") + rag_block
                 rag_chunks_used = len(rag_hits)
+            mark_step_done(
+                _step_rag,
+                detail=f"chunks={rag_chunks_used}",
+            )
         except Exception as _rag_err:
             logger.warning(
                 f"[RAG-199] Projekt-RAG-Query fuer slug={project_slug} fehlgeschlagen: {_rag_err}"
             )
+            mark_step_done(_step_rag, status="error", detail=str(_rag_err))
     if active_project_id is not None:
         logger.info(
             f"[RAG-199] project_id={active_project_id} slug={project_slug!r} "
@@ -395,8 +417,18 @@ async def chat_completions(
                     f"threshold={_spec_threshold} source={spec_source_value} "
                     f"session={session_id}"
                 )
+                # Patch 213: Reasoning-Step fuer Klarstellungs-Probe.
+                _step_spec = emit_step(
+                    session_id, "spec_check",
+                    "Frage prueft auf Mehrdeutigkeit",
+                )
                 spec_question_text = await run_spec_probe(
                     last_user_msg, llm_service, session_id,
+                )
+                mark_step_done(
+                    _step_spec,
+                    status="done" if spec_question_text else "skipped",
+                    detail=f"score={spec_score_value:.3f}",
                 )
                 if spec_question_text:
                     _spec_gate = get_chat_spec_gate()
@@ -622,22 +654,53 @@ async def chat_completions(
             bus = get_event_bus()
             await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
 
-            # 2. LLM-Call mit angereichertem Kontext (Patch 61: temperature_override)
-            answer, model, p_tok, c_tok, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
-            logger.info(f"LLM [{model}] {p_tok}+{c_tok} Tokens, ${cost:.6f}")
+            # Patch 213: Reasoning-Step fuer den Haupt-LLM-Call.
+            _step_llm = emit_step(
+                session_id, "llm_call",
+                "Modell formuliert Antwort",
+            )
+            try:
+                # 2. LLM-Call mit angereichertem Kontext (Patch 61: temperature_override)
+                answer, model, p_tok, c_tok, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
+                logger.info(f"LLM [{model}] {p_tok}+{c_tok} Tokens, ${cost:.6f}")
+                mark_step_done(
+                    _step_llm,
+                    detail=f"model={model} tokens={p_tok}+{c_tok}",
+                )
+            except Exception:
+                mark_step_done(_step_llm, status="error")
+                raise
 
         except Exception as e:
             logger.warning(f"⚠️ Orchestrator-Pipeline fehlgeschlagen, direkter LLM-Fallback: {e}")
             logger.warning(f"[FALLBACK-102] Direkter LLM-Fallback aktiviert (Cloud-Default-Modell), Grund: Orchestrator-Exception ({type(e).__name__})")
             bus = get_event_bus()
             await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
-            answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
+            _step_llm_fb = emit_step(
+                session_id, "llm_call",
+                "Modell formuliert Antwort (Fallback)",
+            )
+            try:
+                answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
+                mark_step_done(_step_llm_fb, detail=f"model={model}")
+            except Exception:
+                mark_step_done(_step_llm_fb, status="error")
+                raise
     else:
         # Fallback: direkter LLM-Call ohne RAG
         logger.warning("[FALLBACK-102] Direkter LLM-Fallback aktiviert (Cloud-Default-Modell), Grund: Orchestrator nicht initialisiert")
         bus = get_event_bus()
         await bus.publish(Event(type="llm_start", data={}, session_id=session_id))
-        answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
+        _step_llm_no_orch = emit_step(
+            session_id, "llm_call",
+            "Modell formuliert Antwort",
+        )
+        try:
+            answer, model, _, _, cost = await llm_service.call(messages_for_llm, session_id, temperature_override=temperature_override)
+            mark_step_done(_step_llm_no_orch, detail=f"model={model}")
+        except Exception:
+            mark_step_done(_step_llm_no_orch, status="error")
+            raise
 
     # Patch 120: Ach-laber-doch-nicht Guard — fail-open, haengt bei WARNUNG einen Qualitaetshinweis an.
     if settings.features.get("hallucination_guard", True):
@@ -760,6 +823,11 @@ async def chat_completions(
                                         0.1,
                                     )
                                 )
+                                # Patch 213: Reasoning-Step fuer Veto-Probe.
+                                _step_veto = emit_step(
+                                    session_id, "veto_probe",
+                                    "Zweites Modell prueft Code",
+                                )
                                 _verdict = await run_veto(
                                     _block.code,
                                     _block.language,
@@ -772,6 +840,10 @@ async def chat_completions(
                                 if _verdict.error:
                                     veto_status_for_audit = "error"
                                     veto_reason_for_audit = _verdict.error
+                                    mark_step_done(
+                                        _step_veto, status="error",
+                                        detail=_verdict.error,
+                                    )
                                 elif _verdict.veto:
                                     veto_status_for_audit = "veto"
                                     veto_reason_for_audit = _verdict.reason
@@ -797,9 +869,16 @@ async def chat_completions(
                                         f"language={_block.language} "
                                         f"reason_len={len(_verdict.reason or '')}"
                                     )
+                                    mark_step_done(
+                                        _step_veto, status="error",
+                                        detail="veto",
+                                    )
                                 else:
                                     veto_status_for_audit = "pass"
                                     veto_reason_for_audit = None
+                                    mark_step_done(
+                                        _step_veto, detail="pass",
+                                    )
                             else:
                                 veto_status_for_audit = "skipped"
                                 veto_reason_for_audit = None
@@ -844,8 +923,26 @@ async def chat_completions(
                         _timeout = float(
                             getattr(settings.projects, "hitl_timeout_seconds", 60)
                         )
+                        # Patch 213: Reasoning-Step fuer HitL-Wartezeit.
+                        _step_hitl = emit_step(
+                            session_id, "hitl_wait",
+                            "Wartet auf Bestaetigung",
+                        )
                         _hitl_decision = await _gate.wait_for_decision(
                             _pending.id, _timeout,
+                        )
+                        # Status-Mapping: approved/bypassed → done,
+                        # rejected/timeout → skipped, alles andere → error.
+                        if _hitl_decision in ("approved", "bypassed"):
+                            _hitl_step_status = "done"
+                        elif _hitl_decision in ("rejected", "timeout"):
+                            _hitl_step_status = "skipped"
+                        else:
+                            _hitl_step_status = "error"
+                        mark_step_done(
+                            _step_hitl,
+                            status=_hitl_step_status,
+                            detail=_hitl_decision,
                         )
                         # Cleanup nach Auswertung — sonst waechst der
                         # In-Memory-Store monoton bei jedem Code-Block.
@@ -899,6 +996,11 @@ async def chat_completions(
                                 )
                                 _before_snap = None
 
+                        # Patch 213: Reasoning-Step fuer Sandbox-Run.
+                        _step_sandbox = emit_step(
+                            session_id, "sandbox_run",
+                            f"Sandbox laeuft ({_block.language})",
+                        )
                         _result = await execute_in_workspace(
                             project_id=active_project_id,
                             code=_block.code,
@@ -919,6 +1021,11 @@ async def chat_completions(
                                 "skipped": False,
                                 "hitl_status": _hitl_decision,
                             }
+                            mark_step_done(
+                                _step_sandbox,
+                                status="done" if _result.exit_code == 0 else "error",
+                                detail=f"exit_code={_result.exit_code}",
+                            )
                             logger.info(
                                 f"[SANDBOX-203d] project_id={active_project_id} slug={project_slug!r} "
                                 f"language={_block.language} exit_code={_result.exit_code} "
@@ -968,6 +1075,10 @@ async def chat_completions(
                             logger.info(
                                 f"[SANDBOX-203d] execute_in_workspace returned None "
                                 f"(slug_reject/disabled/missing) project_id={active_project_id}"
+                            )
+                            mark_step_done(
+                                _step_sandbox, status="skipped",
+                                detail="execute_in_workspace returned None",
                             )
                     else:
                         # rejected | timeout — Skip-Payload mit Reason,
@@ -1022,6 +1133,11 @@ async def chat_completions(
     # zeigt dem User noch den Code-Block — die HitL-Skip-Begruendung kommt
     # im ``code_execution.error``-Feld plus Frontend-Skip-Banner.
     if code_execution_payload is not None and not code_execution_payload.get("skipped"):
+        # Patch 213: Reasoning-Step fuer Output-Synthese.
+        _step_synth = emit_step(
+            session_id, "synthesis",
+            "Verstaendliche Antwort wird formuliert",
+        )
         try:
             from zerberus.modules.sandbox.synthesis import synthesize_code_output
 
@@ -1033,9 +1149,19 @@ async def chat_completions(
             )
             if synthesized:
                 answer = synthesized
+                mark_step_done(_step_synth, detail="synthesized")
+            else:
+                mark_step_done(
+                    _step_synth, status="skipped",
+                    detail="empty",
+                )
         except Exception as _synth_err:
             logger.warning(
                 f"[SYNTH-203d-2] Pipeline-Fehler (fail-open): {_synth_err}"
+            )
+            mark_step_done(
+                _step_synth, status="error",
+                detail=str(_synth_err),
             )
 
     # Patch 203d-2: Assistant-Insert NACH der Synthese, damit ``answer`` der
@@ -1408,6 +1534,72 @@ async def gpu_status():
     """
     from zerberus.core.gpu_queue import get_gpu_queue
     return await get_gpu_queue().status()
+
+
+# ── /v1/reasoning/poll ─────────────────────────────────────────────
+#
+# Patch 213 (Phase 5a #13) — Reasoning-Schritte sichtbar im Chat.
+#
+# Liefert die akkumulierten Pipeline-Steps der laufenden Chat-Turn.
+# Auth-frei wie /v1/hitl/poll und /v1/gpu/status (Dictate-Lane-Invariante).
+# Ownership ueber Header ``X-Session-ID`` — Steps anderer Sessions werden
+# nicht ausgeliefert.
+#
+# Long-Poll-Variante: wenn ``wait`` > 0 und der Buffer leer ist, blockt
+# der Endpoint bis ein Step eintrudelt ODER der Timeout greift. Default
+# 0 (sofort), Frontend kann per Query-Param hochziehen.
+
+@router.get("/reasoning/poll")
+async def reasoning_poll(request: Request, wait: float = 0.0):
+    """Liefert Reasoning-Steps der Session als JSON-Array.
+
+    Schema::
+
+        {"steps": [
+            {
+                "step_id": "abc123...",
+                "kind": "veto_probe",
+                "summary": "Modell prueft Code",
+                "status": "running",
+                "duration_ms": null,
+                "started_at": "2026-05-04T12:00:00Z",
+                "finished_at": null
+            },
+            ...
+        ]}
+
+    ``wait`` ist auf [0, DEFAULT_POLL_TIMEOUT_SECONDS] geclamped, um
+    abusive Long-Polls zu verhindern.
+    """
+    from zerberus.core.reasoning_steps import (
+        DEFAULT_POLL_TIMEOUT_SECONDS,
+        get_reasoning_gate,
+    )
+    session_id = request.headers.get("X-Session-ID") or "legacy-default"
+    wait_clamped = max(0.0, min(float(wait or 0.0), DEFAULT_POLL_TIMEOUT_SECONDS))
+    gate = get_reasoning_gate()
+    # Best-Effort-Sweep aelterer Sessions bei jedem Poll — billiger als
+    # ein Hintergrund-Task und reicht fuer die typischen Volumina.
+    try:
+        gate.cleanup_stale_sessions()
+    except Exception:  # pragma: no cover — defensive
+        pass
+    steps = await gate.consume_steps(session_id, wait_seconds=wait_clamped)
+    return {"steps": [s.to_public_dict() for s in steps]}
+
+
+@router.post("/reasoning/clear")
+async def reasoning_clear(request: Request):
+    """Wirft die Steps der Session weg. Frontend ruft das beim Beginn
+    einer neuen Chat-Turn auf, damit alte Steps nicht in der Karte
+    stehen bleiben.
+
+    Auth-frei wie der Poll-Endpoint. Idempotent — leerer Buffer ist OK.
+    """
+    from zerberus.core.reasoning_steps import get_reasoning_gate
+    session_id = request.headers.get("X-Session-ID") or "legacy-default"
+    removed = get_reasoning_gate().cleanup_session(session_id)
+    return {"ok": True, "removed": removed}
 
 
 # ---------- Audio-Endpunkt ----------

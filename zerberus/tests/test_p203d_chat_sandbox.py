@@ -177,10 +177,14 @@ class TestP203d1SourceAudit:
         umgestellt — wir pruefen jetzt, dass der Lookup korrekt im
         Source steht und der Default-Wert weiterhin False ist."""
         src = self._legacy_src()
-        # Suchfenster: rund um den Sandbox-Block
+        # Suchfenster: rund um den Sandbox-Block. Patch 213 hat den
+        # Sandbox-Pfad um Reasoning-emit_step-Aufrufe ergaenzt — das
+        # Fenster wurde von 2500 auf 3500 Bytes pro Seite erweitert,
+        # damit der semantische Check (writable kommt aus settings)
+        # weiterhin greift.
         idx = src.find("[SANDBOX-203d]")
         assert idx > 0
-        window = src[max(0, idx - 2500):idx + 2500]
+        window = src[max(0, idx - 3500):idx + 3500]
         # P207-Konvention: writable kommt aus dem Settings-Flag.
         assert 'getattr(settings.projects, "sandbox_writable", False)' in window
         # Default in ProjectsConfig MUSS False sein — sonst rutscht ein

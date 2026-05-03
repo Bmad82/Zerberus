@@ -372,6 +372,38 @@ class SecretRedactionAudit(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class ReasoningAudit(Base):
+    """Patch 213 (Phase 5a #13) — Audit-Trail fuer Reasoning-Steps.
+
+    Eine Zeile pro abgeschlossenem Step (status=done|error|skipped). Der
+    `running`-Zwischenstand wird NICHT geschrieben — die Audit-Tabelle
+    ist fuer Auswertung "wo verbringt das System die Zeit?" gedacht, der
+    `running`-State ist transient.
+
+    Auswertung::
+
+        SELECT kind, AVG(duration_ms), MAX(duration_ms), COUNT(*)
+        FROM reasoning_audits
+        WHERE status = 'done'
+        GROUP BY kind;
+
+    Grundlage fuer Latenz-Tuning: wenn z.B. der Veto-Probe-Call konstant
+    > 3 s braucht, ist das ein Hinweis auf ein zu schweres Probe-Modell
+    oder zu langer Probe-Prompt.
+    """
+    __tablename__ = "reasoning_audits"
+
+    id = Column(Integer, primary_key=True)
+    step_id = Column(String(36), nullable=False, index=True)  # UUID4 hex
+    session_id = Column(String(64), nullable=True, index=True)
+    kind = Column(String(32), nullable=False, index=True)  # spec_check|veto_probe|hitl_wait|...
+    status = Column(String(16), nullable=False, index=True)  # done|error|skipped
+    duration_ms = Column(Integer, nullable=True)
+    summary = Column(Text, nullable=True)
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 _engine = None
 _async_session_maker = None
 

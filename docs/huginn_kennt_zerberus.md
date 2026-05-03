@@ -2,9 +2,9 @@
 
 ## Aktueller Stand (Stand-Anker für RAG-Lookup)
 
-- **Letzter Patch:** P212 — Secrets bleiben geheim (Phase 5a Ziel #12 ABGESCHLOSSEN).
-- **Phase:** 5a (Nala-Projekte). 10 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18 (Huginn-Selbstwissen-Sync) als nachträglich aufgenommen.
-- **Tests:** 2256 grün (Stand 2026-05-04), +40 P212 aus 2216 baseline.
+- **Letzter Patch:** P213 — Reasoning-Schritte sichtbar im Chat (Phase 5a Ziel #13 ABGESCHLOSSEN).
+- **Phase:** 5a (Nala-Projekte). 11 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18 (Huginn-Selbstwissen-Sync) als nachträglich aufgenommen.
+- **Tests:** 2313 grün (Stand 2026-05-04), +57 P213 aus 2256 baseline.
 - **Datum dieser Datei:** 2026-05-04.
 
 Wer fragt "bei welchem Patch sind wir?" oder "wie ist der aktuelle Stand?", findet die Antwort in diesem Block. Diese Sektion wird bei jedem Patch automatisch durch das Sync-Skript `scripts/sync_huginn_rag.ps1` (P210) aktualisiert und in den FAISS-Index nachgeladen, sodass Huginn keinen veralteten Patch-Stand mehr nennt.
@@ -172,12 +172,28 @@ Snapshot-Metadaten landen in der `workspace_snapshots`-Tabelle mit Spalten für 
 
 Snapshots sind atomar pro Projekt — kein Per-File-Rollback, keine Cross-Project-Snapshots, keine Branch-Mechanik. Linear forward/reverse only, analog `git reset --hard`. Alte Snapshot-Tars werden aktuell **nicht** automatisch geräumt; ein Storage-GC-Job ist offene Schuld.
 
+### Reasoning-Schritte sichtbar im Chat
+
+Während eine Chat-Turn läuft (Spec-Probe → Projekt-RAG → Veto-Probe → HitL-Wartezeit → Sandbox-Run → Synthese), sieht der User sonst nur die finale Antwort. Auf Mobile dauert das oft mehrere Sekunden — wer mit unzuverlässigem Netz chattet, weiß nicht, ob das System hängt oder arbeitet. Das **Reasoning-Karten-Subsystem** macht die Zwischenschritte sichtbar: Backend sammelt sie in einem In-Memory-Buffer pro Session, das Frontend pollt im 4-Sekunden-Takt und rendert sie als kollabierte Karte unter der Bot-Bubble.
+
+Die Karte ist Default-eingeklappt — Header zeigt nur "🧭 Schritte (N) ▼ anzeigen" mit 44px-Touch-Target. Ein Klick expandiert die Liste; jeder Eintrag hat ein Status-Icon (`⏳` für laufend, `✅` für erfolgreich, `❌` für Fehler, `⏭` für übersprungen), einen menschenlesbaren Kurztext (z.B. "Wartet auf Bestätigung", "Modell prüft Code") und eine Dauer-Anzeige in Millisekunden. Die Karte bleibt nach Turn-Ende als Audit-Spur stehen — wer wissen will warum die Antwort 8 s gedauert hat, sieht auf einen Blick wo die Zeit hinging.
+
+Backend-Architektur ist analog zu HitL-Gate (P206) und GPU-Queue (P211): Pure-Function-Schicht (`compute_step_duration_ms`/`should_emit`/`truncate_text`), `ReasoningStep`-Dataclass mit UUID4-hex als stabiler ID, `ReasoningStreamGate`-Singleton mit Per-Session-FIFO-Buffer (Default 32 Steps pro Session), Whitelist `KNOWN_STEP_KINDS` mit zehn Werten (`spec_check`/`rag_query`/`veto_probe`/`hitl_wait`/`sandbox_run`/`synthesis`/`embedder`/`reranker`/`guard`/`llm_call`). `emit_step` ist sync (kein await im Hot-Path), `mark_step_done` ist idempotent und akzeptiert `None` als no-op (damit der Aufrufer unbedingt `mark_step_done(emit_step(...))` schreiben kann).
+
+Audit-Tabelle `reasoning_audits` schreibt nur Endzustände (`done`/`error`/`skipped`) — der `running`-Zwischenstand wandert nie in die DB. Auswertung: `SELECT kind, AVG(duration_ms), MAX(duration_ms), COUNT(*) FROM reasoning_audits WHERE status='done' GROUP BY kind` zeigt Latenz-Hotspots als Tuning-Grundlage.
+
+HTTP-Endpoints sind auth-frei wie alle `/v1/`-Pfade (Dictate-Lane-Invariante): `GET /v1/reasoning/poll?wait=N` liefert ein JSON-Array der Steps für die Session aus dem `X-Session-ID`-Header (wait auf [0, 10s] geclamped); `POST /v1/reasoning/clear` wirft die Steps der Session weg (idempotent — Frontend ruft das beim Beginn einer neuen Turn auf).
+
+Sessions ohne Aktivität seit 10 Minuten werden bei jedem Poll-Aufruf weg-gesweept (`cleanup_stale_sessions` als Lazy-Cleanup beim Read statt teurem Hintergrund-Task). Der Frontend-Renderer hält eine `_reasoningStepIndex`-Map step_id → li-Element für stabile DOM-Keys; neue Polls aktualisieren existierende Einträge in-place statt sie neu zu rendern.
+
+Frontend-Whitelist `_REASON_KIND_LABELS` als Defense-in-Depth zur Backend-Whitelist: falls das Backend einen unbekannten Kind liefert, fällt der Renderer auf den Roh-Namen zurück. Toggle läuft als globale Event-Delegation auf `[data-reasoning-toggle]` (kein `onclick`-Concat im innerHTML, P203b-Invariante). XSS-Sicherheit: alle Summary-Strings via `textContent` (kein `innerHTML` auf User/LLM-Strings), Status-Icons via `escapeHtml(_reasonIcon(...))`.
+
 ### Phase-5a-Stand der Ziele
 
 Phase 5a hat eine feste Liste von zwölf Zielen für das Projekte-Subsystem. Stand jetzt:
 
-- **Erledigt:** Projekte als Entität mit CRUD und Hel-UI, Template-Generierung beim Anlegen, isolierter Projekt-RAG-Index, Datei-Upload mit Drop-Zone und Indexierung, Sandbox-Code-Execution mit Workspace-Mount und Output-Synthese, HitL-Gate vor Code-Execution, Workspace-Snapshots mit Diff-View und Rollback, Spec-Contract / Ambiguitäts-Check vor dem ersten LLM-Call, **Zweite Meinung vor Ausführung / Sancho Panza** (Veto-Layer eines zweiten LLM mit `temperature=0.1`, blockt schädliche Code-Vorschläge bevor das HitL-Gate sie sieht).
-- **Offen:** Zweite Meinung vor Ausführung (Veto-Layer durch ein zweites Modell — Codename **Sancho Panza**), GPU-Queue für VRAM-Konsumenten, Secrets bleiben geheim (verschlüsselt, Sandbox-Injection, Output-Maskierung).
+- **Erledigt:** Projekte als Entität mit CRUD und Hel-UI, Template-Generierung beim Anlegen, isolierter Projekt-RAG-Index, Datei-Upload mit Drop-Zone und Indexierung, Sandbox-Code-Execution mit Workspace-Mount und Output-Synthese, HitL-Gate vor Code-Execution, Workspace-Snapshots mit Diff-View und Rollback, Spec-Contract / Ambiguitäts-Check vor dem ersten LLM-Call, Zweite Meinung vor Ausführung / Sancho Panza (Veto-Layer eines zweiten LLM), GPU-Queue für VRAM-Konsumenten (statisches Budget plus FIFO-Queue), Secrets bleiben geheim (Output-Maskierung in Sandbox+Synthese), **Reasoning-Schritte sichtbar im Chat** (Pipeline-Steps als kollabierte Karte unter der Bot-Bubble mit 4s-Polling).
+- **Offen:** Wiederkehrende Jobs / Scheduler, Bessere RAG-Quellen-Karten / Source-UI, Token-Cost-Tracking-Vereinheitlichung, Hel-UI-Auswertungen für Audit-Tabellen (gpu_queue_audits, secret_redactions, reasoning_audits).
 
 Phase 5b (Power-Features) ist erst danach dran: Multi-LLM-Evaluation, Bugfix-Workflow mit Test-Agenten Loki/Fenrir/Vidar pro Projekt, Multi-Agent-Orchestrierung, Reasoning-Modi und LLM-Wahl pro Projekt, Cost-Transparency.
 
@@ -480,6 +496,7 @@ Es gibt eine Reihe von Begriffen, die nichts mit Zerberus zu tun haben, aber ger
 Zwei offene Phase-5a-Ziele:
 
 - **Secrets bleiben geheim** — verschlüsselte Storage, Sandbox-Injection nur wenn nötig, Output-Maskierung. `.env`-Inhalte dürfen nie in der Antwort landen.
+- **Sehen was der Agent denkt** — Pipeline-Schritte sichtbar im Chat. Auf Mobile muss der User wissen, dass das System arbeitet, nicht hängt. Karte unter der Bot-Bubble, kollabiert default, expandiert per Klick.
 - **Reasoning-Schritte sichtbar im Chat** — Mobile-first Anzeige der Zwischenschritte des Agenten, damit der User mitverfolgt was passiert.
 
 Phase 5b (Power-Features) folgt danach: Multi-LLM-Evaluation, Bugfix-Workflow mit Test-Agenten Loki/Fenrir/Vidar pro Projekt, Multi-Agent-Orchestrierung, Reasoning-Modi und LLM-Wahl pro Projekt, Cost-Transparency.

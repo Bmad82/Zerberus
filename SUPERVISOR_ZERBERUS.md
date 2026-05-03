@@ -1,10 +1,86 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 212 (2026-05-04) – Secrets bleiben geheim (Phase 5a Ziel #12 ABGESCHLOSSEN)*
+*Letzte Aktualisierung: Patch 213 (2026-05-04) – Reasoning-Schritte sichtbar im Chat (Phase 5a Ziel #13 ABGESCHLOSSEN)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 213** — Reasoning-Schritte sichtbar im Chat (Phase 5a Ziel #13 ABGESCHLOSSEN) (2026-05-04)
+
+Vor P213 sah der User waehrend einer Chat-Turn nur die finale Antwort. Wenn die Pipeline arbeitete (Spec-Probe → RAG → Veto → HitL-Wartezeit → Sandbox-Run → Synthese-Call), war das auf Mobile oft mehrere Sekunden Stille — der User wusste nicht, ob das System haengt oder arbeitet. P213 macht die Zwischenschritte sichtbar als kollabierte Karte unter der Bot-Bubble (Default eingeklappt, ein Klick zeigt die Liste).
+
+**Architektur: Pure-Function-Schicht plus In-Memory-Buffer plus Audit-Tabelle plus auth-frei Long-Poll-Endpoint plus Verdrahtung in 7 Pipeline-Stellen plus Nala-Frontend-Karte mit 4s-Polling.**
+
+- **Modul** [`zerberus/core/reasoning_steps.py`](zerberus/core/reasoning_steps.py):
+  - **Pure-Function-Schicht** — `compute_step_duration_ms(started, finished) -> int|None` (None bei laufendem Step, sonst Millisekunden, clamped >= 0). `should_emit(kind, *, enabled, disabled_kinds)` als Trigger-Gate (globaler Kill-Switch + per-kind Opt-out + Whitelist `KNOWN_STEP_KINDS`={`spec_check`/`rag_query`/`veto_probe`/`hitl_wait`/`sandbox_run`/`synthesis`/`embedder`/`reranker`/`guard`/`llm_call`}). `truncate_text(text, *, max_bytes)` Bytes-genau mit Ellipsis-Marker `…` und Unicode-safe-Cut.
+  - **`ReasoningStep`-Dataclass** — `step_id` (UUID4-hex), `session_id`, `kind`, `summary`, `started_at`, `status` (Default `running`, sonst `done`/`error`/`skipped`), `finished_at`, optional `detail`. `duration_ms` als computed property. `to_public_dict()` liefert das Frontend-JSON OHNE `session_id` und OHNE `detail` (Audit-only) — nur `step_id`/`kind`/`summary`/`status`/`duration_ms`/`started_at`/`finished_at`.
+  - **`ReasoningStreamGate`-Singleton** — Per-Session-FIFO mit Default-Buffer `DEFAULT_BUFFER_PER_SESSION=32` und TTL `DEFAULT_SESSION_TTL_SECONDS=600`. `emit(*, session_id, kind, summary, detail) -> ReasoningStep|None` ist sync (kein await im Hot-Path). `mark_done(step_id, *, status, detail) -> ReasoningStep|None` ist idempotent (Doppel-Mark gewinnt der erste). `list_for_session(session_id)` als Snapshot. `cleanup_session(session_id)` + `cleanup_stale_sessions(*, now)` als TTL-Sweep. `consume_steps(session_id, *, wait_seconds)` async, blockt long-poll-style bis ein neuer Step kommt ODER der Timeout greift.
+  - **Convenience** — `emit_step(session_id, kind, summary, *, detail)` und `mark_step_done(step, *, status, detail)`. `mark_step_done` akzeptiert sowohl ein `ReasoningStep`-Objekt als auch ein None — damit der Aufrufer unbedingt `mark_step_done(emit_step(...))` schreiben kann, wenn die Trigger-Gate-Heuristik den Step ablehnen wuerde.
+
+- **Audit-Tabelle** `reasoning_audits` in [`database.py`](zerberus/core/database.py): `step_id`/`session_id`/`kind`/`status`/`duration_ms`/`summary`/`detail`/`created_at`. Nur bei finalem Status (`done`/`error`/`skipped`) geschrieben — `running`-Zwischenstand wandert nie in die DB. Best-Effort-Insert via `_audit_step()` als Hintergrund-Task auf dem laufenden Event-Loop. Auswertung: `SELECT kind, AVG(duration_ms), MAX(duration_ms), COUNT(*) FROM reasoning_audits WHERE status='done' GROUP BY kind` zeigt wo das System Zeit verbringt — Grundlage fuer Latenz-Tuning.
+
+- **HTTP-Endpoints** in [`legacy.py`](zerberus/app/routers/legacy.py):
+  - `GET /v1/reasoning/poll?wait=N` — auth-frei (Dictate-Lane-Invariante). Liefert `{"steps": [...]}` als JSON-Array fuer die Session aus `X-Session-ID`-Header. `wait` ist auf `[0, DEFAULT_POLL_TIMEOUT_SECONDS=10]` geclamped, um abusive Long-Polls zu verhindern. Best-Effort-Sweep aelterer Sessions bei jedem Poll.
+  - `POST /v1/reasoning/clear` — auth-frei. Wirft die Steps der Session weg, idempotent. Frontend ruft das beim Beginn einer neuen Chat-Turn auf.
+
+- **Verdrahtung in 7 Pipeline-Stellen** in `chat_completions` (legacy.py):
+  1. **Turn-Reset** — Beim Eintritt der Funktion `get_reasoning_gate().cleanup_session(session_id)` als zusaetzliche Defensive (zusaetzlich zum Frontend-`POST /clear`).
+  2. **Projekt-RAG** — `emit_step(session, "rag_query", "Projekt-RAG durchsucht (<slug>)")` vor `query_project_rag`, mark_done mit `chunks=N` als Detail.
+  3. **Spec-Check** — `emit_step("spec_check", "Frage prueft auf Mehrdeutigkeit")` nur wenn `should_ask_clarification` greift, mark_done `done` falls Probe Frage liefert, sonst `skipped`.
+  4. **LLM-Call** — `emit_step("llm_call", "Modell formuliert Antwort")` mit try/except — mark_done `error` falls die Call-Coroutine wirft. Auch im Fallback-Pfad und im Direct-LLM-Pfad.
+  5. **Veto-Probe** — `emit_step("veto_probe", "Zweites Modell prueft Code")` vor `run_veto`, mark_done abhaengig vom Verdict (`pass`/`veto`/`error`).
+  6. **HitL-Wartezeit** — `emit_step("hitl_wait", "Wartet auf Bestaetigung")` vor `wait_for_decision`, Status-Mapping `approved`/`bypassed` → `done`, `rejected`/`timeout` → `skipped`, sonst `error`.
+  7. **Sandbox-Run** — `emit_step("sandbox_run", "Sandbox laeuft (<lang>)")` vor `execute_in_workspace`, mark_done `done` bei `exit_code=0`, sonst `error`. `skipped` falls `execute_in_workspace` None liefert (Slug-Reject/Disabled).
+  8. **Synthese** — `emit_step("synthesis", "Verstaendliche Antwort wird formuliert")` vor `synthesize_code_output`, mark_done `done`/`skipped` (leerer Output)/`error`.
+
+- **Nala-Frontend** in [`nala.py`](zerberus/app/routers/nala.py):
+  - **CSS** `.reasoning-card` mit Default-collapsed-State, `.reasoning-toggle` als 44px-Touch-Target (Mobile-first), `.reasoning-list` als ungeordnete Liste mit `.reasoning-step`-Eintraegen. Status-Klassen `.reasoning-running` (animiertes Spin-Icon), `.reasoning-done` (Gruen), `.reasoning-error` (Rot), `.reasoning-skipped` (Grau).
+  - **Polling-Loop** `startReasoningPolling(abortSignal, snapshotSessionId)` — 4s-Intervall, erster Tick nach 800ms, fail-quiet bei Netzfehler, Auto-Stop wenn die Session wechselt. Endpoint `GET /v1/reasoning/poll`.
+  - **Renderer** `renderReasoningSteps(steps)` — Karte wird beim ersten Step erzeugt, danach nur in-place Update der Eintraege via `_reasoningStepIndex`-Map (step_id → li-Element). Status-Icons `⏳`/`✅`/`❌`/`⏭` via `escapeHtml(_reasonIcon(...))`. Summary via `textContent` (XSS-safe, kein innerHTML auf User/LLM-Strings). Per-Step `data-step-id` + `data-step-kind` als stabile DOM-Keys.
+  - **Toggle** als globale Event-Delegation auf `[data-reasoning-toggle]` (kein onclick-Concat im innerHTML, P203b-Invariante). Erster Klick expandiert die Liste, zweiter Klick kollabiert sie.
+  - **Default-Labels** `_REASON_KIND_LABELS` als Frontend-Whitelist — falls das Backend einen unbekannten Kind liefert, faellt der Renderer auf den Roh-Namen zurueck.
+  - **Hookup an `sendMessage`** — `clearReasoningState()` + `startReasoningPolling(...)` parallel zu HitL/Spec-Polling. `stopReasoningPolling()` im `finally`-Block (Karte bleibt aber als Audit-Spur stehen).
+
+**Was P213 bewusst NICHT macht:**
+
+- **SSE/WebSocket-Streaming** — 4s-Polling reicht. Der Polling-Cost ist bei einer Chat-Turn-Lifetime vernachlaessigbar (3-5 Polls pro Turn), und SSE wuerde die Auth-frei-Endpoint-Konvention durchbrechen.
+- **Cross-Session-Visibility** — jeder User sieht nur seine eigenen Steps (Filter via `X-Session-ID`-Header).
+- **Detail-Drill-Down pro Step** — der `detail`-String steht in der Audit-Tabelle, nicht in der Karten-UI. Wer wissen will warum ein Step `error` war, schaut in `reasoning_audits.detail`.
+- **Replay-Modus fuer alte Sessions** — Steps sind transient (In-Memory + TTL-Sweep). Wer historische Reasoning-Spuren braucht, fragt die Audit-Tabelle direkt.
+- **Hel-UI-Auswertung** — eigener Patch P213b, analog zu den anderen Audit-Tabellen-Schulden (P211/P212).
+
+**Lessons (3):**
+
+1. **Sync-emit + async-audit ist die richtige Asymmetrie.** `emit_step` ist sync, weil der Hot-Path nicht blocken darf — der Step wird in den In-Memory-Buffer geschoben und der Caller faehrt sofort weiter. Der Audit-Insert ist asynchron als Hintergrund-Task auf dem laufenden Event-Loop — wenn kein Loop verfuegbar ist (Sync-Test), wird die Coroutine gar nicht erst erzeugt (sonst RuntimeWarning "coroutine was never awaited"). Pattern fuer alle zukuenftigen Telemetrie-Pfade.
+2. **`mark_step_done(emit_step(...))` mit None-tolerantem Caller-Pattern.** Wenn das Trigger-Gate emit_step ablehnt (unbekannter kind, fehlende session_id), liefert es None — und `mark_step_done(None)` ist ein No-Op. Der Aufrufer kann unbedingt schreiben `_step = emit_step(...); ...; mark_step_done(_step)` ohne Null-Check — das macht die Verdrahtung in 7 Pipeline-Stellen kurz und fehlertolerant.
+3. **Window-basierte Source-Audits brauchen Reserve.** Der P203d-Test `test_writable_false_default_in_call_site` hat ein ±2500-Byte-Fenster um `[SANDBOX-203d]` benutzt — P213 hat im Sandbox-Block ~700 Bytes emit_step-Code zugefuegt, das Fenster gerissen. Lehre fuer zukuenftige Source-Audits: ±5000 als konservative Default-Reserve, oder lieber zwei Substring-Checks ohne Window (z.B. "beide Strings im File"), als enge Distance-Tests, die bei jedem Verdrahtungs-Patch reissen.
+
+**Tests:** 57 in [`test_p213_reasoning_steps.py`](zerberus/tests/test_p213_reasoning_steps.py).
+
+`TestComputeStepDurationMs` (4) — running / finished / zero / negative-clamped.
+`TestShouldEmit` (4) — known-kinds / unknown / disabled-globally / disabled-kinds.
+`TestTruncateText` (4) — none / short / truncate-with-ellipsis / unicode-safe.
+`TestReasoningStep` (3) — running-no-duration / finished-duration / public-dict-omits-internal.
+`TestStreamGateEmit` (4) — running-step / unknown-kind / no-session / truncated.
+`TestStreamGateMarkDone` (4) — sets-finish / idempotent / invalid-status / unknown-id.
+`TestStreamGateBufferCap` (1) — fifo-cap-drops-oldest.
+`TestStreamGateCleanup` (2) — cleanup-session / cleanup-stale.
+`TestStreamGateConsume` (4) — immediate / empty / long-poll-emit / long-poll-timeout.
+`TestConvenience` (3) — singleton-emit / mark-none-no-crash / mark-step-object.
+`TestStoreAudit` (1) — silent-when-DB-not-initialized.
+`TestLegacyWiring` (4) — imports / kinds-emitted / turn-reset / endpoints-registered.
+`TestReasoningPollEndpoint` (4) — empty / steps-for-session / session-isolation / wait-clamped.
+`TestReasoningClearEndpoint` (2) — clear-removes / idempotent.
+`TestNalaFrontendReasoningCard` (7) — css / 44px / poll-endpoint / clear-endpoint / hookup / event-delegation / xss-textContent.
+`TestJsSyntaxIntegrity` (1) — node --check ueber inline scripts (skipped wenn node fehlt).
+`TestSmoke` (4) — module-exports / db-schema / kinds-statuses-disjoint / constants-sane.
+
+Lokal: 2256 baseline (P212) → **2313 passed** (+57 P213, +0 NEUE Failures), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts` + `test_rag_dual_switch.test_fallback_logic` + `test_patch185_runtime_info` durch `config.yaml`-Drift `deepseek-v4-pro`).
+
+---
+
+## Vorheriger Patch
 
 **Patch 212** — Secrets bleiben geheim / Output-Maskierung für Sandbox+Synthese (Phase 5a Ziel #12 ABGESCHLOSSEN) (2026-05-04)
 
