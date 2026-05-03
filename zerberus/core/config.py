@@ -203,6 +203,19 @@ class ProjectsConfig(BaseModel):
     # werden (z.B. fuer Tests, oder wenn der Disk-Budget knapp ist).
     sandbox_writable: bool = False
     snapshots_enabled: bool = True
+    # Patch 208 (Phase 5a #8): Spec-Contract / Ambiguitaets-Check vor
+    # dem ersten Haupt-LLM-Call. Wenn ``spec_check_enabled=True`` UND
+    # ``compute_ambiguity_score`` >= ``spec_check_threshold``, faehrt ein
+    # schmaler Probe-LLM-Call (eine Frage), das Frontend zeigt eine
+    # Klarstellungs-Karte, der User antwortet oder klickt "Trotzdem
+    # versuchen". Threshold 0.65 ist konservativ — kurze Sätze ohne
+    # Sprachangabe triggern, einfache Smalltalk-Fragen ("Wie geht's?")
+    # nicht. Timeout begrenzt das Long-Poll-Fenster — Timeout heisst
+    # implizites Bypass (User schaut nicht hin → defensiver weitermachen
+    # statt Frust durch Cancel).
+    spec_check_enabled: bool = True
+    spec_check_threshold: float = 0.65
+    spec_check_timeout_seconds: int = 60
 
 
 class SandboxConfig(BaseModel):

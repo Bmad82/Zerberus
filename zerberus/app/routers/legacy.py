@@ -354,6 +354,169 @@ async def chat_completions(
                 break
         last_user_msg = last_user_msg_clean
 
+    # Patch 208 (Phase 5a #8): Spec-Contract / Ambiguitaets-Check VOR
+    # dem Haupt-LLM-Call. Wenn die Heuristik einen Score >= Threshold
+    # liefert, faehrt ein schmaler Probe-LLM-Call (eine Frage), das
+    # Frontend rendert eine Klarstellungs-Karte und der User antwortet,
+    # klickt "Trotzdem versuchen" oder "Abbrechen". Bei "answered" wird
+    # die User-Antwort als [KLARSTELLUNG]-Block an last_user_msg
+    # angehaengt; bei "cancelled" endet der Chat mit Hinweis-Antwort
+    # ohne weiteren LLM-Call. Source-Detection: Voice wenn der
+    # P204-Header X-Prosody-Context + X-Prosody-Consent gesetzt sind.
+    spec_pending_id: str | None = None
+    spec_status_for_audit: str | None = None
+    spec_question_text: str | None = None
+    spec_score_value: float = 0.0
+    spec_source_value: str = "text"
+    spec_answer_text_value: str | None = None
+    if getattr(settings.projects, "spec_check_enabled", True):
+        try:
+            from zerberus.core.spec_check import (
+                compute_ambiguity_score,
+                should_ask_clarification,
+                run_spec_probe,
+                enrich_user_message,
+                get_chat_spec_gate,
+            )
+            _spec_voice_input = bool(
+                request.headers.get("X-Prosody-Context")
+                and request.headers.get("X-Prosody-Consent", "false").lower() == "true"
+            )
+            spec_source_value = "voice" if _spec_voice_input else "text"
+            spec_score_value = compute_ambiguity_score(
+                last_user_msg, source=spec_source_value,
+            )
+            _spec_threshold = float(
+                getattr(settings.projects, "spec_check_threshold", 0.65)
+            )
+            if should_ask_clarification(spec_score_value, threshold=_spec_threshold):
+                logger.info(
+                    f"[SPEC-208] ambig score={spec_score_value:.3f} "
+                    f"threshold={_spec_threshold} source={spec_source_value} "
+                    f"session={session_id}"
+                )
+                spec_question_text = await run_spec_probe(
+                    last_user_msg, llm_service, session_id,
+                )
+                if spec_question_text:
+                    _spec_gate = get_chat_spec_gate()
+                    _spec_pending = await _spec_gate.create_pending(
+                        session_id=session_id,
+                        project_id=active_project_id,
+                        project_slug=project_slug,
+                        original_message=last_user_msg,
+                        question=spec_question_text,
+                        score=spec_score_value,
+                        source=spec_source_value,
+                    )
+                    spec_pending_id = _spec_pending.id
+                    _spec_timeout = float(
+                        getattr(settings.projects, "spec_check_timeout_seconds", 60)
+                    )
+                    _spec_decision = await _spec_gate.wait_for_decision(
+                        _spec_pending.id, _spec_timeout,
+                    )
+                    _spec_pending_obj = _spec_gate.get(_spec_pending.id)
+                    spec_answer_text_value = (
+                        _spec_pending_obj.answer_text
+                        if _spec_pending_obj is not None else None
+                    )
+                    _spec_gate.cleanup(_spec_pending.id)
+                    spec_status_for_audit = _spec_decision
+                    logger.info(
+                        f"[SPEC-208] decision id={_spec_pending.id} "
+                        f"session={session_id} status={_spec_decision} "
+                        f"answer_len={len(spec_answer_text_value or '')}"
+                    )
+
+                    if _spec_decision == "cancelled":
+                        # User hat verworfen — Chat endet mit Hinweis-Antwort,
+                        # kein Haupt-LLM-Call.
+                        _spec_hint = (
+                            "Verstanden — verworfen. Sag mir bei der naechsten "
+                            "Nachricht etwas genauer, was ich machen soll, "
+                            "dann lege ich los."
+                        )
+                        try:
+                            await store_interaction(
+                                "user", last_user_msg,
+                                session_id=session_id,
+                                profile_name=profile_name or "",
+                                profile_key=profile_name or None,
+                            )
+                            await store_interaction(
+                                "assistant", _spec_hint,
+                                session_id=session_id,
+                                profile_name=profile_name or "",
+                                profile_key=profile_name or None,
+                            )
+                            await update_interaction()
+                        except Exception as _store_err:
+                            logger.warning(
+                                f"⚠️ store_interaction(spec-cancelled) "
+                                f"fehlgeschlagen (non-fatal): {_store_err}"
+                            )
+                        try:
+                            from zerberus.core.spec_check import (
+                                store_clarification_audit,
+                            )
+                            await store_clarification_audit(
+                                pending_id=spec_pending_id,
+                                session_id=session_id,
+                                project_id=active_project_id,
+                                project_slug=project_slug,
+                                original_message=last_user_msg,
+                                question=spec_question_text,
+                                answer_text=None,
+                                score=spec_score_value,
+                                source=spec_source_value,
+                                status="cancelled",
+                            )
+                        except Exception as _audit_err:
+                            logger.warning(
+                                f"[SPEC-208] Audit-Schreiben fehlgeschlagen "
+                                f"(non-fatal): {_audit_err}"
+                            )
+                        return ChatCompletionResponse(
+                            created=int(datetime.now().timestamp()),
+                            model="spec-cancelled",
+                            choices=[Choice(
+                                index=0,
+                                message=Message(role="assistant", content=_spec_hint),
+                                finish_reason="stop",
+                            )],
+                        )
+
+                    if _spec_decision == "answered" and spec_answer_text_value:
+                        last_user_msg = enrich_user_message(
+                            last_user_msg,
+                            spec_question_text,
+                            spec_answer_text_value,
+                        )
+                        # req.messages-Spiegelung — der naechste
+                        # messages_for_llm-Build sieht den enriched-Text.
+                        for _m in reversed(req.messages):
+                            if _m.role == "user":
+                                _m.content = last_user_msg
+                                break
+                else:
+                    logger.info(
+                        f"[SPEC-208] probe_returned_empty session={session_id} "
+                        f"(fail-open, kein Block)"
+                    )
+                    spec_status_for_audit = "error"
+            else:
+                logger.info(
+                    f"[SPEC-208] not_ambig score={spec_score_value:.3f} "
+                    f"threshold={_spec_threshold} source={spec_source_value} "
+                    f"session={session_id}"
+                )
+        except Exception as _spec_err:
+            logger.warning(
+                f"[SPEC-208] Pipeline-Fehler (fail-open): {_spec_err}"
+            )
+            spec_status_for_audit = "error"
+
     # ------------------------------------------------------------------
     # Orchestrator-Pipeline: RAG-Suche → LLM → Auto-Index
     # Fallback: direkter LLM-Call ohne RAG falls Pipeline nicht verfügbar
@@ -805,6 +968,31 @@ async def chat_completions(
                 f"[HITL-206] Audit-Schreiben fehlgeschlagen (non-fatal): {_audit_err}"
             )
 
+    # Patch 208 (Phase 5a #8): Audit-Trail-Zeile in ``clarifications``.
+    # Schreibt nur wenn der Spec-Check-Pfad einen Status erzeugt hat
+    # (Probe-Call lief). Bei "cancelled" haben wir oben schon early-
+    # returned und dort geschrieben — der Block hier deckt
+    # ``answered``/``bypassed``/``timeout``/``error`` ab.
+    if spec_status_for_audit is not None and spec_status_for_audit != "cancelled":
+        try:
+            from zerberus.core.spec_check import store_clarification_audit
+            await store_clarification_audit(
+                pending_id=spec_pending_id,
+                session_id=session_id,
+                project_id=active_project_id,
+                project_slug=project_slug,
+                original_message=last_user_msg,
+                question=spec_question_text,
+                answer_text=spec_answer_text_value,
+                score=spec_score_value,
+                source=spec_source_value,
+                status=spec_status_for_audit,
+            )
+        except Exception as _audit_err:
+            logger.warning(
+                f"[SPEC-208] Audit-Schreiben fehlgeschlagen (non-fatal): {_audit_err}"
+            )
+
     # Patch 192: Sentiment-Triptychon — BERT-Analyse fuer User + Bot, Konsens
     # mit optionaler Prosodie aus dem X-Prosody-Context Header (one-shot).
     # Fail-open: jeder Fehler setzt sentiment_payload auf None; OpenAI-Schema
@@ -907,6 +1095,73 @@ async def hitl_resolve(req: HitlResolveRequest, request: Request):
         session_id=session_id,
     )
     return HitlResolveResponse(
+        ok=ok,
+        decision=req.decision if ok else None,
+    )
+
+
+# ---------- Patch 208 — Spec-Contract / Klarstellungs-Probes ----------
+#
+# Two-Endpoint-Pattern analog HitL (P206): Frontend pollt
+# ``/v1/spec/poll`` waehrend der Chat-Completions-Request long-pollt,
+# rendert die Klarstellungs-Karte sobald ein Pending zur Session
+# existiert, und schickt die Entscheidung via ``/v1/spec/resolve``.
+# Beide Endpoints sind /v1/-auth-frei (Dictate-Lane-Invariante) — Owner-
+# ship ueber session_id (poll) bzw. UUID4-pending_id + session_id-Match
+# (resolve). Decision-Werte: ``answered`` (mit ``answer_text``),
+# ``bypassed`` ("Trotzdem versuchen"), ``cancelled`` (Chat verwerfen).
+
+
+class SpecResolveRequest(BaseModel):
+    pending_id: str
+    decision: str  # "answered" | "bypassed" | "cancelled"
+    session_id: str | None = None
+    answer_text: str | None = None  # bei decision=answered Pflicht
+
+
+class SpecPollResponse(BaseModel):
+    pending: dict | None = None  # to_public_dict() oder None
+
+
+class SpecResolveResponse(BaseModel):
+    ok: bool
+    decision: str | None = None
+
+
+@router.get("/spec/poll", response_model=SpecPollResponse)
+async def spec_poll(request: Request):
+    """Liefert das aelteste pending Spec-Pending dieser Session (oder None).
+
+    Frontend pollt diesen Endpoint im Sekunden-Takt waehrend der
+    Chat-Completions-Request offen ist.
+    """
+    session_id = request.headers.get("X-Session-ID") or "legacy-default"
+    from zerberus.core.spec_check import get_chat_spec_gate
+    gate = get_chat_spec_gate()
+    pendings = gate.list_for_session(session_id)
+    if not pendings:
+        return SpecPollResponse(pending=None)
+    pendings.sort(key=lambda p: p.created_at)
+    return SpecPollResponse(pending=pendings[0].to_public_dict())
+
+
+@router.post("/spec/resolve", response_model=SpecResolveResponse)
+async def spec_resolve(req: SpecResolveRequest, request: Request):
+    """Setzt die Entscheidung zu einem Spec-Pending. Idempotent.
+
+    - ``answered`` braucht non-empty ``answer_text``, sonst False.
+    - Cross-Session-Resolve via ``session_id``-Mismatch wird geblockt.
+    """
+    session_id = req.session_id or request.headers.get("X-Session-ID") or None
+    from zerberus.core.spec_check import get_chat_spec_gate
+    gate = get_chat_spec_gate()
+    ok = await gate.resolve(
+        req.pending_id,
+        req.decision,
+        session_id=session_id,
+        answer_text=req.answer_text,
+    )
+    return SpecResolveResponse(
         ok=ok,
         decision=req.decision if ok else None,
     )

@@ -7291,3 +7291,186 @@ Keine Code-/Diff-Inhalte im Log — nur Metriken (Worker-Protection-konform anal
 
 *Stand: 2026-05-03, Patch 207 — Workspace-Snapshots, Diff-View, Rollback. Phase 5a Ziele #9 + #10 ABGESCHLOSSEN. 1946 passed (+74), 0 neue Failures.*
 
+---
+
+## Patch 208 — Spec-Contract / Ambiguitäts-Check (Phase 5a Ziel #8 ABGESCHLOSSEN)
+
+**Datum:** 2026-05-03
+
+**Phase-5a-Ziel #8 — "Erst verstehen, dann coden":** Vor dem ersten Haupt-LLM-Call schätzt eine Pure-Function-Heuristik die Ambiguität der User-Eingabe. Bei Score über dem Threshold läuft eine schmale Spec-Probe (ein LLM-Call, eine Frage), das Frontend zeigt eine Klarstellungs-Karte mit Original-Message + Frage + Textarea + drei Buttons. User antwortet, klickt "Trotzdem versuchen" oder bricht ab. Erst danach läuft der eigentliche Code-/Antwort-Pfad mit ggf. angereichertem Prompt weiter.
+
+### Architektur
+
+**Drei Schichten plus Feature-Flags plus Endpoints plus Frontend-Card.**
+
+#### 1. Pure-Function-Schicht (`zerberus/core/spec_check.py`)
+
+`compute_ambiguity_score(message, *, source="text"|"voice") -> float` ist die Kern-Heuristik. Sie addiert pro Treffer einen Penalty:
+
+| Trigger | Penalty |
+|---|---|
+| Leere/whitespace-Message | 1.0 (Maximum) |
+| <4 Wörter | +0.40 |
+| <8 Wörter | +0.20 |
+| <14 Wörter | +0.05 |
+| Pronomen-Dichte (`es`/`das`/`dies`/`der`/`die`/...) | bis +0.30 |
+| Code-Verb (`schreib`/`bau`/`implementier`/...) ohne Sprachangabe | +0.20 |
+| Generisches Verb (`mach`/`tu`/...) ohne Substantiv-Anker | +0.15 |
+| Code-Verb ohne IO-Spec (`input`/`output`/`return`/...) | +0.10 |
+| `source="voice"` | +0.20 |
+
+Score wird auf [0, 1] geclampt. Ein klarer Prompt mit Sprachangabe + IO-Spec landet meist <0.4, "bau das" landet >0.8.
+
+`should_ask_clarification(score, *, threshold=0.65) -> bool` ist das Trigger-Gate. Threshold per `projects.spec_check_threshold` konfigurierbar.
+
+`build_spec_probe_messages(message)` baut die zwei-Element-`messages`-Liste für den Probe-LLM:
+
+- **System-Prompt** (`SPEC_PROBE_SYSTEM`): "Stelle EINE knappe Rückfrage, max 1 Satz, max 160 Zeichen. Kein Code, keine Vorrede."
+- **User-Prompt**: "Diese Anfrage könnte mehrdeutig sein: ...\\n---\\n{message}\\n---\\nWas ist die EINE wichtigste Klarstellungs-Frage?"
+
+Bewusst minimaler Kontext — kein Persona-Leak, kein RAG. Die Probe ist Werkzeug, kein Gespräch.
+
+`build_clarification_block(question, answer)` und `enrich_user_message(original, question, answer)` hängen den `[KLARSTELLUNG]…[/KLARSTELLUNG]`-Block an die Original-User-Message. Marker substring-disjunkt zu allen anderen LLM-Markern (PROJEKT-RAG, PROJEKT-KONTEXT, PROSODIE, CODE-EXECUTION, AKTIVE-PERSONA).
+
+#### 2. Async-Wrapper
+
+`run_spec_probe(message, llm_service, session_id) -> Optional[str]` ruft den Probe-LLM mit `temperature_override=0.3` und liefert die formulierte Frage oder `None` bei LLM-Crash, leerer Antwort oder Non-Tuple-Result. Bytes-genau truncate auf `SPEC_PROBE_MAX_BYTES=400`.
+
+#### 3. Pending-Registry (`ChatSpecGate`-Singleton)
+
+In-Memory only — kein DB-Persist (analog `ChatHitlGate` aus P206). `ChatSpecPending`-Dataclass mit `id` (UUID4-hex), `session_id`, `project_id`, `project_slug`, `original_message`, `question`, `score`, `source` (text|voice), `status`, `answer_text` (nur bei answered), `created_at`, `resolved_at`.
+
+**Drei Decision-Werte** statt zwei (vs. P206 HitL):
+
+- `answered` mit `answer_text` (User hat Klarstellung getippt)
+- `bypassed` ("Trotzdem versuchen")
+- `cancelled` (User verwirft)
+
+Cross-Session-Defense via `session_id`-Match. `answered` braucht non-empty `answer_text`, sonst False.
+
+#### 4. Audit-Tabelle `clarifications`
+
+Persistente Spur für Threshold-Tuning. Spalten: `pending_id`, `session_id`, `project_id`, `project_slug`, `original_message`, `question`, `answer_text`, `score` (Float), `source`, `status` (answered|bypassed|cancelled|timeout|error), `created_at`, `resolved_at`. `store_clarification_audit(...)` ist Best-Effort.
+
+### Verdrahtung in `legacy.py::chat_completions`
+
+Position: zwischen `last_user_msg`-Cleanup (Cloud/Local-Suffix entfernt) und Intent-Detection. **Vor** allen Persona/RAG-Operationen, **vor** dem Haupt-LLM-Call.
+
+```python
+if getattr(settings.projects, "spec_check_enabled", True):
+    # Source-Detection: voice wenn P204-Header gesetzt
+    _spec_voice = bool(
+        request.headers.get("X-Prosody-Context")
+        and request.headers.get("X-Prosody-Consent", "false").lower() == "true"
+    )
+    spec_source_value = "voice" if _spec_voice else "text"
+    spec_score_value = compute_ambiguity_score(last_user_msg, source=spec_source_value)
+    threshold = float(getattr(settings.projects, "spec_check_threshold", 0.65))
+
+    if should_ask_clarification(spec_score_value, threshold=threshold):
+        spec_question_text = await run_spec_probe(last_user_msg, llm_service, session_id)
+        if spec_question_text:
+            gate = get_chat_spec_gate()
+            pending = await gate.create_pending(...)
+            decision = await gate.wait_for_decision(pending.id, timeout)
+            answer = (gate.get(pending.id) or pending).answer_text
+            gate.cleanup(pending.id)
+
+            if decision == "cancelled":
+                return ChatCompletionResponse(model="spec-cancelled", ...)
+            if decision == "answered" and answer:
+                last_user_msg = enrich_user_message(last_user_msg, spec_question_text, answer)
+                for m in reversed(req.messages):
+                    if m.role == "user":
+                        m.content = last_user_msg
+                        break
+            # bypassed/timeout: weiter wie original
+```
+
+Decisions im Detail:
+
+- **answered**: `last_user_msg` wird mit `[KLARSTELLUNG]`-Block angereichert. `req.messages` mitgespiegelt — sonst sieht der Haupt-LLM-Call die Original-Message.
+- **bypassed**: Original durch.
+- **cancelled**: Early-return mit `model="spec-cancelled"`, kein Haupt-LLM-Call. Hinweis-Antwort: "Verstanden — verworfen. Sag mir bei der nächsten Nachricht etwas genauer ..."
+- **timeout**: Wie `bypassed` (defensiver für UX). Bei HitL ist Timeout = reject; bei Spec ist Timeout = "Default-Vertrauen".
+
+### Endpoints
+
+- **`GET /v1/spec/poll`** — Long-Poll-Endpoint, liefert ältestes pending der Session
+- **`POST /v1/spec/resolve`** — Body `{pending_id, decision, session_id?, answer_text?}`, idempotent + Cross-Session-Block
+
+Auth-frei (Dictate-Lane-Invariante).
+
+### Nala-Frontend
+
+**CSS**: `.spec-card` mit Kintsugi-Gold-Border, `.spec-original` (Original-Message als Referenz), `.spec-question` (prominent), `.spec-answer-input` textarea, `.spec-actions` mit drei **44x44px Touch-Targets** (gold/grün/rot). Post-Klick-States `.spec-card.spec-{answered,bypassed,cancelled}` — Karte bleibt sichtbar als Audit-Spur.
+
+**JS**: `startSpecPolling`/`renderSpecCard`/`resolveSpecPending`/`clearSpecState`/`stopSpecPolling`. Render via `textContent` (XSS-safe by default), `addEventListener` (kein inline onclick — P203b-Lesson). In `sendMessage` parallel zum HitL-Polling.
+
+### Feature-Flags
+
+```python
+spec_check_enabled: bool = True
+spec_check_threshold: float = 0.65   # konservativ
+spec_check_timeout_seconds: int = 60
+```
+
+### Was P208 NICHT macht
+
+- Sprachen-Erkennung im Code-Block (das ist P203d-1)
+- Refactoring der HitL-Card P206 (Spec ist separate Karte VOR HitL)
+- Multi-Turn-Klarstellung
+- Telegram-Pfad (Huginn hat P167)
+- Persistierung der Pendings (In-Memory only)
+- Edit-Vor-Run
+- Token-Cost-Tracking für Probe-Call (Schuld analog P203d-1)
+
+### Logging-Tag
+
+`[SPEC-208]` mit `pending_create`/`decision`/`ambig`/`not_ambig`/`probe_returned_empty`/`audit_written`/`Pipeline-Fehler (fail-open)`. Worker-Protection-konform: kein Klartext aus Score-Heuristik, keine User-Antwort-Inhalte im Log.
+
+### Tests
+
+89 in `zerberus/tests/test_p208_spec_contract.py`, strukturiert in 14 Klassen:
+
+| Klasse | # | Was |
+|---|---|---|
+| `TestComputeAmbiguityScore` | 9 | Leer/Range/Length/Voice/Code-Verb/Pronoun/Clear/Clamp/IO |
+| `TestShouldAskClarification` | 5 | Above/Below/Exact/Invalid/Custom-Threshold |
+| `TestBuildSpecProbeMessages` | 5 | List-Shape/System-Content/User-Content/Empty/Constraint |
+| `TestEnrichUserMessage` | 6 | Marker/Preserve/Q+A/Empty/Answer-Only/Build-Block |
+| `TestMarkerUniqueness` | 2 | Disjunkt/Format |
+| `TestRunSpecProbe` | 7 | Happy/Strip/Empty/Whitespace/Crash/Non-Tuple/Truncate |
+| `TestChatSpecGate` | 13 | UUID/Dict/Filter/Answered+Text/Empty-Reject/Bypassed/Cancelled/Invalid/Mismatch/Wait/Timeout/Cleanup/Truncate |
+| `TestStoreClarificationAudit` | 3 | Happy/Truncate/No-DB |
+| `TestSpecPollResolveEndpoints` | 6 | Empty/Session/No-Leak/Answered/Bypassed/Unknown |
+| `TestLegacySourceAudit` | 13 | Imports, Endpoints, Flags, Cancelled-Return, Enrich, Voice-Detection, Audit-Call |
+| `TestNalaSourceAudit` | 10 | JS, Endpoints, sendMessage-Verdrahtung, CSS, 44px-Touch, escapeHtml, Textarea, Decisions |
+| `TestE2ESpecCheck` | 5 | Non-ambig skip / Bypassed / Answered+Enrichment / Cancelled+Early-Return / Disabled |
+| `TestJsSyntaxIntegrity` | 1 | `node --check` über NALA_HTML (skipped wenn node fehlt) |
+| `TestSmoke` | 4 | Config-Flags, Tabelle, Endpoints, Module-Exports |
+
+**Lokal:** 1946 baseline → **2035 passed** (+89 P208), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 NEUE Failures aus P208.
+
+### Lessons gelernt (in `lessons.md` aktualisiert)
+
+1. **Heuristik-Score VOR LLM ist die billigste Filter-Stufe.** Pure-Function, keine Tokens, 0$ Cost-Profil pro nicht-ambiger Message.
+2. **Score-Heuristik ist additiv mit Penalties + Clamp [0, 1].** Multiplikative Modelle sind fragil.
+3. **Voice-Bonus (+0.20) ist defense-in-depth für Whisper-Ambiguität.**
+4. **Probe-LLM-Call mit isoliertem System-Prompt.** `temperature=0.3` deterministischer.
+5. **Drei Decision-Werte statt zwei.** Timeout = bypass (defensiver für UX).
+6. **Klarstellungs-Block-Anreicherung modifiziert sowohl `last_user_msg` als auch `req.messages`.**
+7. **Cancelled-Pfad early-return mit `model="spec-cancelled"`.** Audit-Spur ohne Token-Kosten.
+8. **Audit-Schreiben am Ende des Hauptpfades**, nicht direkt nach Resolve.
+
+### Helper für P209/P210/P211
+
+- **`clarifications`-Tabelle** als Audit-Vorlage.
+- **`.spec-card`-CSS-Pattern** klont sich zu `.veto-card` (P209) oder `.gpu-queue-card` (P210).
+- **`renderSpecCard`/`resolveSpecPending`-Pattern** ist die zweite Vorlage neben P207.
+- **`compute_ambiguity_score`-Heuristik** ist erweiterbar ohne API-Bruch.
+
+---
+
+*Stand: 2026-05-03, Patch 208 — Spec-Contract / Ambiguitäts-Check. Phase 5a Ziel #8 ABGESCHLOSSEN. 2035 passed (+89), 0 neue Failures.*
+

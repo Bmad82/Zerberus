@@ -1,10 +1,52 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 207 (2026-05-03) – Workspace-Snapshots + Diff-View + Rollback (Phase 5a Ziele #9 + #10 ABGESCHLOSSEN)*
+*Letzte Aktualisierung: Patch 208 (2026-05-03) – Spec-Contract / Ambiguitäts-Check (Phase 5a Ziel #8 ABGESCHLOSSEN)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 208** — Spec-Contract / Ambiguitäts-Check (Phase 5a Ziel #8 ABGESCHLOSSEN) (2026-05-03)
+
+Erst verstehen, dann coden. Vor dem ersten Haupt-LLM-Call schaetzt eine Pure-Function-Heuristik die Ambiguitaet der User-Eingabe; bei Score >= Threshold (Default 0.65) faehrt ein schmaler "Spec-Probe"-LLM-Call (eine Frage, keine Vorrede), das Frontend rendert eine Klarstellungs-Karte mit Original-Message + Frage + Textarea + drei Buttons. User antwortet, klickt "Trotzdem versuchen" oder bricht ab. Erst danach laeuft der eigentliche Code-/Antwort-Pfad mit ggf. angereichertem Prompt weiter. Whisper-Input bekommt einen Score-Bonus (`+0.20`) — Voice-Transkripte sind systematisch ambiger als getippter Text.
+
+**Architektur: drei Schichten plus Feature-Flags plus Endpoints plus Frontend-Card.**
+
+- **Spec-Modul** [`zerberus/core/spec_check.py`](zerberus/core/spec_check.py) mit Pure-Function-Schicht (`compute_ambiguity_score(message, *, source="text"|"voice")` heuristik 0.0-1.0; `should_ask_clarification(score, *, threshold=0.65)` Trigger-Gate; `build_spec_probe_messages(message)` baut die `messages`-Liste fuer den Probe-Call; `build_clarification_block(question, answer)` plus `enrich_user_message(original, question, answer)` haengen `[KLARSTELLUNG]…[/KLARSTELLUNG]` an; Marker substring-disjunkt zu `[PROJEKT-RAG]`/`[PROJEKT-KONTEXT]`/`[PROSODIE]`/`[CODE-EXECUTION]`/`[AKTIVE-PERSONA]`), Async-Wrapper (`run_spec_probe(message, llm_service, session_id)` ruft den Probe-LLM mit `temperature=0.3` und liefert die Frage oder `None`), Pending-Registry (`ChatSpecGate`-Singleton analog `ChatHitlGate` aus P206 — In-Memory only, `asyncio.Event` pro Pending, Cross-Session-Defense ueber `session_id`-Match), Audit-Helper (`store_clarification_audit(...)` schreibt in `clarifications`-Tabelle, Best-Effort, 4 KB Truncate).
+- **Heuristik-Score** addiert pro Treffer einen Penalty: kurze Saetze (<4 Woerter +0.40, <8 +0.20, <14 +0.05), Pronomen-Dichte (max +0.30), Code-Verb ohne Sprache (+0.20), generisches Verb ohne Substantiv-Anker (+0.15), Code-Verb ohne IO-Spec (+0.10), Voice-Bonus (+0.20). Clamped auf [0, 1]. Ein klarer Prompt mit Sprachangabe + IO-Spec landet meist <0.4, "bau das" landet >0.8.
+- **Neue Tabelle** `clarifications` in [`zerberus/core/database.py`](zerberus/core/database.py): `pending_id`, `session_id`, `project_id`, `project_slug`, `original_message`, `question`, `answer_text`, `score` (Float), `source` (text|voice), `status` (answered|bypassed|cancelled|timeout|error), `created_at`, `resolved_at`. Persistente Spur fuer Threshold-Tuning.
+- **Verdrahtung in [`legacy.py::chat_completions`](zerberus/app/routers/legacy.py)** zwischen `last_user_msg`-Cleanup (Cloud/Local-Suffix entfernt) und Intent-Detection. Drei Decision-Pfade:
+  - `answered` mit `answer_text` → `last_user_msg` wird via `enrich_user_message` mit `[KLARSTELLUNG]`-Block angereichert, `req.messages` mitgespiegelt → Haupt-LLM-Call sieht Frage + User-Antwort
+  - `bypassed` → Original durch (User akzeptiert Risiko)
+  - `cancelled` → Chat endet mit Hinweis-Antwort, **kein** Haupt-LLM-Call (early-return mit `model="spec-cancelled"`)
+  - `timeout` → wie `bypassed` (defensiver: User schaut nicht hin → eher durchlassen statt frustrieren)
+- **Source-Detection**: Voice wenn `X-Prosody-Context` + `X-Prosody-Consent: true` Header gesetzt sind (P204-Konvention). Sonst Text.
+- **Neue Endpoints** in `legacy.py` (auth-frei wie `/v1/hitl/*`, Dictate-Lane-Invariante):
+  - `GET /v1/spec/poll` → liefert aeltestes pending Spec-Pending der Session
+  - `POST /v1/spec/resolve` mit `{pending_id, decision, session_id, answer_text?}` → idempotent + Cross-Session-Block. `answered` braucht non-empty `answer_text`, sonst `ok=False`.
+- **Nala-Frontend** in [`nala.py`](zerberus/app/routers/nala.py):
+  - **CSS** (~135 Zeilen): `.spec-card`/`.spec-card-header`/`.spec-source-tag`/`.spec-original`/`.spec-question`/`.spec-answer-row`/`.spec-answer-input` (textarea, focus-Border in Gold)/`.spec-actions`/`.spec-answer-btn` (gold)/`.spec-bypass-btn` (gruen)/`.spec-cancel-btn` (rot) plus Post-Klick-States `.spec-card.spec-{answered,bypassed,cancelled}`. Mobile-first 44x44 Touch-Targets fuer alle drei Buttons.
+  - **JS-Funktionen** (~150 Zeilen): `startSpecPolling(abortSignal, snapshotSessionId)` pollt `/v1/spec/poll` im Sekunden-Takt waehrend der Chat-Long-Poll laeuft. `renderSpecCard(pending)` baut Karte mit Original-Message (textContent — XSS-safe by default), Frage (textContent), Textarea, drei Buttons (`✉️ Antwort senden` / `→ Trotzdem versuchen` / `✗ Abbrechen`). `resolveSpecPending(pendingId, decision, answerText)` macht POST und setzt Card-State (`spec-answered` gruen, `spec-bypassed` gold, `spec-cancelled` rot). Karte bleibt nach Klick sichtbar als Audit-Spur. `clearSpecState()`/`stopSpecPolling()` analog HitL.
+  - **Verdrahtung in `sendMessage`**: nach `clearHitlState() + startHitlPolling(...)` analog `clearSpecState() + startSpecPolling(myAbort.signal, reqSessionId)`. Beide laufen unabhaengig — Spec kommt VOR dem LLM-Call, HitL kommt NACH dem Code-Block.
+- **Feature-Flags** in [`config.py::ProjectsConfig`](zerberus/core/config.py): `spec_check_enabled: bool = True`, `spec_check_threshold: float = 0.65`, `spec_check_timeout_seconds: int = 60`. Master-Switch off → kein Probe, kein Pending, kein Block in der Response.
+
+**Was P208 bewusst NICHT macht:**
+
+- **Sprachen-Erkennung im Code-Block** — das macht P203d-1 (auf der LLM-Output-Seite, nicht der User-Seite).
+- **Refactoring der HitL-Card (P206)** — Spec ist eine separate Karte, die VOR HitL kommt. Beide bleiben unabhaengig.
+- **Multi-Turn-Klarstellung** — eine Frage pro Turn, dann zurueck in den Hauptpfad. Folge-Klarstellungen sind ein eigener Patch.
+- **Telegram-Pfad** — Huginn hat eigenen HitL aus P167; Spec-Probe waere dort ein Overkill (Telegram-Threads sind asynchroner als Chat).
+- **Persistierung der Pendings** — In-Memory only, Long-Poll-Requests sterben beim Restart sowieso (analog P206-Konvention).
+- **Edit-Vor-Run** — User kann den Original-Prompt nicht editieren in der Card, nur antworten oder bypassen. Bei Bedarf neue Message schicken.
+- **Token-Cost-Tracking fuer den Probe-Call** — Schuld analog P203d-1 (interactions.cost erfasst nur den Haupt-Call).
+
+**Tests:** 89 in [`test_p208_spec_contract.py`](zerberus/tests/test_p208_spec_contract.py). Strukturiert in 14 Klassen: `TestComputeAmbiguityScore` (9 — leer/range/length/voice/code-verb/pronoun/clear/clamp/io), `TestShouldAskClarification` (5 — above/below/exact/invalid/custom-threshold), `TestBuildSpecProbeMessages` (5 — list-shape/system-content/user-content/empty/system-prompt-constrains), `TestEnrichUserMessage` (6 — marker/preserve/q+a/empty/answer-only/build), `TestMarkerUniqueness` (2 — disjunkt/format), `TestRunSpecProbe` (7 — happy/strip/empty/whitespace/crash/non-tuple/truncate), `TestChatSpecGate` (13 — uuid/dict-keys/list-filter/answered+text/answered-empty-rejected/bypassed/cancelled/invalid-decision/session-mismatch/wait-immediate/wait-timeout/cleanup/answer-truncated), `TestStoreClarificationAudit` (3 — happy/truncate/no-db), `TestSpecPollResolveEndpoints` (6 — empty/by-session/no-leak/answered/bypassed/unknown), `TestLegacySourceAudit` (13 — Logging-Tag, Imports, Endpoints, Pydantic-Models, source-Kwarg, Threshold/Timeout/Enabled-Flags, cancelled-early-return, enrich, voice-detection, audit-call), `TestNalaSourceAudit` (10 — JS-Funktionen, Endpoints, sendMessage-Verdrahtung, CSS-Klassen, 44px-Touch, escapeHtml/textContent, textarea, drei Decisions, Audit-Trail-States), `TestE2ESpecCheck` (5 — non-ambig skip / ambig+bypassed / ambig+answered+enrichment / ambig+cancelled+early-return / disabled-flag-skip), `TestJsSyntaxIntegrity` (1 — `node --check` ueber NALA_HTML, skipped wenn node fehlt), `TestSmoke` (4 — config-flags / clarifications-tabelle / endpoints / module-exports).
+
+**Lokal:** 1946 baseline → **2035 passed** (+89 P208), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info` durch `config.yaml`-Drift `deepseek-v4-pro`), 0 NEUE Failures aus P208.
+
+**Logging-Tag:** `[SPEC-208]` mit `pending_create id=... session=... score=... source=... question_len=...`, `decision id=... session=... status=... answer_len=...`, `ambig score=... threshold=... source=... session=...`, `not_ambig score=... threshold=... source=... session=...`, `probe_returned_empty session=... (fail-open)`, `audit_written session=... project_id=... status=... source=... score=...`, `Pipeline-Fehler (fail-open): ...`.
+
+---
 
 **Patch 207** — Workspace-Snapshots + Diff-View + Rollback (Phase 5a Ziele #9 + #10 ABGESCHLOSSEN) (2026-05-03)
 

@@ -262,6 +262,37 @@ class CodeExecution(Base):
     resolved_at = Column(DateTime, nullable=True)
 
 
+class Clarification(Base):
+    """Patch 208 (Phase 5a #8) — Audit-Trail fuer Spec-Contract-/Ambiguity-
+    Probes vor dem Haupt-LLM-Call.
+
+    Erfasst pro Probe: Pending-ID (UUID4 hex), Session, Projekt, die
+    Original-User-Message + die formulierte Rueckfrage + ggf. die User-
+    Antwort, plus Heuristik-Score, Source ("text"/"voice") und das
+    finale Ergebnis (``answered``/``bypassed``/``cancelled``/``timeout``/
+    ``error``).
+
+    Persistente Spur, damit auswertbar wird: wie oft trifft die
+    Heuristik, wie oft hilft die Rueckfrage tatsaechlich, wie oft
+    bypassed der User. Das ist die Grundlage fuer Threshold-Tuning.
+    """
+    __tablename__ = "clarifications"
+
+    id = Column(Integer, primary_key=True)
+    pending_id = Column(String(36), nullable=True, index=True)  # UUID4 hex aus spec_check
+    session_id = Column(String(64), nullable=True, index=True)
+    project_id = Column(Integer, nullable=True, index=True)
+    project_slug = Column(String(120), nullable=True)
+    original_message = Column(Text, nullable=True)
+    question = Column(Text, nullable=True)
+    answer_text = Column(Text, nullable=True)
+    score = Column(Float, nullable=True)
+    source = Column(String(16), nullable=True)  # text|voice
+    status = Column(String(16), nullable=True, index=True)  # answered|bypassed|cancelled|timeout|error
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+
 _engine = None
 _async_session_maker = None
 

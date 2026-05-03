@@ -904,6 +904,128 @@ NALA_HTML = """<!DOCTYPE html>
         .diff-card.diff-rolled-back .diff-resolved { color: #6cd4a1; }
         .diff-card.diff-rollback-failed { border-color: rgba(229,115,115,0.45); }
         .diff-card.diff-rollback-failed .diff-resolved { color: #e57373; }
+        /* Patch 208: Spec-Contract / Klarstellungs-Karte VOR dem Haupt-LLM-Call.
+           Eigene Border-Akzente (helleres Gold, kein Code-Banner) — die Karte
+           soll als "Frage" erkennbar sein, nicht als "Code-Run-Confirm". 44x44
+           Touch-Targets fuer alle Buttons + textarea. .spec-answered/.spec-
+           bypassed/.spec-cancelled sind Post-Klick-States — Karte bleibt
+           sichtbar als Audit-Spur. */
+        .spec-card {
+            margin-top: 8px;
+            background: #08111f;
+            border: 1px solid rgba(240,180,41,0.42);
+            border-radius: 10px;
+            overflow: hidden;
+            font-size: 0.86em;
+        }
+        .spec-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            padding: 8px 12px;
+            background: rgba(240,180,41,0.10);
+            border-bottom: 1px solid rgba(240,180,41,0.22);
+            color: #f0d18a;
+            font-weight: 600;
+        }
+        .spec-card-header .spec-source-tag {
+            margin-left: auto;
+            font-weight: 400;
+            font-size: 0.86em;
+            color: #b8c8e0;
+        }
+        .spec-original {
+            padding: 6px 12px;
+            font-size: 0.84em;
+            font-style: italic;
+            color: #8aa0c0;
+            border-bottom: 1px solid rgba(240,180,41,0.10);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .spec-question {
+            padding: 10px 12px;
+            color: var(--color-text-light);
+            font-weight: 500;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .spec-answer-row {
+            padding: 6px 12px 8px;
+        }
+        .spec-answer-input {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 60px;
+            max-height: 160px;
+            padding: 8px 10px;
+            border: 1px solid rgba(240,180,41,0.30);
+            border-radius: 8px;
+            background: var(--color-primary);
+            color: var(--color-text-light);
+            font-family: inherit;
+            font-size: 0.94em;
+            resize: vertical;
+            outline: none;
+        }
+        .spec-answer-input:focus {
+            border-color: var(--color-gold);
+            box-shadow: 0 0 0 2px rgba(240,180,41,0.15);
+        }
+        .spec-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            padding: 8px 12px;
+            background: rgba(8,17,31,0.6);
+            border-top: 1px solid rgba(240,180,41,0.18);
+        }
+        .spec-actions button {
+            flex: 1 1 calc(50% - 4px);
+            min-height: 44px;
+            min-width: 44px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.92em;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .spec-answer-btn {
+            background: rgba(240,180,41,0.22);
+            border: 1px solid rgba(240,180,41,0.55);
+            color: #f0d18a;
+        }
+        .spec-answer-btn:active { background: rgba(240,180,41,0.34); transform: translateY(1px); }
+        .spec-answer-btn:disabled { opacity: 0.5; cursor: default; }
+        .spec-bypass-btn {
+            background: rgba(108,212,161,0.16);
+            border: 1px solid rgba(108,212,161,0.45);
+            color: #6cd4a1;
+        }
+        .spec-bypass-btn:active { background: rgba(108,212,161,0.28); transform: translateY(1px); }
+        .spec-bypass-btn:disabled { opacity: 0.5; cursor: default; }
+        .spec-cancel-btn {
+            background: rgba(229,115,115,0.18);
+            border: 1px solid rgba(229,115,115,0.55);
+            color: #e57373;
+        }
+        .spec-cancel-btn:active { background: rgba(229,115,115,0.28); transform: translateY(1px); }
+        .spec-cancel-btn:disabled { opacity: 0.5; cursor: default; }
+        .spec-resolved {
+            display: block;
+            text-align: center;
+            padding: 10px 12px;
+            font-size: 0.92em;
+            font-style: italic;
+            color: #b8c8e0;
+        }
+        .spec-card.spec-answered { border-color: rgba(108,212,161,0.45); }
+        .spec-card.spec-answered .spec-resolved { color: #6cd4a1; }
+        .spec-card.spec-bypassed { border-color: rgba(240,180,41,0.55); }
+        .spec-card.spec-bypassed .spec-resolved { color: #f0d18a; }
+        .spec-card.spec-cancelled { border-color: rgba(229,115,115,0.45); }
+        .spec-card.spec-cancelled .spec-resolved { color: #e57373; }
         /* Patch 124: Buttons wirken leicht erhoben - 3D-Feedback bei :active. */
         button:not(.expand-toggle), .btn {
             transition: transform 0.12s ease, box-shadow 0.12s ease;
@@ -2769,6 +2891,12 @@ NALA_HTML = """<!DOCTYPE html>
         clearHitlState();
         startHitlPolling(myAbort.signal, reqSessionId);
 
+        // Patch 208: Spec-Probe-State pro Turn zuruecksetzen + Polling
+        // parallel zu HitL. Beide laufen unabhaengig — Spec kommt VOR
+        // dem LLM-Call, HitL kommt NACH dem Code-Block.
+        clearSpecState();
+        startSpecPolling(myAbort.signal, reqSessionId);
+
         try {
             // Patch 191: Prosodie-Header durchreichen (Consent + Context aus letzter Audio-Analyse).
             const _chatHeaders = profileHeaders({ 'Content-Type': 'application/json' });
@@ -3724,6 +3852,178 @@ NALA_HTML = """<!DOCTYPE html>
         _hitlActiveCard = null;
         _hitlActivePendingId = null;
         stopHitlPolling();
+    }
+
+    // Patch 208: Spec-Contract / Klarstellungs-Karte VOR dem Haupt-LLM-Call.
+    // Frontend pollt /v1/spec/poll waehrend der Chat-Long-Poll laeuft, rendert
+    // bei Pending eine Karte mit Frage + textarea + drei Buttons (Antworten /
+    // Trotzdem versuchen / Abbrechen). Backend wartet asynchron via
+    // wait_for_decision; bei "cancelled" liefert es die spec-cancelled-
+    // Hinweis-Antwort zurueck und der Chat-Loop endet regulaer.
+    let _specActiveCard = null;
+    let _specActivePendingId = null;
+    let _specPollHandle = null;
+
+    function startSpecPolling(abortSignal, snapshotSessionId) {
+        stopSpecPolling();
+        let stopped = false;
+        let intervalId = null;
+        async function tick() {
+            if (stopped) return;
+            if (abortSignal && abortSignal.aborted) return;
+            if (snapshotSessionId !== sessionId) {
+                stopSpecPolling();
+                return;
+            }
+            if (_specActiveCard) return;
+            try {
+                const r = await fetch('/v1/spec/poll', {
+                    headers: profileHeaders(),
+                    signal: abortSignal,
+                });
+                if (!r.ok) return;
+                const data = await r.json();
+                if (data && data.pending && !_specActiveCard) {
+                    renderSpecCard(data.pending);
+                    stopSpecPolling();
+                }
+            } catch (_) { /* fail-quiet — naechste Runde in 1s */ }
+        }
+        intervalId = setInterval(tick, 1000);
+        tick();
+        _specPollHandle = function() {
+            stopped = true;
+            if (intervalId) clearInterval(intervalId);
+        };
+    }
+
+    function stopSpecPolling() {
+        if (_specPollHandle) {
+            try { _specPollHandle(); } catch (_) {}
+            _specPollHandle = null;
+        }
+    }
+
+    function renderSpecCard(pending) {
+        if (!pending || _specActiveCard) return;
+        _specActivePendingId = pending.id;
+
+        const card = document.createElement('div');
+        card.className = 'spec-card';
+
+        const header = document.createElement('div');
+        header.className = 'spec-card-header';
+        const sourceLabel = pending.source === 'voice' ? 'Stimme' : 'Text';
+        header.innerHTML =
+            '<span>❔ Verstehe ich das richtig?</span>'
+            + '<span class="spec-source-tag">' + escapeHtml(sourceLabel) + '</span>';
+        card.appendChild(header);
+
+        if (pending.original_message) {
+            const orig = document.createElement('div');
+            orig.className = 'spec-original';
+            orig.textContent = String(pending.original_message);
+            card.appendChild(orig);
+        }
+
+        const question = document.createElement('div');
+        question.className = 'spec-question';
+        question.textContent = String(pending.question || '');
+        card.appendChild(question);
+
+        const answerRow = document.createElement('div');
+        answerRow.className = 'spec-answer-row';
+        const answerInput = document.createElement('textarea');
+        answerInput.className = 'spec-answer-input';
+        answerInput.placeholder = 'Deine Antwort... (oder lass es leer und klicke "Trotzdem versuchen")';
+        answerInput.rows = 2;
+        answerRow.appendChild(answerInput);
+        card.appendChild(answerRow);
+
+        const actions = document.createElement('div');
+        actions.className = 'spec-actions';
+
+        const answerBtn = document.createElement('button');
+        answerBtn.type = 'button';
+        answerBtn.className = 'spec-answer-btn';
+        answerBtn.textContent = '✉️ Antwort senden';
+        answerBtn.addEventListener('click', function() {
+            const txt = (answerInput.value || '').trim();
+            if (!txt) {
+                answerInput.focus();
+                answerInput.style.borderColor = '#e57373';
+                setTimeout(function() { answerInput.style.borderColor = ''; }, 1200);
+                return;
+            }
+            resolveSpecPending(pending.id, 'answered', txt);
+        });
+
+        const bypassBtn = document.createElement('button');
+        bypassBtn.type = 'button';
+        bypassBtn.className = 'spec-bypass-btn';
+        bypassBtn.textContent = '→ Trotzdem versuchen';
+        bypassBtn.addEventListener('click', function() {
+            resolveSpecPending(pending.id, 'bypassed', null);
+        });
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'spec-cancel-btn';
+        cancelBtn.textContent = '✗ Abbrechen';
+        cancelBtn.addEventListener('click', function() {
+            resolveSpecPending(pending.id, 'cancelled', null);
+        });
+
+        actions.appendChild(answerBtn);
+        actions.appendChild(bypassBtn);
+        actions.appendChild(cancelBtn);
+        card.appendChild(actions);
+
+        messagesDiv.appendChild(card);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        _specActiveCard = card;
+        try { answerInput.focus(); } catch (_) {}
+    }
+
+    async function resolveSpecPending(pendingId, decision, answerText) {
+        if (!_specActiveCard) return;
+        _specActiveCard.querySelectorAll('button, textarea').forEach(function(b) {
+            b.disabled = true;
+        });
+        try {
+            await fetch('/v1/spec/resolve', {
+                method: 'POST',
+                headers: profileHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                    pending_id: pendingId,
+                    decision: decision,
+                    session_id: sessionId,
+                    answer_text: answerText || null,
+                }),
+            });
+        } catch (_) { /* fail-quiet — Backend-Timeout-Pfad uebernimmt */ }
+
+        const actions = _specActiveCard.querySelector('.spec-actions');
+        const answerRow = _specActiveCard.querySelector('.spec-answer-row');
+        if (decision === 'answered') {
+            _specActiveCard.classList.add('spec-answered');
+            if (actions) actions.innerHTML = '<span class="spec-resolved">✅ Antwort gesendet — Nala denkt nach...</span>';
+        } else if (decision === 'bypassed') {
+            _specActiveCard.classList.add('spec-bypassed');
+            if (actions) actions.innerHTML = '<span class="spec-resolved">→ Versuche trotzdem...</span>';
+        } else {
+            _specActiveCard.classList.add('spec-cancelled');
+            if (actions) actions.innerHTML = '<span class="spec-resolved">✗ Verworfen</span>';
+        }
+        if (answerRow && decision !== 'answered') {
+            answerRow.style.display = 'none';
+        }
+    }
+
+    function clearSpecState() {
+        _specActiveCard = null;
+        _specActivePendingId = null;
+        stopSpecPolling();
     }
 
     // Patch 76 + Patch 102 (B-03): Typing-Indicator mit Spinner + Status-Text
