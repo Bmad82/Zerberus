@@ -5,8 +5,8 @@
 **Letzter Patch:** P207 — Workspace-Snapshots, Diff-View, Rollback (Phase 5a Ziele #9 + #10 ABGESCHLOSSEN)
 **Tests:** 1946 passed (+74 P207 aus 1872 baseline), 4 xfailed (pre-existing), 3 failed (alle pre-existing — `edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info.test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`), 1 skipped (existing)
 **Manuelle Tests:** 1 / 80 ✅
-**Commit:** TBD — wird nach Push nachgetragen
-**Repos synchron:** TBD — wird nach `sync_repos.ps1` + `verify_sync.ps1` nachgetragen. `system_prompt_chris.json` bleibt working-tree dirty (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste, Stand identisch zu vorher).
+**Commit:** ed9bcc4 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude — alle drei gepusht (Ratatoskr `87f72a7`, Claude `172e3d5`, 0 unpushed Commits in allen drei). `verify_sync.ps1` meldet Zerberus working-tree dirty: `system_prompt_chris.json` bleibt unangetastet (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste, Stand identisch zu allen Vorgaenger-HANDOVERS seit P205. Naechster Coda kann sie ggf. via `git checkout system_prompt_chris.json` zuruecksetzen oder via `git rm --cached` + `.gitignore` aus dem Tracking nehmen).
 
 ---
 
