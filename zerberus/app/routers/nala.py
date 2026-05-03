@@ -775,6 +775,135 @@ NALA_HTML = """<!DOCTYPE html>
         .hitl-card.hitl-rejected .hitl-resolved { color: #e57373; }
         .hitl-card.hitl-approved .hitl-resolved { color: #6cd4a1; }
         .exit-badge.exit-skipped { color: #c8941f; }
+        /* Patch 207: Diff-Card unter der Output-Card. Zeigt added/
+           modified/deleted-Liste mit optionalem Inline-unified-Diff
+           pro Datei (collapsible). Rollback-Button am Footer mit
+           44x44 Touch-Target. .diff-card.diff-rolled-back ist der
+           Post-Klick-State (Karte bleibt sichtbar als Audit-Spur). */
+        .diff-card {
+            margin-top: 6px;
+            background: #08111f;
+            border: 1px solid rgba(240,180,41,0.32);
+            border-radius: 10px;
+            overflow: hidden;
+            font-size: 0.84em;
+        }
+        .diff-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            padding: 8px 12px;
+            background: rgba(240,180,41,0.10);
+            border-bottom: 1px solid rgba(240,180,41,0.22);
+            color: #f0d18a;
+            font-weight: 600;
+        }
+        .diff-card-header .diff-summary {
+            margin-left: auto;
+            font-weight: 400;
+            font-size: 0.88em;
+            color: #b8c8e0;
+        }
+        .diff-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        .diff-entry {
+            border-top: 1px solid rgba(240,180,41,0.10);
+        }
+        .diff-entry:first-child { border-top: none; }
+        .diff-entry-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            cursor: pointer;
+        }
+        .diff-status {
+            display: inline-block;
+            min-width: 84px;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 0.74em;
+            font-weight: 700;
+            text-transform: uppercase;
+            text-align: center;
+        }
+        .diff-status.diff-added { background: rgba(108,212,161,0.18); color: #6cd4a1; }
+        .diff-status.diff-modified { background: rgba(240,180,41,0.18); color: #f0d18a; }
+        .diff-status.diff-deleted { background: rgba(229,115,115,0.18); color: #e57373; }
+        .diff-path {
+            flex: 1;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            color: #d8e2f5;
+            word-break: break-all;
+        }
+        .diff-size {
+            color: #8aa0c0;
+            font-size: 0.8em;
+        }
+        .diff-entry-body {
+            padding: 6px 12px 10px;
+            border-top: 1px dashed rgba(240,180,41,0.14);
+            background: rgba(8,17,31,0.6);
+        }
+        .diff-entry.diff-collapsed .diff-entry-body { display: none; }
+        .diff-content {
+            margin: 0;
+            padding: 6px 8px;
+            background: transparent;
+            color: #d8e2f5;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.78em;
+            line-height: 1.45;
+            white-space: pre;
+            overflow-x: auto;
+            max-height: 240px;
+            overflow-y: auto;
+        }
+        .diff-content .diff-line-add { color: #6cd4a1; }
+        .diff-content .diff-line-del { color: #e57373; }
+        .diff-content .diff-line-meta { color: #8aa0c0; font-style: italic; }
+        .diff-binary-note {
+            color: #c8941f;
+            font-style: italic;
+            font-size: 0.85em;
+        }
+        .diff-actions {
+            display: flex;
+            justify-content: flex-end;
+            padding: 8px 12px;
+            background: rgba(8,17,31,0.6);
+            border-top: 1px solid rgba(240,180,41,0.18);
+        }
+        .diff-rollback {
+            min-height: 44px;
+            min-width: 44px;
+            padding: 8px 14px;
+            border-radius: 8px;
+            background: rgba(229,115,115,0.18);
+            border: 1px solid rgba(229,115,115,0.55);
+            color: #e57373;
+            font-size: 0.92em;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .diff-rollback:active { background: rgba(229,115,115,0.28); transform: translateY(1px); }
+        .diff-rollback:disabled { opacity: 0.5; cursor: default; }
+        .diff-resolved {
+            display: block;
+            text-align: center;
+            padding: 10px 12px;
+            font-size: 0.88em;
+            font-style: italic;
+            color: #b8c8e0;
+        }
+        .diff-card.diff-rolled-back { border-color: rgba(108,212,161,0.45); }
+        .diff-card.diff-rolled-back .diff-resolved { color: #6cd4a1; }
+        .diff-card.diff-rollback-failed { border-color: rgba(229,115,115,0.45); }
+        .diff-card.diff-rollback-failed .diff-resolved { color: #e57373; }
         /* Patch 124: Buttons wirken leicht erhoben - 3D-Feedback bei :active. */
         button:not(.expand-toggle), .btn {
             transition: transform 0.12s ease, box-shadow 0.12s ease;
@@ -3228,7 +3357,7 @@ NALA_HTML = """<!DOCTYPE html>
             outputCard.appendChild(body);
         }
 
-        // Visual-Order: bubble → toolbar → code-card → output-card → triptych → export-row
+        // Visual-Order: bubble → toolbar → code-card → output-card → diff-card → triptych → export-row
         const triptych = wrapperEl.querySelector('.sentiment-triptych');
         if (triptych) {
             wrapperEl.insertBefore(codeCard, triptych);
@@ -3236,6 +3365,227 @@ NALA_HTML = """<!DOCTYPE html>
         } else {
             wrapperEl.appendChild(codeCard);
             if (outputCard) wrapperEl.appendChild(outputCard);
+        }
+
+        // Patch 207: Diff-Card unter Output-Card, falls Backend Snapshots
+        // gemacht hat. Render auch bei leerem Diff-Array (User sieht
+        // "Keine Aenderungen" statt nichts) — das ist die positive
+        // Bestaetigung "der Code hat nix geschrieben". Render NICHT bei
+        // skipped-Status (es gab keinen Run).
+        if (!skipped && Array.isArray(codeExec.diff) && codeExec.before_snapshot_id) {
+            try {
+                renderDiffCard(wrapperEl, codeExec, triptych);
+            } catch (_e) {}
+        }
+    }
+
+    // Patch 207: Diff-Renderer fuer Workspace-Aenderungen + Rollback-Button.
+    // Liest ``codeExec.diff`` (Liste von DiffEntry) sowie
+    // ``codeExec.before_snapshot_id`` / ``after_snapshot_id``. Rendert eine
+    // Liste added/modified/deleted; Klick auf einen Eintrag toggled den
+    // Inline-unified-Diff. Footer-Rollback-Button schickt
+    // POST /v1/workspace/rollback mit before_snapshot_id + project_id.
+    function renderDiffCard(wrapperEl, codeExec, triptych) {
+        const diff = Array.isArray(codeExec.diff) ? codeExec.diff : [];
+        const beforeId = codeExec.before_snapshot_id ? String(codeExec.before_snapshot_id) : '';
+        const afterId = codeExec.after_snapshot_id ? String(codeExec.after_snapshot_id) : '';
+        if (!beforeId) return;
+
+        // Aktive Projekt-ID aus localStorage (P201) — Defense-in-Depth fuer
+        // den Rollback-Endpoint, nicht primaere Auth.
+        const activeProjectId = parseInt(localStorage.getItem('nala_active_project_id') || '0', 10);
+
+        const card = document.createElement('div');
+        card.className = 'diff-card';
+
+        const header = document.createElement('div');
+        header.className = 'diff-card-header';
+        const counts = { added: 0, modified: 0, deleted: 0 };
+        diff.forEach(function(d) {
+            const status = d && d.status ? String(d.status) : '';
+            if (counts.hasOwnProperty(status)) counts[status]++;
+        });
+        const summary = (
+            counts.added + ' neu, '
+            + counts.modified + ' geaendert, '
+            + counts.deleted + ' geloescht'
+        );
+        header.innerHTML =
+            '<span>📋 Workspace-Aenderungen</span>'
+            + '<span class="diff-summary">' + escapeHtml(summary) + '</span>';
+        card.appendChild(header);
+
+        const list = document.createElement('ul');
+        list.className = 'diff-list';
+        if (diff.length === 0) {
+            const empty = document.createElement('li');
+            empty.className = 'diff-entry';
+            const head = document.createElement('div');
+            head.className = 'diff-entry-head';
+            head.innerHTML = '<span class="diff-path">Keine Datei-Aenderungen.</span>';
+            empty.appendChild(head);
+            list.appendChild(empty);
+        } else {
+            diff.forEach(function(entry) {
+                if (!entry || typeof entry !== 'object') return;
+                const path = entry.path ? String(entry.path) : '?';
+                const status = entry.status ? String(entry.status) : 'modified';
+                const sizeBefore = (typeof entry.size_before === 'number') ? entry.size_before : 0;
+                const sizeAfter = (typeof entry.size_after === 'number') ? entry.size_after : 0;
+                const binary = !!entry.binary;
+                const unified = (typeof entry.unified_diff === 'string') ? entry.unified_diff : '';
+
+                const li = document.createElement('li');
+                li.className = 'diff-entry diff-collapsed';
+
+                const head = document.createElement('div');
+                head.className = 'diff-entry-head';
+                const statusClass = (status === 'added' || status === 'deleted' || status === 'modified')
+                    ? 'diff-' + status
+                    : 'diff-modified';
+                const statusLabel = status.toUpperCase();
+                const sizeLabel = (
+                    status === 'added'
+                        ? '+' + sizeAfter + 'B'
+                        : (status === 'deleted'
+                            ? '-' + sizeBefore + 'B'
+                            : sizeBefore + 'B → ' + sizeAfter + 'B')
+                );
+                head.innerHTML =
+                    '<span class="diff-status ' + statusClass + '">'
+                    + escapeHtml(statusLabel) + '</span>'
+                    + '<span class="diff-path">' + escapeHtml(path) + '</span>'
+                    + '<span class="diff-size">' + escapeHtml(sizeLabel) + '</span>';
+                head.addEventListener('click', function() {
+                    li.classList.toggle('diff-collapsed');
+                });
+                li.appendChild(head);
+
+                const body = document.createElement('div');
+                body.className = 'diff-entry-body';
+                if (binary) {
+                    const note = document.createElement('div');
+                    note.className = 'diff-binary-note';
+                    note.textContent = '(Binaerdatei — kein Inline-Diff)';
+                    body.appendChild(note);
+                } else if (unified) {
+                    const pre = document.createElement('pre');
+                    pre.className = 'diff-content';
+                    pre.innerHTML = colorizeUnifiedDiff(unified);
+                    body.appendChild(pre);
+                } else {
+                    const note = document.createElement('div');
+                    note.className = 'diff-binary-note';
+                    note.textContent = (status === 'added')
+                        ? '(neue Datei — kein Vorgaenger-Stand)'
+                        : (status === 'deleted'
+                            ? '(geloescht — kein Nachfolger-Stand)'
+                            : '(kein Inline-Diff verfuegbar)');
+                    body.appendChild(note);
+                }
+                li.appendChild(body);
+                list.appendChild(li);
+            });
+        }
+        card.appendChild(list);
+
+        const actions = document.createElement('div');
+        actions.className = 'diff-actions';
+        const rollbackBtn = document.createElement('button');
+        rollbackBtn.type = 'button';
+        rollbackBtn.className = 'diff-rollback';
+        rollbackBtn.textContent = '↩️ Aenderungen zurueckdrehen';
+        rollbackBtn.addEventListener('click', function() {
+            rollbackWorkspace(card, beforeId, activeProjectId);
+        });
+        if (!activeProjectId || diff.length === 0) {
+            rollbackBtn.disabled = true;
+            rollbackBtn.title = activeProjectId
+                ? 'Keine Aenderungen — nichts zurueckzudrehen.'
+                : 'Kein aktives Projekt — Rollback nicht moeglich.';
+        }
+        actions.appendChild(rollbackBtn);
+        card.appendChild(actions);
+
+        // Visual-Order: code-card → output-card → diff-card → triptych
+        if (triptych) {
+            wrapperEl.insertBefore(card, triptych);
+        } else {
+            wrapperEl.appendChild(card);
+        }
+    }
+
+    // Patch 207: Inline-unified-Diff einfaerben — Plus-Zeilen gruen,
+    // Minus-Zeilen rot, Header (---/+++/@@) grau. Zeile-fuer-Zeile
+    // escapen, dann mit ``<span>``-Klasse einwickeln.
+    function colorizeUnifiedDiff(text) {
+        // Newline-Split via charCode(10) — einfacher String-Literal mit
+        // Escape-Sequenz wuerde von Python frueh interpretiert.
+        const NL = String.fromCharCode(10);
+        const CR = String.fromCharCode(13);
+        const normalized = String(text || '').split(CR).join('');
+        const lines = normalized.split(NL);
+        const out = [];
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const escaped = escapeHtml(line);
+            let cls = '';
+            if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
+                cls = 'diff-line-meta';
+            } else if (line.startsWith('+')) {
+                cls = 'diff-line-add';
+            } else if (line.startsWith('-')) {
+                cls = 'diff-line-del';
+            }
+            out.push(cls
+                ? '<span class="' + cls + '">' + escaped + '</span>'
+                : escaped);
+        }
+        return out.join(String.fromCharCode(10));
+    }
+
+    // Patch 207: Rollback-Aufruf — sperrt den Button sofort, ruft
+    // POST /v1/workspace/rollback, setzt Card-State (rolled-back ODER
+    // rollback-failed). Karte bleibt sichtbar als Audit-Spur.
+    async function rollbackWorkspace(cardEl, snapshotId, projectId) {
+        if (!cardEl || !snapshotId) return;
+        const btn = cardEl.querySelector('.diff-rollback');
+        if (btn) btn.disabled = true;
+        let ok = false;
+        let errorReason = '';
+        try {
+            const r = await fetch('/v1/workspace/rollback', {
+                method: 'POST',
+                headers: profileHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                    snapshot_id: snapshotId,
+                    project_id: projectId,
+                }),
+            });
+            if (r.ok) {
+                const data = await r.json();
+                ok = !!(data && data.ok);
+                if (!ok && data && data.error) {
+                    errorReason = String(data.error);
+                }
+            } else {
+                errorReason = 'http_' + r.status;
+            }
+        } catch (e) {
+            errorReason = 'network';
+        }
+        const actions = cardEl.querySelector('.diff-actions');
+        if (actions) {
+            if (ok) {
+                cardEl.classList.add('diff-rolled-back');
+                actions.innerHTML = '<span class="diff-resolved">✅ Workspace zurueckgesetzt.</span>';
+            } else {
+                cardEl.classList.add('diff-rollback-failed');
+                const reasonText = errorReason
+                    ? ' (' + errorReason + ')'
+                    : '';
+                actions.innerHTML = '<span class="diff-resolved">❌ Rollback fehlgeschlagen' + escapeHtml(reasonText) + '</span>';
+            }
         }
     }
 

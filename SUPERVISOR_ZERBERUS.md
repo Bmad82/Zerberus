@@ -1,10 +1,66 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 206 (2026-05-03) – HitL-Gate vor Code-Execution + HANDOVER-Teststand-Konvention (Phase 5a Ziel #6 ABGESCHLOSSEN)*
+*Letzte Aktualisierung: Patch 207 (2026-05-03) – Workspace-Snapshots + Diff-View + Rollback (Phase 5a Ziele #9 + #10 ABGESCHLOSSEN)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 207** — Workspace-Snapshots + Diff-View + Rollback (Phase 5a Ziele #9 + #10 ABGESCHLOSSEN) (2026-05-03)
+
+Sicherheitsnetz NACH der Sandbox-Ausfuehrung. P206 gibt das Yay/Nay VOR dem Run; P207 gibt die Sicht UND die Reverse-Option DANACH. Wenn `projects.sandbox_writable=True` (Default False — RO bleibt P203c-Standard) UND `projects.snapshots_enabled=True` (Default True) UND HitL approved hat, schiesst der Chat-Endpunkt einen `before_run`-Tar-Snapshot, faehrt die Sandbox writable und schiesst danach einen `after_run`-Snapshot. Aus dem Paar entsteht ein Diff (added/modified/deleted plus optional `unified_diff` fuer Text-Files <64 KB), der additiv im `code_execution.diff`-Feld der Response landet — zusammen mit `before_snapshot_id` und `after_snapshot_id`. Der User sieht im Frontend eine Diff-Card und kann via `↩️ Aenderungen zurueckdrehen` den Workspace auf den `before`-Stand zuruecksetzen.
+
+**Architektur: drei Schichten plus Feature-Flag plus Endpoint plus Frontend-Card.**
+
+- **Snapshot-Modul** [`zerberus/core/projects_snapshots.py`](zerberus/core/projects_snapshots.py) mit Pure-Function-Schicht (`build_workspace_manifest`, `diff_snapshots`, `_looks_text`, `_is_safe_member` als Tar-Member-Validation, `_build_unified_diff`), Sync-FS-Schicht (`materialize_snapshot` schreibt atomar via Tempname + `os.replace`, `restore_snapshot` raeumt Workspace-Inhalt komplett und extrahiert Tar mit Member-Validation), Async-DB-Schicht (`store_snapshot_row`/`load_snapshot_row` auf neue Tabelle `workspace_snapshots`) und High-Level-Convenience (`snapshot_workspace_async`/`rollback_snapshot_async` mit `expected_project_id`-Check).
+- **Neue Tabelle** `workspace_snapshots` in [`zerberus/core/database.py`](zerberus/core/database.py): `snapshot_id` (UUID4-hex UNIQUE), `project_id`, `project_slug`, `label` (`before_run`/`after_run`/`manual`), `archive_path`, `file_count`, `total_bytes`, `pending_id` (Korrelation zu `hitl_chat`/`code_executions` aus P206), `parent_snapshot_id` (zeigt vom `after`- auf den `before`-Snapshot derselben Ausfuehrung), `created_at`. Snapshot-Tars liegen unter `data/projects/<slug>/_snapshots/<id>.tar`.
+- **Verdrahtung in [`legacy.py::chat_completions`](zerberus/app/routers/legacy.py)** zwischen P206-Approve und `execute_in_workspace`:
+
+```python
+_writable = bool(getattr(settings.projects, "sandbox_writable", False))
+_snapshots_active = _writable and bool(getattr(settings.projects, "snapshots_enabled", True))
+
+if _snapshots_active:
+    _before_snap = await snapshot_workspace_async(project_id=..., label="before_run", pending_id=...)
+
+_result = await execute_in_workspace(..., writable=_writable)  # ehemals hardcoded False
+
+if _snapshots_active and _before_snap is not None:
+    _after_snap = await snapshot_workspace_async(label="after_run", parent_snapshot_id=_before_snap["id"])
+    _diff = diff_snapshots(_before_snap["manifest"], _after_snap["manifest"])
+    code_execution_payload["diff"] = [d.to_public_dict() for d in _diff]
+    code_execution_payload["before_snapshot_id"] = _before_snap["id"]
+    code_execution_payload["after_snapshot_id"] = _after_snap["id"]
+```
+
+Fail-Open auf jeder Stufe; HitL-Skip-Pfad (rejected/timeout) triggert keinen Snapshot.
+
+- **Neuer Endpoint** `POST /v1/workspace/rollback` in `legacy.py` (auth-frei wie `/v1/hitl/*`): `WorkspaceRollbackRequest{snapshot_id, project_id}` → `WorkspaceRollbackResponse{ok, snapshot_id?, project_id?, project_slug?, file_count?, total_bytes?, error?}`. Reject-Pfade: `snapshots_disabled`, `restore_failed` (unbekannter snapshot ODER project_mismatch), `pipeline_error`. Cross-Project-Defense: `expected_project_id` muss zum Snapshot-Eigentuemer passen.
+- **Nala-Frontend** in [`nala.py`](zerberus/app/routers/nala.py):
+  - **CSS** (~125 Zeilen): `.diff-card`/`.diff-card-header`/`.diff-summary`/`.diff-list`/`.diff-entry`/`.diff-entry-head`/`.diff-status.diff-{added,modified,deleted}`/`.diff-path`/`.diff-size`/`.diff-content`/`.diff-content .diff-line-{add,del,meta}`/`.diff-binary-note`/`.diff-actions`/`.diff-rollback`/`.diff-resolved` plus Post-Klick-States `.diff-card.diff-{rolled-back,rollback-failed}`. Kintsugi-Gold-Border, `.diff-rollback` mit `min-height: 44px`/`min-width: 44px`.
+  - **JS-Funktionen** (~250 Zeilen): `renderDiffCard(wrapperEl, codeExec, triptych)` baut Header mit Summary `N neu, M geaendert, K geloescht`, dann pro DiffEntry eine `<li>` mit Status-Badge + Pfad (escapeHtml) + Size-Label; Klick toggled Inline-Diff. `colorizeUnifiedDiff(text)` faerbt Plus/Minus/Header (gruen/rot/grau) — nutzt `String.fromCharCode(10)` statt `'\n'`-Literal (Lesson aus P203b: Newline-Escapes werden in Python-Source frueh interpretiert). `rollbackWorkspace(cardEl, snapshotId, projectId)` macht POST und setzt Card-State.
+  - **`renderCodeExecution`-Erweiterung:** nach Code-Card + Output-Card-Insert, falls `!skipped && Array.isArray(codeExec.diff) && codeExec.before_snapshot_id` → `renderDiffCard(...)`. Backwards-compat zu P206-only-Backends.
+- **Feature-Flags** in [`config.py::ProjectsConfig`](zerberus/core/config.py): `sandbox_writable: bool = False` (RO-Default bleibt) + `snapshots_enabled: bool = True` (Master-Switch).
+- **Konvention-Update:** der hardcoded `writable=False` aus P203d-1 wurde durch `getattr(settings.projects, "sandbox_writable", False)` ersetzt. Der zugehoerige P203d-1-Source-Audit-Test wurde entsprechend nachgezogen.
+
+**Was P207 bewusst NICHT macht:**
+
+- **Cross-Project-Diff** — Snapshots sind per Projekt isoliert, ein Cross-Diff macht selten Sinn.
+- **Branch-Mechanik** — linear forward/reverse only. `parent_snapshot_id` koennte zu einem Tree ausgebaut werden, aktuell nur fuer `before→after`-Korrelation.
+- **Automatischer Rollback bei `exit_code != 0`** — User-Choice. Manche Crashes hinterlassen wertvolle Teil-Outputs.
+- **Per-File-Rollback** — alles oder nichts pro Snapshot. Inline-Diff-Anzeige ist additiv, Rollback wirkt aufs Ganze.
+- **Hardlink-Snapshots** — Tar ist Tests-tauglich + atomar. Bei messbaren Disk-Problemen umstellen.
+- **Storage-GC fuer alte Snapshots** — alte `.tar`-Files bleiben liegen. "Behalte die letzten N pro Projekt"-Sweep ist eigener Patch (HANDOVER-Schuld).
+- **Sync-After-Write zurueck in den SHA-Storage** — geaenderte Files leben nur im Workspace, nicht im SHA-Storage. Schuld bleibt offen.
+- **Cost-Tracking** — Snapshots erzeugen keine LLM-Kosten, nur Disk + DB.
+
+**Tests:** 74 in [`test_p207_workspace_snapshots.py`](zerberus/tests/test_p207_workspace_snapshots.py). Strukturiert in 9 Klassen analog P206: Pure-Function-Schicht (Manifest, Diff, Looks-Text, Is-Safe-Member, Unified-Diff), Sync-FS (Materialize, Restore mit Path-Traversal-Defense), DB (Store/Load + Convenience), Endpoint (OK/restore_failed/project_mismatch/snapshots_disabled), Source-Audit legacy.py + nala.py, End-to-End mit Mock-Sandbox die den Workspace mutiert, JS-Integrity (`node --check`), Smoke. Plus 1 nachgezogener Test in `test_p203d_chat_sandbox.py` (`writable=False` ist nicht mehr hardcoded, sondern Settings-Lookup mit Pydantic-Default).
+
+**Lokal:** 1872 baseline → **1946 passed** (+74 P207), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info` durch `config.yaml`-Drift `deepseek-v4-pro`), 0 NEUE Failures aus P207.
+
+**Logging-Tag:** `[SNAPSHOT-207]` mit `materialized id=... label=... file_count=... total_bytes=...`, `db_row_written ...`, `diff project_id=... before=... after=... changes=...`, `restored archive=... file_count=...`, `rollback_done snapshot_id=... project_id=... slug=...`, `rollback_endpoint snapshot_id=... project_id=...`, plus Defense-Logs (`restore: unsafe member skipped: ...`, `before_run fehlgeschlagen (fail-open): ...`).
+
+---
 
 **Patch 206** — HitL-Gate vor Code-Execution + HANDOVER-Teststand-Konvention (Phase 5a Ziel #6 ABGESCHLOSSEN) (2026-05-03)
 

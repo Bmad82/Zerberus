@@ -71,7 +71,11 @@ class ChatCompletionResponse(BaseModel):
     # Projekt aktiv ist, kein Code-Block in der LLM-Antwort steckt, die
     # Sandbox deaktiviert ist oder ein Fehler vor dem `docker run` greift.
     # Schema (siehe SandboxResult): {language, code, exit_code, stdout,
-    # stderr, execution_time_ms, truncated, error}. Backward-Compat:
+    # stderr, execution_time_ms, truncated, error}. Patch 206 erweitert
+    # um ``skipped`` + ``hitl_status``. Patch 207 erweitert um ``diff``
+    # (Liste von DiffEntry-Dicts), ``before_snapshot_id`` und
+    # ``after_snapshot_id`` (UUID4-hex), wenn der Sandbox-Run im
+    # writable-Mount lief und Snapshots aktiv sind. Backward-Compat:
     # Clients die nur `choices` lesen, bleiben unbehelligt.
     code_execution: dict | None = None
 
@@ -598,12 +602,47 @@ async def chat_completions(
 
                     if _hitl_decision in ("approved", "bypassed"):
                         _base_dir = Path(settings.projects.data_dir)
+                        # Patch 207: writable-Mount-Steuerung + Snapshot-
+                        # Schicht. Wenn ``sandbox_writable=True`` UND
+                        # ``snapshots_enabled=True``, schiesst der
+                        # Endpunkt einen ``before_run``-Snapshot, faehrt
+                        # die Sandbox writable und schiesst danach einen
+                        # ``after_run``-Snapshot. Die Diff-Liste plus
+                        # beide ``snapshot_id``s landen additiv im
+                        # ``code_execution``-Feld der Response. Default
+                        # bleibt RO (sandbox_writable=False) — dann ist
+                        # P207 ein No-Op und der Pfad verhaelt sich
+                        # exakt wie P206.
+                        _writable = bool(getattr(settings.projects, "sandbox_writable", False))
+                        _snapshots_active = (
+                            _writable
+                            and bool(getattr(settings.projects, "snapshots_enabled", True))
+                        )
+                        _before_snap: dict | None = None
+                        if _snapshots_active:
+                            try:
+                                from zerberus.core.projects_snapshots import (
+                                    snapshot_workspace_async,
+                                )
+                                _before_snap = await snapshot_workspace_async(
+                                    project_id=active_project_id,
+                                    base_dir=_base_dir,
+                                    label="before_run",
+                                    pending_id=hitl_pending_id,
+                                )
+                            except Exception as _snap_err:
+                                logger.warning(
+                                    f"[SNAPSHOT-207] before_run fehlgeschlagen "
+                                    f"(fail-open): {_snap_err}"
+                                )
+                                _before_snap = None
+
                         _result = await execute_in_workspace(
                             project_id=active_project_id,
                             code=_block.code,
                             language=_block.language,
                             base_dir=_base_dir,
-                            writable=False,
+                            writable=_writable,
                         )
                         if _result is not None:
                             code_execution_payload = {
@@ -622,8 +661,47 @@ async def chat_completions(
                                 f"[SANDBOX-203d] project_id={active_project_id} slug={project_slug!r} "
                                 f"language={_block.language} exit_code={_result.exit_code} "
                                 f"stdout_len={len(_result.stdout)} stderr_len={len(_result.stderr)} "
-                                f"time_ms={_result.execution_time_ms} truncated={_result.truncated}"
+                                f"time_ms={_result.execution_time_ms} truncated={_result.truncated} "
+                                f"writable={_writable}"
                             )
+                            # Patch 207: after_run-Snapshot + Diff. Nur
+                            # wenn before_run erfolgreich war — sonst
+                            # gibt's keine sinnvolle Vergleichsbasis.
+                            # Diff/Snapshot-Felder bleiben None, wenn
+                            # _writable False oder Snapshots deaktiviert.
+                            if _snapshots_active and _before_snap is not None:
+                                try:
+                                    from zerberus.core.projects_snapshots import (
+                                        snapshot_workspace_async,
+                                        diff_snapshots,
+                                    )
+                                    _after_snap = await snapshot_workspace_async(
+                                        project_id=active_project_id,
+                                        base_dir=_base_dir,
+                                        label="after_run",
+                                        pending_id=hitl_pending_id,
+                                        parent_snapshot_id=_before_snap["id"],
+                                    )
+                                    if _after_snap is not None:
+                                        _diff = diff_snapshots(
+                                            _before_snap["manifest"],
+                                            _after_snap["manifest"],
+                                        )
+                                        code_execution_payload["diff"] = [
+                                            d.to_public_dict() for d in _diff
+                                        ]
+                                        code_execution_payload["before_snapshot_id"] = _before_snap["id"]
+                                        code_execution_payload["after_snapshot_id"] = _after_snap["id"]
+                                        logger.info(
+                                            f"[SNAPSHOT-207] diff project_id={active_project_id} "
+                                            f"before={_before_snap['id']} after={_after_snap['id']} "
+                                            f"changes={len(_diff)}"
+                                        )
+                                except Exception as _diff_err:
+                                    logger.warning(
+                                        f"[SNAPSHOT-207] after_run/diff fehlgeschlagen "
+                                        f"(fail-open): {_diff_err}"
+                                    )
                         else:
                             logger.info(
                                 f"[SANDBOX-203d] execute_in_workspace returned None "
@@ -831,6 +909,98 @@ async def hitl_resolve(req: HitlResolveRequest, request: Request):
     return HitlResolveResponse(
         ok=ok,
         decision=req.decision if ok else None,
+    )
+
+
+# ---------- Patch 207 — Workspace-Rollback (Phase 5a #9 + #10) ----------
+#
+# Stellt den Workspace eines Projekts auf einen frueheren Snapshot zurueck.
+# Auth-frei wie /v1/hitl/* (Dictate-Lane-Invariante). Defense-in-Depth:
+# der Caller muss ``project_id`` mitschicken, das gegen den Snapshot-
+# Eigentuemer verglichen wird — ein Snapshot aus Projekt A kann nicht
+# ueber Projekt B angewendet werden.
+#
+# Das Frontend (Nala-Diff-Card) ruft das mit ``snapshot_id =
+# code_execution.before_snapshot_id`` auf, sobald der User auf "↩️
+# Aenderungen zurueckdrehen" klickt. Idempotent: zweites Rollback
+# auf denselben Snapshot stellt den gleichen Stand wieder her, ist also
+# ein No-Op (oder ein Re-Apply, falls inzwischen wieder Aenderungen
+# entstanden sind).
+
+
+class WorkspaceRollbackRequest(BaseModel):
+    snapshot_id: str
+    project_id: int
+
+
+class WorkspaceRollbackResponse(BaseModel):
+    ok: bool
+    snapshot_id: str | None = None
+    project_id: int | None = None
+    project_slug: str | None = None
+    file_count: int | None = None
+    total_bytes: int | None = None
+    error: str | None = None
+
+
+@router.post("/workspace/rollback", response_model=WorkspaceRollbackResponse)
+async def workspace_rollback(
+    req: WorkspaceRollbackRequest,
+    settings: Settings = Depends(get_settings),
+):
+    """Rollback eines Projekt-Workspaces auf einen Snapshot-Stand.
+
+    Reject-Pfade (alle liefern ``ok=False`` mit ``error``-Reason):
+        - Snapshot-ID nicht in DB (``unknown_snapshot``)
+        - ``project_id`` mismatch zum Snapshot-Eigentuemer
+          (``project_mismatch``)
+        - Snapshot ohne ``project_slug`` in der DB (``missing_slug``)
+        - Tar-Restore liefert None (``restore_failed``)
+        - Snapshots-Feature deaktiviert (``snapshots_disabled``)
+    """
+    if not bool(getattr(settings.projects, "snapshots_enabled", True)):
+        return WorkspaceRollbackResponse(
+            ok=False,
+            error="snapshots_disabled",
+        )
+    from zerberus.core.projects_snapshots import rollback_snapshot_async
+
+    base_dir = Path(settings.projects.data_dir)
+    try:
+        result = await rollback_snapshot_async(
+            snapshot_id=req.snapshot_id,
+            base_dir=base_dir,
+            expected_project_id=req.project_id,
+        )
+    except Exception as e:
+        logger.warning(
+            f"[SNAPSHOT-207] rollback_endpoint Pipeline-Fehler: {e}"
+        )
+        return WorkspaceRollbackResponse(
+            ok=False,
+            snapshot_id=req.snapshot_id,
+            project_id=req.project_id,
+            error="pipeline_error",
+        )
+    if result is None:
+        return WorkspaceRollbackResponse(
+            ok=False,
+            snapshot_id=req.snapshot_id,
+            project_id=req.project_id,
+            error="restore_failed",
+        )
+    logger.info(
+        f"[SNAPSHOT-207] rollback_endpoint snapshot_id={req.snapshot_id} "
+        f"project_id={result['project_id']} slug={result['project_slug']!r} "
+        f"file_count={result['file_count']}"
+    )
+    return WorkspaceRollbackResponse(
+        ok=True,
+        snapshot_id=result["snapshot_id"],
+        project_id=result["project_id"],
+        project_slug=result["project_slug"],
+        file_count=result["file_count"],
+        total_bytes=result["total_bytes"],
     )
 
 

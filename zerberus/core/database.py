@@ -190,6 +190,42 @@ class HitlTask(Base):
     details = Column(Text, nullable=True)
 
 
+class WorkspaceSnapshot(Base):
+    """Patch 207 (Phase 5a #9 + #10) — Workspace-Snapshots fuer Diff/
+    Rollback nach Sandbox-Code-Execution.
+
+    Pro Roundtrip mit ``writable=True``-Mount entstehen zwei Zeilen:
+    ein ``before_run``-Snapshot vor dem Sandbox-Run, ein ``after_run``-
+    Snapshot danach. Der ``snapshot_id`` ist UUID4-hex und korrespondiert
+    mit dem Tar-Archiv unter ``data/projects/<slug>/_snapshots/<id>.tar``.
+
+    ``parent_snapshot_id`` zeigt vom ``after``-Snapshot zurueck auf den
+    ``before``-Snapshot derselben Ausfuehrung — Frontend kann damit den
+    Roll-Back-Pfad eindeutig identifizieren ("rollback to parent").
+    ``pending_id`` korreliert mit ``hitl_chat`` (P206) und
+    ``code_executions`` (P206), sodass die ganze Spur (HitL → Snapshot
+    → Code-Run → Snapshot → Rollback?) sich rekonstruieren laesst.
+
+    Bewusst KEINE Foreign-Keys auf ``code_executions`` oder ``projects``
+    — die Models bleiben dependency-frei (Repo-Layer garantiert
+    Cascade), und die ``snapshot_id`` ist kollisionsfrei genug fuer den
+    Cross-Table-Lookup.
+    """
+    __tablename__ = "workspace_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    snapshot_id = Column(String(36), unique=True, nullable=False, index=True)
+    project_id = Column(Integer, nullable=False, index=True)
+    project_slug = Column(String(120), nullable=True)
+    label = Column(String(64), nullable=False)  # before_run|after_run|manual|...
+    archive_path = Column(String(500), nullable=False)
+    file_count = Column(Integer, default=0)
+    total_bytes = Column(Integer, default=0)
+    pending_id = Column(String(36), nullable=True, index=True)  # P206-Korrelation
+    parent_snapshot_id = Column(String(36), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class CodeExecution(Base):
     """Patch 206 (Phase 5a #6) — Audit-Trail fuer Sandbox-Code-Execution
     aus dem Chat-Endpunkt.

@@ -6978,3 +6978,316 @@ Nala-Chat mit aktivem Projekt + Code-erzeugendem Prompt. Statt direkter Sandbox-
 
 *Stand: 2026-05-03, Patch 206 — HitL-Gate vor Code-Execution + HANDOVER-Teststand-Konvention. Phase 5a Ziel #6 ABGESCHLOSSEN. 1872 passed (+55), 0 neue Failures.*
 
+---
+
+## Patch 207 — Workspace-Snapshots, Diff-View, Rollback (Phase 5a Ziele #9 + #10 ABGESCHLOSSEN)
+
+**Datum:** 2026-05-03
+**Phase:** 5a — Nala-Projekte
+**Ziele #9 + #10 abgeschlossen:** Änderungen sind rückgängig machbar (Snapshots, Rollback) + User sieht was passiert (Diff-View, atomare Change-Sets)
+**Tests:** 1872 baseline (P206) → 1946 passed (+74), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 neue Failures aus P207. 1 skipped (existing).
+
+### Motivation
+
+Nach P206 hatte der User die Kontrolle VOR der Sandbox-Ausführung — er sah die Confirm-Karte, konnte Yay oder Nay klicken, Code lief in Read-Only-Mount oder gar nicht. Aber zwei Dinge fehlten:
+
+1. **Sicht NACH der Ausführung.** Der User sah `stdout`/`stderr` in der Output-Card, aber nicht *was sich im Workspace geändert hat*. Bei `writable=True`-Mount (P203c-Wrapper konnte das schon, aber niemand nutzte es) hätte der Code Files schreiben/ändern/löschen können, ohne dass der User es zur Kenntnis nahm.
+2. **Reverse-Option.** Wenn der Code etwas Falsches gemacht hat (Datei überschrieben, Logik in einem Skript verändert), gab es keinen Knopf "zurück zum vorigen Stand". Der User musste manuell aus dem SHA-Storage rekonstruieren oder Git nutzen (was P207 nicht voraussetzt).
+
+P207 schließt beide Lücken mit einer schlanken Snapshot-Schicht: vor und nach jedem writable-Run wird ein Tar des Workspace-Stands geschrieben. Aus dem Paar entsteht ein Diff (added/modified/deleted plus optional Inline-`unified_diff` für Text-Files), der dem User in einer Diff-Card unter der Output-Card gezeigt wird. Footer-Button macht Rollback auf den `before`-Stand.
+
+Wichtig: **P207 ist additiv und opt-in.** Default-Verhalten ist 100% P206-kompatibel — nur wenn der User `projects.sandbox_writable: true` in `config.yaml` setzt (Master-Switch zusätzlich `projects.snapshots_enabled: true`, Default True), werden Snapshots geschossen. Sonst bleibt der RO-Default aus P203c und das `code_execution`-Feld in der Response hat keine `diff`/`before_snapshot_id`/`after_snapshot_id`-Felder.
+
+### Architektur
+
+Drei Schichten + DB-Tabelle + Endpoint + Frontend-Card.
+
+#### 1. Snapshot-Modul `zerberus/core/projects_snapshots.py` (neu)
+
+Pure-Function-Schicht (kein I/O):
+
+```python
+def snapshot_dir_for(slug: str, base_dir: Path) -> Path:
+    """<base>/projects/<slug>/_snapshots/. Pure — kein FS-Zugriff."""
+
+def build_workspace_manifest(workspace_root: Path, *,
+                              include_content: bool = True,
+                             ) -> dict[str, dict]:
+    """{rel_path: {hash, size, binary, content?}}.
+    content nur fuer Text-Files <DIFF_TEXT_MAX_BYTES (64 KB)."""
+
+def diff_snapshots(before: dict, after: dict) -> List[DiffEntry]:
+    """added/modified/deleted, sortiert nach Pfad, optional unified_diff."""
+```
+
+Plus `_looks_text` (Null-Byte-Heuristik), `_is_safe_member` (Tar-Member-Validation gegen Path-Traversal/Symlink/Hardlink), `_build_unified_diff` (delegiert an `difflib.unified_diff` mit `a/path`/`b/path`-Headers analog `git diff`).
+
+Sync-FS-Schicht:
+
+```python
+def materialize_snapshot(workspace_root: Path, snapshot_root: Path,
+                          *, label: str,
+                          snapshot_id: Optional[str] = None,
+                         ) -> Optional[dict]:
+    """Schreibt ustar-Tar atomar via Tempname + os.replace.
+    Liefert {id, label, archive_path, file_count, total_bytes, manifest}."""
+
+def restore_snapshot(workspace_root: Path,
+                      archive_path: Path) -> Optional[dict]:
+    """Raeumt Workspace-Inhalt komplett (Root bleibt stehen — keine
+    Watcher-Konfusion), validiert Tar-Members und extrahiert nur
+    sichere Files. Liefert {file_count, total_bytes} oder None."""
+```
+
+Async-DB-Schicht und High-Level-Convenience:
+
+```python
+async def store_snapshot_row(*, project_id, project_slug, label,
+                              snapshot_id, archive_path, file_count,
+                              total_bytes, pending_id=None,
+                              parent_snapshot_id=None) -> Optional[int]:
+    """Schreibt workspace_snapshots-Zeile. Best-Effort."""
+
+async def load_snapshot_row(snapshot_id: str) -> Optional[dict]:
+    """Metadaten als Dict."""
+
+async def snapshot_workspace_async(project_id, base_dir, *, label,
+                                    pending_id=None,
+                                    parent_snapshot_id=None,
+                                   ) -> Optional[dict]:
+    """Ein-Klick: Slug aus DB, materialisieren, DB-Insert.
+    Liefert {id, label, manifest, file_count, total_bytes,
+            archive_path, db_row_id}."""
+
+async def rollback_snapshot_async(snapshot_id, base_dir,
+                                   *, expected_project_id=None,
+                                  ) -> Optional[dict]:
+    """Project-Owner-Check (Cross-Project-Defense), dann restore."""
+```
+
+#### 2. Neue DB-Tabelle `workspace_snapshots`
+
+In `zerberus/core/database.py` als SQLAlchemy-Model (analog `CodeExecution` aus P206):
+
+| Spalte | Typ | Bedeutung |
+|---|---|---|
+| `id` | INT (PK) | DB-interne Row-ID |
+| `snapshot_id` | VARCHAR(36) UNIQUE INDEX | UUID4-hex (32 chars) |
+| `project_id` | INT INDEX | FK-loose zu `projects` |
+| `project_slug` | VARCHAR(120) | Cache fuer Pfad-Lookup |
+| `label` | VARCHAR(64) | `before_run` / `after_run` / `manual` |
+| `archive_path` | VARCHAR(500) | absoluter Pfad zum Tar |
+| `file_count` | INT | Anzahl Files im Tar |
+| `total_bytes` | INT | Summe der File-Sizes |
+| `pending_id` | VARCHAR(36) INDEX | Korrelation zu P206 hitl_chat/code_executions |
+| `parent_snapshot_id` | VARCHAR(36) INDEX | zeigt vom `after`- auf `before`-Snapshot derselben Ausfuehrung |
+| `created_at` | DATETIME INDEX | UTC, default now |
+
+Tars liegen unter `data/projects/<slug>/_snapshots/<snapshot_id>.tar`. Bewusst KEINE Foreign-Keys — Models bleiben dependency-frei wie der Rest des Code-Stacks.
+
+#### 3. Verdrahtung in `legacy.py::chat_completions`
+
+Nach P206-Approve und vor `execute_in_workspace`:
+
+```python
+_writable = bool(getattr(settings.projects, "sandbox_writable", False))
+_snapshots_active = (
+    _writable
+    and bool(getattr(settings.projects, "snapshots_enabled", True))
+)
+
+if _snapshots_active:
+    _before_snap = await snapshot_workspace_async(
+        project_id=active_project_id, base_dir=_base_dir,
+        label="before_run", pending_id=hitl_pending_id,
+    )
+
+_result = await execute_in_workspace(
+    project_id=active_project_id, code=_block.code,
+    language=_block.language, base_dir=_base_dir,
+    writable=_writable,  # ehemals hardcoded False (P203d-1)
+)
+
+if _result is not None:
+    code_execution_payload = {...}  # P203d-1/P206-Schema
+    if _snapshots_active and _before_snap is not None:
+        _after_snap = await snapshot_workspace_async(
+            label="after_run",
+            parent_snapshot_id=_before_snap["id"],
+            ...
+        )
+        if _after_snap is not None:
+            _diff = diff_snapshots(
+                _before_snap["manifest"],
+                _after_snap["manifest"],
+            )
+            code_execution_payload["diff"] = [
+                d.to_public_dict() for d in _diff
+            ]
+            code_execution_payload["before_snapshot_id"] = _before_snap["id"]
+            code_execution_payload["after_snapshot_id"] = _after_snap["id"]
+```
+
+Fail-Open auf jeder Stufe — wenn `before_snap` None liefert (z.B. Workspace nicht existent, DB nicht initialisiert), wird der after-Snapshot uebersprungen, kein Diff, der Hauptpfad bleibt grün. HitL-Skip-Pfad (rejected/timeout) triggert keinen Snapshot, weil es gar keinen Run gab.
+
+#### 4. Neuer Endpoint `POST /v1/workspace/rollback`
+
+Auth-frei wie `/v1/hitl/*` (Dictate-Lane-Invariante). Pydantic-Modelle:
+
+```python
+class WorkspaceRollbackRequest(BaseModel):
+    snapshot_id: str
+    project_id: int
+
+class WorkspaceRollbackResponse(BaseModel):
+    ok: bool
+    snapshot_id: str | None = None
+    project_id: int | None = None
+    project_slug: str | None = None
+    file_count: int | None = None
+    total_bytes: int | None = None
+    error: str | None = None
+```
+
+Reject-Pfade (alle liefern `ok=False` mit `error`-Reason):
+
+| Reason | Trigger |
+|---|---|
+| `snapshots_disabled` | `projects.snapshots_enabled=False` (Master-Switch) |
+| `restore_failed` | unbekannte `snapshot_id` ODER `project_id`-Mismatch (beide liefern None aus `rollback_snapshot_async`) |
+| `pipeline_error` | uncaughter Crash im Helper |
+
+Defense-in-Depth: `expected_project_id` muss zum Snapshot-Eigentuemer passen — ein Snapshot aus Projekt A kann nicht ueber Projekt B angewendet werden (auch wenn der Caller das versucht).
+
+#### 5. Nala-Frontend (`zerberus/app/routers/nala.py`)
+
+**CSS** (~125 Zeilen): `.diff-card` mit Kintsugi-Gold-Border (`rgba(240,180,41,0.32)`), collapsible Inline-Diff `.diff-content` (`overflow-x: auto`, `max-height: 240px`), `.diff-status.diff-{added,modified,deleted}` semantische Badges (gruen/gold/rot), `.diff-rollback` Footer-Button mit `min-height: 44px`/`min-width: 44px` (Mobile-first), Post-Klick-States `.diff-card.diff-{rolled-back,rollback-failed}` (gruen/rot).
+
+**JS-Funktionen** (~250 Zeilen):
+
+```javascript
+function renderDiffCard(wrapperEl, codeExec, triptych) {
+    // Header "📋 Workspace-Aenderungen" mit Summary "N neu, M geaendert, K geloescht"
+    // Pro DiffEntry: <li class="diff-entry diff-collapsed"> mit
+    //   Status-Badge + Pfad (escapeHtml) + Size-Label
+    //   Klick toggled .diff-collapsed
+    //   Body: bei binary → "(Binaerdatei)", bei unified_diff → colorizeUnifiedDiff
+    // Footer: rollback-Button → rollbackWorkspace(card, beforeId, projectId)
+}
+
+function colorizeUnifiedDiff(text) {
+    // Plus-Zeilen gruen, Minus-Zeilen rot, Header (---/+++/@@) grau
+    // Newline-Split via String.fromCharCode(10) — '\n'-Literal wuerde
+    // im Python-Quelltext frueh interpretiert (Lesson aus P203b)
+}
+
+async function rollbackWorkspace(cardEl, snapshotId, projectId) {
+    // POST /v1/workspace/rollback mit {snapshot_id, project_id}
+    // Card-State auf diff-rolled-back (gruen) oder
+    // diff-rollback-failed (rot mit error-Reason)
+}
+```
+
+**`renderCodeExecution`-Erweiterung:** nach Code-Card + Output-Card-Insert:
+
+```javascript
+if (!skipped && Array.isArray(codeExec.diff) && codeExec.before_snapshot_id) {
+    try { renderDiffCard(wrapperEl, codeExec, triptych); } catch (_e) {}
+}
+```
+
+Backwards-compat zu P206-only-Backends (kein `before_snapshot_id` → kein Diff-Render). Bei HitL-Skip (`skipped=true`) wird der Diff-Pfad explizit übersprungen.
+
+#### 6. Feature-Flags in `zerberus/core/config.py::ProjectsConfig`
+
+```python
+sandbox_writable: bool = False  # Default RO bleibt P203c-Konvention
+snapshots_enabled: bool = True  # Master-Switch
+```
+
+Beide Flags getrennt: writable + Snapshots fuer Power-Hands (User will Diff/Rollback), writable + kein Snapshot fuer Headless-Production (Disk-Budget knapp, kein menschlicher User der den Diff anschaut).
+
+### Tar-Sicherheits-Spec
+
+`_is_safe_member` prueft pro Tar-Member:
+
+1. Kein `dev`-Member (Block/Char-Device)
+2. Kein Symlink (`SYMTYPE`)
+3. Kein Hardlink (`LNKTYPE`)
+4. Kein leerer Name
+5. Kein absoluter Pfad (`name.startswith('/')`)
+6. Kein `..` in den Path-Parts (`Path(name).parts`)
+7. Resolved-Path muss innerhalb des dest_root liegen
+
+Boese Members werden einzeln geskippt + geloggt (`[SNAPSHOT-207] restore: unsafe member skipped: <name>`), legitime werden extrahiert. Python 3.12+ hat `tarfile.data_filter` — wir nutzen es bewusst nicht, weil 3.10/3.11 unterstuetzt werden sollen und der manuelle Check portabler ist.
+
+### Was P207 NICHT macht
+
+- **Cross-Project-Diff** — Snapshots sind per Projekt isoliert; ein Cross-Diff macht selten Sinn (verschiedene Slug-Kontexte).
+- **Branch-Mechanik** — linear forward/reverse only (analog `git reset --hard`, kein `branch`/`merge`). `parent_snapshot_id` koennte zu einem Tree ausgebaut werden, aktuell nur fuer `before→after`-Korrelation.
+- **Automatischer Rollback bei `exit_code != 0`** — User-Choice. Manche Crashes hinterlassen wertvolle Teil-Outputs (z.B. Logfiles), die nicht automatisch weggeworfen werden sollen.
+- **Per-File-Rollback** — alles oder nichts pro Snapshot. Inline-Diff-Anzeige im Frontend ist additiv, Rollback wirkt aufs Ganze.
+- **Hardlink-Snapshots** — Tar ist Tests-tauglich + atomare Restore-Einheit. Bei messbaren Disk-Problemen koennte man auf per-File-Hardlinks unter `_snapshots/<id>/<rel>` umstellen (Same-Inode wie SHA-Storage), aber der Restore wird komplexer (atomar Workspace flippen).
+- **Storage-GC fuer alte Snapshot-Tars** — alte `.tar`-Files bleiben liegen. "Behalte die letzten N pro Projekt"-Sweep ist eigener Patch (HANDOVER-Schuld). Bis dahin manuelles `rm` per Hand wenn Disk knapp.
+- **Sync-After-Write zurueck in den SHA-Storage** — geänderte Files leben nur im Workspace, nicht im SHA-Storage. Bei Bedarf koennte der after-Run zusaetzlich `register_file` fuer geaenderte Dateien aufrufen, das bleibt Schuld.
+- **Cost-Tracking** — Snapshots erzeugen keine LLM-Kosten, nur Disk + DB-Insert.
+
+### Logging-Tag
+
+`[SNAPSHOT-207]` mit:
+
+- `materialized id=... label=... file_count=... total_bytes=... archive=...` (per Snapshot)
+- `db_row_written id=... snapshot_id=... label=... project_id=...` (DB-Insert ok)
+- `diff project_id=... before=... after=... changes=...` (Diff erstellt)
+- `restored archive=... file_count=... total_bytes=...` (Restore ok)
+- `rollback_done snapshot_id=... project_id=... slug=... file_count=...` (High-Level-Rollback ok)
+- `rollback_endpoint snapshot_id=... project_id=... slug=...` (Endpoint ok)
+- `restore: unsafe member skipped: <name>` (Tar-Defense triggert)
+- `before_run fehlgeschlagen (fail-open): <error>` / `after_run/diff fehlgeschlagen (fail-open): <error>` / `rollback_endpoint Pipeline-Fehler: <error>` (Defense-Logs)
+
+Keine Code-/Diff-Inhalte im Log — nur Metriken (Worker-Protection-konform analog P206).
+
+### Tests
+
+74 in `zerberus/tests/test_p207_workspace_snapshots.py`, strukturiert in 9 Klassen analog P206:
+
+| Klasse | # | Was |
+|---|---|---|
+| `TestSnapshotDirFor` | 2 | Pfad-Layout + Pure-Function-Garantie |
+| `TestLooksText` | 4 | Empty/Pure-Text/Null-Byte/UTF-8-Umlauts |
+| `TestBuildWorkspaceManifest` | 5 | Empty, basic, binary-no-content, include_content=False, large-text-skipped |
+| `TestDiffSnapshots` | 8 | Identical, added, deleted, modified+unified_diff, binary-no-diff, text-without-content, sorted, to_public_dict |
+| `TestUnifiedDiff` | 1 | Format mit `a/path`/`b/path`-Headers |
+| `TestIsSafeMember` | 5 | Normal-File OK, abs-path/dotdot/symlink/hardlink blocked |
+| `TestMaterializeSnapshot` | 4 | None-fuer-fehlenden-WS, Tar-mit-Files, explicit snapshot_id, Manifest-im-Result |
+| `TestRestoreSnapshot` | 3 | None-bei-fehlendem-Archive, Restore-recreates-Files, Path-Traversal-Member-skipped |
+| `TestStoreLoadSnapshotRow` | 3 | Roundtrip, Load-unknown returns None, Silent-Skip ohne DB |
+| `TestSnapshotWorkspaceAsync` | 2 | Happy mit DB-Row, None-fuer-missing-project |
+| `TestRollbackSnapshotAsync` | 3 | Happy, Project-Mismatch-Reject, Unknown-Snapshot-Reject |
+| `TestWorkspaceRollbackEndpoint` | 4 | OK, unknown_snapshot, project_mismatch, snapshots_disabled |
+| `TestLegacySourceAudit` | 9 | Logging-Tag, Imports, writable-from-settings, snapshots_enabled-flag, writable-passed-to-execute, diff/before/after im Payload, Endpoint registriert, Pydantic-Models |
+| `TestNalaSourceAudit` | 10 | Funktionen definiert, Rollback-POST, renderCodeExecution-Trigger, CSS-Klassen, 44x44 Touch-Target, escapeHtml, Diff-Skip-Bei-Skipped |
+| `TestE2EWritableSandboxAndDiff` | 4 | writable=True triggert Snapshots+Diff, writable=False keine Snapshots, snapshots_enabled=False keine Diff, HitL-rejected kein Snapshot |
+| `TestJsSyntaxIntegrity` | 1 | `node --check` ueber alle inline `<script>`-Bloecke (skipped wenn node fehlt) |
+| `TestSmoke` | 4 | Config-Flags, DB-Tabelle, /nala/-Endpoint, legacy.py-Models |
+
+**Kollateral-Fix:** `test_p203d_chat_sandbox.py::TestP203d1SourceAudit::test_writable_false_default_in_call_site` wurde nachgezogen — die Konvention "writable=False hardcoded" gilt seit P207 nicht mehr; der Test prueft jetzt den Settings-Lookup `getattr(settings.projects, "sandbox_writable", False)` plus den Pydantic-Default. Backward-compat fuer den alten Verhaltenswunsch (RO im Default-Pfad) ist garantiert ueber den Default-Wert.
+
+### Lessons gelernt (in lessons.md aktualisiert)
+
+1. **JS-Newline-Falle wieder relevant.** `'\n'`-Literal in einer JS-Funktion die in `NALA_HTML = """..."""` lebt, wird vom Python-Quelltext zu echtem Newline-Char interpretiert → JS-String-Literal mit eingebettetem Newline → `SyntaxError`. Lesson aus P203b war bekannt, aber bei `colorizeUnifiedDiff` (neuer Code) wieder reingerutscht. Fix: `String.fromCharCode(10)` — robust und intent-klar fuer Spaeter-Leser.
+2. **Workspace-Pfad-Resolve-Falle.** `_iter_workspace_files(root)` gibt Pfade in der Form aus, in der `root` reinkam (relativ → relativ). Wenn `root_resolved = root.resolve()` absolut ist, scheitert `fp.relative_to(root_resolved)` bei relativem `fp` mit ValueError → 0 files im Tar. Fix: Fallback `fp.resolve(strict=False).relative_to(root_resolved)`. Das `build_workspace_manifest` hatte den Fallback schon, `materialize_snapshot` musste nachgezogen werden.
+3. **Tar-Path-Traversal-Defense.** `_is_safe_member` ist Pflicht bei jedem Restore — kein Symlink/Hardlink, kein absoluter Pfad, kein `..`. Boese Members einzeln skippen + loggen statt ganzen Restore failen. Test: Tar mit `tarfile.TarInfo("../escape.txt")` von Hand bauen und prueft dass legitimer Rest extrahiert wird.
+
+### Helper fuer P208/P209
+
+- **`pending_id`/`parent_snapshot_id`-Korrelationsschluessel** in `workspace_snapshots` sind universell genug fuer kuenftige Audit-Spuren (Spec-Confirmations, Veto-Logs).
+- **`.diff-card`-CSS** klont sich trivial zu `.spec-card`/`.veto-card` (gleiches Vokabular: Border, collapsible Body, 44x44 Touch-Target, Post-Klick-State).
+- **`renderDiffCard`/`rollbackWorkspace`-Pattern** (Render-Funktion + Async-Resolve mit Card-State-Update) ist die Vorlage fuer jede weitere User-Interaktions-Karte im Chat-Flow.
+- **`String.fromCharCode(10)`-Trick** fuer Newline-Splits in JS, der aus Python-Source generiert wird — Lesson dokumentiert in lessons.md.
+- **`_is_safe_member`-Tar-Defense** ist universell genug, dass jeder weitere Restore-/Extract-Pfad (z.B. Backup-Restore, Template-Import) sie nutzen kann.
+
+---
+
+*Stand: 2026-05-03, Patch 207 — Workspace-Snapshots, Diff-View, Rollback. Phase 5a Ziele #9 + #10 ABGESCHLOSSEN. 1946 passed (+74), 0 neue Failures.*
+

@@ -192,6 +192,17 @@ class ProjectsConfig(BaseModel):
     # implizites Reject (User hat nicht reagiert).
     hitl_enabled: bool = True
     hitl_timeout_seconds: int = 60
+    # Patch 207 (Phase 5a #9 + #10): Snapshot/Diff/Rollback-Schicht fuer
+    # Sandbox-Code-Execution. ``sandbox_writable`` flippt den
+    # Workspace-Mount auf read-write — Default bleibt False (RO ist die
+    # P203c-Konvention). Wenn True UND HitL approved hat, schiesst der
+    # Chat-Endpunkt einen ``before_run``-Snapshot, faehrt die Sandbox
+    # writable, schiesst einen ``after_run``-Snapshot und packt einen
+    # Diff in die Response. ``snapshots_enabled`` ist der Master-Switch
+    # — Snapshots koennen unabhaengig vom Writable-Flag deaktiviert
+    # werden (z.B. fuer Tests, oder wenn der Disk-Budget knapp ist).
+    sandbox_writable: bool = False
+    snapshots_enabled: bool = True
 
 
 class SandboxConfig(BaseModel):

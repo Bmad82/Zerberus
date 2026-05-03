@@ -170,17 +170,23 @@ class TestP203d1SourceAudit:
         assert "code_execution" in fields
 
     def test_writable_false_default_in_call_site(self):
-        """Defense: der Endpoint MUSS ``writable=False`` ausdruecklich
-        passen — RO-Default aus P203c gilt nur, wenn der Caller es nicht
-        ueberschreibt. Wir wollen das Aufruf-Verhalten auch im Source
-        sehen, damit ein "kurz mal writable=True"-Hack nicht durchrutscht."""
+        """Defense: ``writable`` wird im Endpoint NICHT hardcoded, sondern
+        aus ``settings.projects.sandbox_writable`` gelesen (Default False
+        ueber den Pydantic-Defaultwert in ``ProjectsConfig``). Bis P206
+        war ``writable=False`` hardcoded; P207 hat das auf ein Setting
+        umgestellt — wir pruefen jetzt, dass der Lookup korrekt im
+        Source steht und der Default-Wert weiterhin False ist."""
         src = self._legacy_src()
-        # Suchfenster: zwischen [SANDBOX-203d] und naechster Patch-Marke
+        # Suchfenster: rund um den Sandbox-Block
         idx = src.find("[SANDBOX-203d]")
         assert idx > 0
-        # 3000 Zeichen Kontext drum herum
-        window = src[max(0, idx - 1500):idx + 1500]
-        assert "writable=False" in window
+        window = src[max(0, idx - 2500):idx + 2500]
+        # P207-Konvention: writable kommt aus dem Settings-Flag.
+        assert 'getattr(settings.projects, "sandbox_writable", False)' in window
+        # Default in ProjectsConfig MUSS False sein — sonst rutscht ein
+        # "kurz mal writable=True"-Hack durchs Default-Verhalten.
+        from zerberus.core.config import ProjectsConfig
+        assert ProjectsConfig().sandbox_writable is False
 
     def test_code_execution_field_passed_to_response(self):
         """Source-Audit: das Feld wird dem Response-Konstruktor durchgereicht."""
