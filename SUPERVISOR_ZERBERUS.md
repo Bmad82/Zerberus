@@ -1,10 +1,74 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 203d-3 (2026-05-03) – UI-Render im Nala-Frontend (Phase 5a Ziel #5 ABGESCHLOSSEN)*
+*Letzte Aktualisierung: Patch 205 (2026-05-03) – RAG-Toast in Hel-UI nach Datei-Upload (Phase 5a Schuld aus P199)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 205** — RAG-Toast in Hel-UI nach Datei-Upload (Phase 5a Schuld aus P199) (2026-05-03)
+
+`POST /hel/admin/projects/{id}/files` retourniert seit P199 ein `rag`-Dict im Response-Body (`{chunks, skipped, reason}`). Das Hel-Frontend hat das Feld bisher ignoriert — der User sah nicht, ob die hochgeladene Datei indiziert wurde, wieviel Chunks gebaut wurden oder warum sie geskippt wurde (zu gross / Binärdatei / leer / kein Inhalt / Embed-Crash). P205 schliesst die Schuld mit einem dezenten Toast unten rechts.
+
+**Architektur: Frontend-only, drei Bausteine** in [`zerberus/app/routers/hel.py`](zerberus/app/routers/hel.py):
+
+- **CSS-Block** im `<style>`-Bereich (~30 Zeilen): `.rag-toast` mit `position: fixed`, `bottom: 20px`, `right: 20px`, `min-height: 44px` (Mobile-first Touch-Dismiss), `transition: opacity/transform 0.2s` plus `.rag-toast.visible`-State (opacity 1 + translateY 0). Zwei Border-Color-Varianten: `.success` (cyan `#4ecdc4`) und `.warn` (rot `#ff6b6b`). Erbt das Kintsugi-Gold-Border `#c8941f` als Default. `pointer-events: none` im Hidden-State, damit der Toast niemals einen Klick im Hintergrund abfaengt.
+- **Reason-Mapping** als JS-Konstante `_RAG_REASON_LABELS` direkt vor `_uploadProjectFiles`: kurze de-DE-Strings fuer alle Codes aus `zerberus/core/projects_rag.py::index_project_file` (`rag_disabled` → "RAG aus", `too_large` → "zu gross", `binary` → "Binärdatei", `empty` → "leere Datei", `no_chunks` → "kein Inhalt", `embed_failed` → "Embed-Fehler", `file_not_found`/`project_not_found`/`bytes_missing` → entsprechend, `exception` → "Indizierungs-Fehler"). Unbekannte Codes fallen auf "übersprungen" zurueck.
+- **`_showRagToast(rag)`** als JS-Renderer (~25 Zeilen): liest `rag.skipped` und `rag.chunks` und `rag.reason`, baut den Text via Mapping-Lookup (`📚 N Chunks indiziert` bei Erfolg, `⚠ Datei nicht indiziert: <Label>` bei Skip), setzt `el.textContent` (XSS-immun — Reason-Strings stammen NIEMALS direkt aus dem Server-Pfad, nur aus dem statischen Mapping), toggelt die `success`/`warn`-Klassen, fuegt `.visible` hinzu. Auto-Timeout 3500 ms via `setTimeout`, der frueh canceled wird wenn ein neuer Toast kommt (`_showRagToast._t` als Singleton-Slot). Klick auf den Toast cancelt den Timeout und versteckt sofort. Replace-Pattern: bei Multi-File-Upload bleibt der letzte Toast sichtbar (Progress-Liste zeigt pro File den Status — Toast ist additiv).
+
+**DOM-Element** direkt vor `</body>` (vor dem SW-Reg-Script): `<div id="ragToast" class="rag-toast" role="status" aria-live="polite"></div>`. Ein einziger Toast-Container, kein Stacking — Reuse durch CSS-State-Toggle.
+
+**Verdrahtung** im bestehenden Drop-Zone-Upload `_uploadProjectFiles` → `xhr.onload` Success-Branch direkt nach dem `'fertig'`-Render der Progress-Zeile:
+
+```js
+if (xhr.status >= 200 && xhr.status < 300) {
+    row.innerHTML = '&#10004; ' + _escapeHtml(f.name) + ' — fertig';
+    row.style.color = '#4ecdc4';
+    // Patch 205: RAG-Status nach Erfolgs-Render als Toast zeigen.
+    try {
+        const body = JSON.parse(xhr.responseText);
+        if (body && body.rag) _showRagToast(body.rag);
+    } catch (_) {}
+}
+```
+
+Fail-quiet auf jeder Stufe: kaputter JSON-Body bricht den Upload-Loop nicht ab; fehlendes `body.rag` (Backwards-Compat zu Backends ohne P199) → kein Toast.
+
+**Was P205 bewusst NICHT macht:**
+- **Kein neuer Backend-Endpoint, keine Schema-Aenderung.** Der `rag`-Block lag schon seit P199 in der Response. P205 ist reine Lesefehler-Behebung im Frontend.
+- **Keine Sammel-Aggregation.** Bei Multi-File-Upload gewinnt der letzte Toast — die Progress-Liste oben zeigt pro File den Erfolgs-Status. Sammel-Toast (`📚 47 Chunks aus 3 Dateien indiziert`) waere komplexer Code fuer einen Edge-Case.
+- **Kein Stacking.** Pattern aus dem HANDOVER-Spec: neuer Toast ersetzt alten via gleichem `#ragToast`-Container und CSS-State-Toggle.
+- **Kein Nala-Pfad.** Nala hat aktuell keinen Datei-Upload (Projekt-Anlage ist Hel-only). Wenn P201/P196 spaeter Nala-seitige Uploads bekommt, muss der Toast dort separat verdrahtet werden — Quelltext-Lift-und-Klon, kein Module-Refactor.
+- **Keine i18n.** de-DE hardgecodet, analog zur restlichen Hel-UI.
+- **Kein Telegram-Pfad.** Huginn (Telegram-Adapter) hat keine Datei-Uploads dieser Art.
+- **`escapeHtml`-Doppelung in hel.py** (Zeile 1653 + 3096) bleibt als bestehende Schuld stehen; P205 nutzt sowieso `textContent` und braucht keinen Helper.
+
+**Logging-Tag:** keiner (Frontend-only, alle Backend-Logs `[RAG-199]` aus P199 bleiben).
+
+**Tests:** 20 in [`test_p205_hel_rag_toast.py`](zerberus/tests/test_p205_hel_rag_toast.py):
+
+- `TestToastFunctionExists` (2) — Funktion definiert + Signatur `_showRagToast(rag)`.
+- `TestReasonMapping` (6) — alle 5 Hauptcodes (`too_large`, `binary`, `empty`, `no_chunks`, `embed_failed`) im Mapping plus expliziter `'too_large' → 'zu gross'`-Check.
+- `TestRagToastCss` (4) — `.rag-toast` definiert, `min-height: 44px` (Mobile-first), `position: fixed`, Toggle-Klasse (`.visible`).
+- `TestToastDom` (1) — `<div id="ragToast">` im HTML.
+- `TestUploadWiring` (3) — `body.rag` im Upload-Block, `_showRagToast(...)`-Aufruf im Block, Reihenfolge `'fertig'` < `_showRagToast` (Toast NACH Render).
+- `TestToastXss` (1) — `_showRagToast`-Body nutzt `textContent` ODER `_escapeHtml` (kein nacker `innerHTML` mit Reason-String).
+- `TestJsSyntaxIntegrity` (1) — `node --check` ueber alle inline `<script>`-Bloecke aus `ADMIN_HTML` (skipped wenn `node` fehlt). Lesson aus P203b: ein einzelner SyntaxError invalidiert den gesamten Block.
+- `TestHelHtmlSmoke` (2) — `ADMIN_HTML` enthaelt alle Toast-Pieces, genau ein `id="ragToast"` (kein Doppel-Render).
+
+**Kollateral-Fix:** `test_projects_ui::TestP196JsFunctions::test_uploads_are_sequential` hat einen `[:3000]`-Slice auf `_uploadProjectFiles`-Body — durch das neue `_showRagToast` und die Toast-Verdrahtung wuchs der Body um ~600 Zeichen, der `for (let i = 0; i < files.length`-Marker rutschte ueber die 3000-Zeichen-Grenze. Slice auf 4500 erhoeht (gleiche Datei).
+
+**Teststand:** 1797 baseline (P203d-3) → **1817 passed** (+20 P205-Tests), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts`, `test_rag_dual_switch.test_fallback_logic`, `test_patch185_runtime_info` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`), 0 neue Failures aus P205. 1 skipped (existing).
+
+**Effekt fuer den User:** Beim Datei-Upload in Hel taucht unten rechts kurz ein Toast auf:
+- `📚 14 Chunks indiziert` (cyan-Border, Erfolg)
+- `⚠ Datei nicht indiziert: zu gross` (rot-Border, Skip mit Grund)
+
+3.5 Sekunden sichtbar oder bis Tap. Bei Multi-Upload sequenziell: jeder File ersetzt den vorigen Toast. Die Progress-Zeilen oberhalb des Drop-Bereichs zeigen pro File den Roh-Status (✓ fertig / ✗ Fehler) wie bisher — RAG-Status ist die Zusatzinfo, die nur im Toast erscheint.
+
+---
+
+## Vorheriger Patch
 
 **Patch 203d-3** — UI-Render im Nala-Frontend fuer Sandbox-Code-Execution (Phase 5a Ziel #5 ABGESCHLOSSEN) (2026-05-03)
 

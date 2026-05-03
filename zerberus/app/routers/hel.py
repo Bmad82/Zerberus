@@ -522,6 +522,41 @@ ADMIN_HTML = """<!DOCTYPE html>
         .nav-link:hover, .nav-link:active { background: #ffd700; color: #1a1a1a; }
         .metric-toggles { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 10px; }
         .metric-toggle label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: #e0e0e0; }
+        /* Patch 205 (Phase 5a Schuld aus P199): RAG-Status-Toast nach Datei-Upload.
+           Mobile-first 44px Touch-Target zum Dismiss, fixed bottom-right, fade-in
+           via .visible-Klasse (kein DOM-Wegnehmen, damit der Renderer leicht bleibt
+           und CSS-Transitions sauber spielen). */
+        .rag-toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            max-width: calc(100vw - 40px);
+            min-height: 44px;
+            padding: 12px 16px;
+            background: #2d2d2d;
+            border: 1px solid #c8941f;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 14px;
+            line-height: 1.4;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            cursor: pointer;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .rag-toast.visible {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+        }
+        .rag-toast.success { border-color: #4ecdc4; }
+        .rag-toast.warn { border-color: #ff6b6b; }
     </style>
 </head>
 <body>
@@ -3352,6 +3387,53 @@ ADMIN_HTML = """<!DOCTYPE html>
             });
         }
 
+        // Patch 205 (Phase 5a Schuld aus P199): RAG-Status-Toast.
+        // Reason-Mapping: kurze de-DE-Strings fuer die Codes aus
+        // ``zerberus/core/projects_rag.py::index_project_file``. Falls ein
+        // Backend-Code unbekannt ist (zukuenftiger Code), faellt das Mapping
+        // auf "uebersprungen" zurueck.
+        const _RAG_REASON_LABELS = {
+            'rag_disabled': 'RAG aus',
+            'too_large': 'zu gross',
+            'binary': 'Binärdatei',
+            'empty': 'leere Datei',
+            'no_chunks': 'kein Inhalt',
+            'embed_failed': 'Embed-Fehler',
+            'file_not_found': 'Datei nicht gefunden',
+            'project_not_found': 'Projekt nicht gefunden',
+            'bytes_missing': 'Bytes fehlen',
+            'exception': 'Indizierungs-Fehler'
+        };
+
+        function _showRagToast(rag) {
+            const el = document.getElementById('ragToast');
+            if (!el || !rag) return;
+            let text;
+            let klass;
+            if (rag.skipped) {
+                const label = _RAG_REASON_LABELS[rag.reason] || 'übersprungen';
+                klass = 'warn';
+                text = '⚠ Datei nicht indiziert: ' + label;
+            } else {
+                const n = (typeof rag.chunks === 'number') ? rag.chunks : 0;
+                klass = 'success';
+                text = '📚 ' + n + ' Chunks indiziert';
+            }
+            // textContent ist XSS-immun — Reason-Strings stammen aus dem
+            // statischen Mapping, niemals vom Server-Pfad direkt.
+            el.textContent = text;
+            el.classList.remove('warn', 'success');
+            el.classList.add(klass, 'visible');
+            if (_showRagToast._t) clearTimeout(_showRagToast._t);
+            _showRagToast._t = setTimeout(function () {
+                el.classList.remove('visible');
+            }, 3500);
+            el.onclick = function () {
+                if (_showRagToast._t) clearTimeout(_showRagToast._t);
+                el.classList.remove('visible');
+            };
+        }
+
         function _uploadProjectFiles(projectId, fileList) {
             const progress = document.getElementById('projectUploadProgress');
             if (!progress) return;
@@ -3379,6 +3461,12 @@ ADMIN_HTML = """<!DOCTYPE html>
                         if (xhr.status >= 200 && xhr.status < 300) {
                             row.innerHTML = '&#10004; ' + _escapeHtml(f.name) + ' — fertig';
                             row.style.color = '#4ecdc4';
+                            // Patch 205: RAG-Status nach Erfolgs-Render als Toast zeigen.
+                            // Fail-quiet: kaputter Body bricht den Upload-Loop nicht ab.
+                            try {
+                                const body = JSON.parse(xhr.responseText);
+                                if (body && body.rag) _showRagToast(body.rag);
+                            } catch (_) {}
                         } else {
                             let detail = 'HTTP ' + xhr.status;
                             try {
@@ -3428,6 +3516,10 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
         // ==================== /Patch 196 ====================
     </script>
+    <!-- Patch 205: RAG-Status-Toast (wird nach jedem Datei-Upload kurz eingeblendet).
+         Position via CSS fixed (bottom-right). Inhalt wird per textContent gesetzt
+         (XSS-immun). Klick + Auto-Timeout dismissen via .visible-Klasse. -->
+    <div id="ragToast" class="rag-toast" role="status" aria-live="polite"></div>
     <!-- Patch 200: Service-Worker-Registrierung (PWA App-Shell-Cache). -->
     <script>
         if ('serviceWorker' in navigator) {

@@ -201,7 +201,7 @@ class TestP196JsFunctions:
         # FormData fuer Multipart
         assert "new FormData()" in hel_src
         # POST auf den richtigen Endpoint
-        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:3000]
+        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:4500]
         assert "/hel/admin/projects/" in upload_block
         assert "/files'" in upload_block
 
@@ -235,13 +235,13 @@ class TestP196JsFunctions:
 
     def test_uploads_are_sequential(self, hel_src):
         # Sequenziell statt Promise.all — Server schonen + saubere Progress
-        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:3000]
+        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:4500]
         assert "for (let i = 0; i < files.length" in upload_block
         # await pro File, nicht Promise.all
         assert "await uploadOne(" in upload_block
 
     def test_upload_progress_handles_errors(self, hel_src):
-        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:3000]
+        upload_block = hel_src.split("function _uploadProjectFiles(")[1][:4500]
         assert "xhr.onerror" in upload_block
         # Fehler-Detail aus JSON-Body
         assert "responseText" in upload_block

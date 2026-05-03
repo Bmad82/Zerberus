@@ -6523,6 +6523,171 @@ Bei Fail-Open eine Warning-Zeile (`Synthese-LLM crashed (fail-open): ...`). Der 
 
 ---
 
+## Patch 205 — RAG-Toast in Hel-UI nach Datei-Upload (Phase 5a Schuld aus P199)
+
+**Datum:** 2026-05-03
+**Tests:** 1817 passed (+20 P205 — 2 Renderer-Existenz + 6 Reason-Mapping + 4 CSS + 1 DOM + 3 Verdrahtung + 1 XSS + 1 JS-Integrity + 2 Smoke), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste, 0 neue Failures
+
+**Was P205 schließt:**
+
+Eine Lese-Schuld aus P199. `POST /hel/admin/projects/{id}/files` retourniert seit P199 ein `rag`-Dict im Response-Body — `{"chunks": N, "skipped": false, "reason": "indexed"}` im Happy-Path, `{"chunks": 0, "skipped": true, "reason": "..."}` bei Skip (Reason-Codes: `rag_disabled`, `too_large`, `binary`, `empty`, `no_chunks`, `embed_failed`, `file_not_found`, `project_not_found`, `bytes_missing`, plus Wrapper-`exception` aus dem Upload-Endpoint). Das Hel-Frontend hat das Feld bisher ignoriert: der User sah die Drop-Zone-Progress-Zeile (`✓ <name> — fertig`), aber nicht ob/wieviel indiziert wurde. Wer eine 60-MB-Datei hochlud, bekam HTTP 200 (Upload OK), aber im RAG-Block des Backends stand `{"chunks": 0, "skipped": true, "reason": "too_large"}` — der User merkte erst beim nächsten Chat-Test, dass die Datei nicht im RAG ist. Transparenz-Loch geschlossen mit P205.
+
+**Architektur: Frontend-only, drei Bausteine.**
+
+Alles in [`zerberus/app/routers/hel.py`](../zerberus/app/routers/hel.py) — kein Backend-Touch, kein neues Modul. Drei Bausteine:
+
+1. **CSS-Block** im `<style>`-Bereich (~30 Zeilen) direkt vor `</style>`:
+
+   ```css
+   .rag-toast {
+       position: fixed;
+       bottom: 20px;
+       right: 20px;
+       max-width: calc(100vw - 40px);
+       min-height: 44px;        /* Mobile-first Touch-Dismiss */
+       padding: 12px 16px;
+       background: #2d2d2d;
+       border: 1px solid #c8941f;   /* Kintsugi-Gold default */
+       border-radius: 8px;
+       color: #e0e0e0;
+       z-index: 1000;
+       cursor: pointer;
+       opacity: 0;
+       transform: translateY(10px);
+       transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+       pointer-events: none;       /* Hidden-State darf keine Klicks abfangen */
+       display: flex;
+       align-items: center;
+   }
+   .rag-toast.visible {
+       opacity: 1;
+       transform: translateY(0);
+       pointer-events: auto;
+   }
+   .rag-toast.success { border-color: #4ecdc4; }
+   .rag-toast.warn { border-color: #ff6b6b; }
+   ```
+
+   Default-Border ist Kintsugi-Gold, beim Erfolg cyan, beim Skip rot. `pointer-events: none` im Hidden-State ist die Defense gegen "unsichtbarer Toast frisst Klick"-Bug, den man sonst sehr schwer reproduziert.
+
+2. **Reason-Mapping** als JS-Konstante `_RAG_REASON_LABELS` direkt vor `_uploadProjectFiles`:
+
+   ```js
+   const _RAG_REASON_LABELS = {
+       'rag_disabled': 'RAG aus',
+       'too_large': 'zu gross',
+       'binary': 'Binärdatei',
+       'empty': 'leere Datei',
+       'no_chunks': 'kein Inhalt',
+       'embed_failed': 'Embed-Fehler',
+       'file_not_found': 'Datei nicht gefunden',
+       'project_not_found': 'Projekt nicht gefunden',
+       'bytes_missing': 'Bytes fehlen',
+       'exception': 'Indizierungs-Fehler'
+   };
+   ```
+
+   Statisches Mapping mit Default-Fallback `"übersprungen"` — neue Reason-Codes vom Backend brechen nichts, sie werden generisch dargestellt. Lesson für künftige Frontends: Server-Codes nie 1:1 anzeigen, immer übersetzen.
+
+3. **`_showRagToast(rag)`** als JS-Renderer (~25 Zeilen):
+
+   ```js
+   function _showRagToast(rag) {
+       const el = document.getElementById('ragToast');
+       if (!el || !rag) return;
+       let text;
+       let klass;
+       if (rag.skipped) {
+           const label = _RAG_REASON_LABELS[rag.reason] || 'übersprungen';
+           klass = 'warn';
+           text = '⚠ Datei nicht indiziert: ' + label;
+       } else {
+           const n = (typeof rag.chunks === 'number') ? rag.chunks : 0;
+           klass = 'success';
+           text = '📚 ' + n + ' Chunks indiziert';
+       }
+       el.textContent = text;  // XSS-immun
+       el.classList.remove('warn', 'success');
+       el.classList.add(klass, 'visible');
+       if (_showRagToast._t) clearTimeout(_showRagToast._t);
+       _showRagToast._t = setTimeout(function () {
+           el.classList.remove('visible');
+       }, 3500);
+       el.onclick = function () {
+           if (_showRagToast._t) clearTimeout(_showRagToast._t);
+           el.classList.remove('visible');
+       };
+   }
+   ```
+
+   `textContent` statt `innerHTML` — der Reason-String wird durch das statische Mapping übersetzt, niemals direkt vom Server gerendert. Selbst wenn ein Angreifer hypothetisch einen `<script>`-Reason ins Backend einschleuste, würde er hier als Text dargestellt. Defense-in-Depth.
+
+   **Singleton-Slot-Pattern:** `_showRagToast._t` ist ein Function-Property, das den vorigen Auto-Hide-Timeout cancelt bevor der neue startet. Ohne dieses Pattern blieben bei sequenziellen Multi-File-Uploads alte `setTimeout`s aktiv, der Toast könnte vor seiner 3.5-Sekunden-Lifetime versteckt werden.
+
+   **Klick-Dismiss:** `el.onclick` cancelt Timeout und versteckt sofort. Mobile-User können den Toast mit einem Tap wegblenden statt zu warten.
+
+**DOM-Element** direkt vor dem SW-Reg-Script, vor `</body>`:
+
+```html
+<div id="ragToast" class="rag-toast" role="status" aria-live="polite"></div>
+```
+
+Ein einziger Container, kein Stacking. `role="status"` + `aria-live="polite"` macht ihn screenreader-freundlich, ohne ihn aufdringlich zu machen.
+
+**Verdrahtung im bestehenden Drop-Zone-Upload `_uploadProjectFiles` → `xhr.onload` Success-Branch** direkt nach dem `'fertig'`-Render der Progress-Zeile:
+
+```js
+if (xhr.status >= 200 && xhr.status < 300) {
+    row.innerHTML = '&#10004; ' + _escapeHtml(f.name) + ' — fertig';
+    row.style.color = '#4ecdc4';
+    // Patch 205: RAG-Status nach Erfolgs-Render als Toast zeigen.
+    try {
+        const body = JSON.parse(xhr.responseText);
+        if (body && body.rag) _showRagToast(body.rag);
+    } catch (_) {}
+}
+```
+
+Drei Schutzschichten:
+- `try/catch` um den `JSON.parse` — kaputter JSON-Body bricht den Upload-Loop nicht ab.
+- `body && body.rag`-Guard — Backwards-Compat zu Backends, die das Feld nicht kennen (z.B. wenn jemand den Server downgraded ohne den Frontend-Code zu rollback'en).
+- Renderer selbst `if (!el || !rag) return` — Defense gegen fehlenden DOM-Container.
+
+**Was P205 bewusst NICHT macht:**
+
+- **Kein neuer Backend-Endpoint, keine Schema-Änderung.** Der `rag`-Block lag schon seit P199 in der Response. P205 ist reine Frontend-Lese-Schuld.
+- **Keine Sammel-Aggregation bei Multi-Upload.** Bei Multi-File-Drop gewinnt der letzte Toast — die Progress-Liste oben zeigt pro File den Roh-Status. Sammel-Toast (`📚 47 Chunks aus 3 Dateien indiziert`) wäre Multi-State-Tracking im Frontend für einen Edge-Case.
+- **Kein Stacking.** Spec aus dem HANDOVER: neuer Toast ersetzt alten via gleichem `#ragToast`-Container und CSS-State-Toggle.
+- **Kein Nala-Pfad.** Nala hat aktuell keinen Datei-Upload (Projekt-Anlage ist Hel-only). Wenn P201/P196 später Nala-seitige Uploads bekommt, muss der Toast dort separat verdrahtet werden.
+- **Keine i18n.** de-DE hardgecodet, analog zur restlichen Hel-UI.
+- **Kein Telegram-Pfad.** Huginn (Telegram-Adapter) hat keine Datei-Uploads dieser Art.
+- **`_escapeHtml`-Doppelung in hel.py** (Zeile 1653 + 3096) bleibt als bestehende Schuld stehen; P205 nutzt sowieso `textContent` und braucht den Helper nicht.
+
+**Logging-Tag:** keiner. Frontend-only-Patch, alle Backend-Logs `[RAG-199]` aus P199 bleiben.
+
+**Tests** (20 in [`test_p205_hel_rag_toast.py`](../zerberus/tests/test_p205_hel_rag_toast.py)):
+
+- `TestToastFunctionExists` (2) — Funktion definiert + Signatur `_showRagToast(rag)`.
+- `TestReasonMapping` (6) — alle 5 Hauptcodes (`too_large`, `binary`, `empty`, `no_chunks`, `embed_failed`) parametrisiert plus expliziter `'too_large' → 'zu gross'`-Check.
+- `TestRagToastCss` (4) — `.rag-toast` definiert, `min-height: 44px` (Mobile-first), `position: fixed`, Toggle-Klasse-Variante (`.visible`).
+- `TestToastDom` (1) — `<div id="ragToast">` im HTML.
+- `TestUploadWiring` (3) — `body.rag` im Upload-Block, `_showRagToast(...)`-Aufruf im Block, Reihenfolge `'fertig'` < `_showRagToast` (Toast NACH Render).
+- `TestToastXss` (1) — `_showRagToast`-Body nutzt `textContent` ODER `_escapeHtml`.
+- `TestJsSyntaxIntegrity` (1) — `node --check` über alle inline `<script>`-Blöcke aus `ADMIN_HTML` (skipped wenn `node` fehlt). Lesson aus P203b: ein einzelner SyntaxError invalidiert den gesamten Block.
+- `TestHelHtmlSmoke` (2) — `ADMIN_HTML` enthält alle Toast-Pieces, genau ein `id="ragToast"`.
+
+**Kollateral-Fix:** `test_projects_ui::TestP196JsFunctions::test_uploads_are_sequential` hatte einen `[:3000]`-Slice auf den `_uploadProjectFiles`-Body. Durch das neue `_showRagToast` plus die Toast-Verdrahtung im onload-Branch wuchs der Body um ~600 Zeichen — der `for (let i = 0; i < files.length`-Marker rutschte über die Slice-Grenze. Slice auf 4500 erhöht. Lesson: Slice-Window-Audits sind anfällig für additive Änderungen am Body, expliziter End-Marker (`/Patch 196`) wäre robuster — aber für so einen lokalen Test akzeptabel.
+
+**Effekt für den User:**
+
+Beim Datei-Upload in Hel taucht unten rechts kurz ein Toast auf:
+- `📚 14 Chunks indiziert` (cyan-Border, Erfolg)
+- `⚠ Datei nicht indiziert: zu gross` (rot-Border, Skip mit Grund)
+
+3.5 Sekunden sichtbar oder bis Tap. Die Drop-Zone-Progress-Zeilen oberhalb zeigen pro File den Roh-Upload-Status (✓ fertig / ✗ Fehler) wie bisher — der RAG-Status ist die Zusatzinfo, die nur im Toast erscheint.
+
+---
+
 ## Patch 203d-3 — UI-Render im Nala-Frontend für Sandbox-Code-Execution (Phase 5a Ziel #5 ABGESCHLOSSEN)
 
 **Datum:** 2026-05-03
@@ -6708,5 +6873,5 @@ Der P203b-Bug war ein einzelner SyntaxError in einem inline `<script>`-Block, de
 
 ---
 
-*Stand: 2026-05-03, Patch 203d-3 — UI-Render im Nala-Frontend für Sandbox-Code-Execution. Phase 5a Ziel #5 ABGESCHLOSSEN. 1797 passed (+30), 0 neue Failures.*
+*Stand: 2026-05-03, Patch 205 — RAG-Toast in Hel-UI nach Datei-Upload. Phase 5a Schuld aus P199 geschlossen. 1817 passed (+20), 0 neue Failures.*
 
