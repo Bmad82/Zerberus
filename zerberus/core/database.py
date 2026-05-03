@@ -323,6 +323,31 @@ class CodeVeto(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class GpuQueueAudit(Base):
+    """Patch 211 (Phase 5a #11) — Audit-Trail fuer GPU-Queue-Slots.
+
+    Pro Slot eine Zeile: welcher Konsument (whisper/gemma/embedder/
+    reranker), wieviel VRAM reserviert, an welcher Position in der Queue
+    er saß, wie lange er gewartet hat, wie lange er den Slot gehalten
+    hat, und ob ein Timeout aufgetreten ist.
+
+    Auswertung erlaubt: wo entstehen Engpaesse, wie oft greift die Queue
+    ueberhaupt (Position > 0), reichen die Budget-Annahmen, wie oft
+    laeuft Whisper/Gemma in Timeouts. Grundlage fuer Budget-Tuning.
+    """
+    __tablename__ = "gpu_queue_audits"
+
+    id = Column(Integer, primary_key=True)
+    audit_id = Column(String(36), nullable=True, index=True)  # UUID4 hex
+    consumer_name = Column(String(32), nullable=True, index=True)
+    requested_mb = Column(Integer, nullable=True)
+    queue_position = Column(Integer, nullable=True)  # 0 = sofort, >0 = N-ter Waiter
+    wait_ms = Column(Integer, nullable=True)
+    held_ms = Column(Integer, nullable=True)
+    timed_out = Column(Integer, nullable=True, default=0)  # 0/1 als Integer (SQLite-portabel)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 _engine = None
 _async_session_maker = None
 

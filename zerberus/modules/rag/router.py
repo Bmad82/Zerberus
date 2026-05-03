@@ -424,24 +424,29 @@ async def semantic_search(
     # nutzen denselben Sprach-Index, damit der Reranker konsistente Kandidaten
     # bekommt. (Query-Expansion paraphrasiert in derselben Sprache.)
     query_lang = _detect_lang(query) if _use_dual else None
-    for q in queries:
-        vec = await asyncio.to_thread(_encode, q, query_lang)
-        sub_hits = await asyncio.to_thread(
-            _search_index,
-            vec,
-            per_query_k,
-            min_words,
-            q,
-            False,          # rerank OFF per sub-query, once at end
-            "",
-            rerank_multiplier,
-            query_lang,
-        )
-        for h in sub_hits:
-            key = (h.get("text", "") or "")[:200]
-            if key and key not in seen:
-                seen.add(key)
-                all_candidates.append(h)
+    # Patch 211: VRAM-Slot um Embedder + Search-Loop. Hier laufen N
+    # Embed-Calls (einer pro Expansion-Variante). Slot blockt nur
+    # tatsaechlichen Modell-Aufruf — Search ist FAISS-CPU.
+    from zerberus.core.gpu_queue import vram_slot
+    async with vram_slot("embedder", timeout=30.0):
+        for q in queries:
+            vec = await asyncio.to_thread(_encode, q, query_lang)
+            sub_hits = await asyncio.to_thread(
+                _search_index,
+                vec,
+                per_query_k,
+                min_words,
+                q,
+                False,          # rerank OFF per sub-query, once at end
+                "",
+                rerank_multiplier,
+                query_lang,
+            )
+            for h in sub_hits:
+                key = (h.get("text", "") or "")[:200]
+                if key and key not in seen:
+                    seen.add(key)
+                    all_candidates.append(h)
 
     if expand_enabled:
         logger.warning(
@@ -451,7 +456,8 @@ async def semantic_search(
 
     if rerank_enabled and rerank_model and all_candidates:
         from zerberus.modules.rag.reranker import rerank as _rerank
-        results = await asyncio.to_thread(_rerank, query, all_candidates, rerank_model, req.top_k)
+        async with vram_slot("reranker", timeout=30.0):
+            results = await asyncio.to_thread(_rerank, query, all_candidates, rerank_model, req.top_k)
     else:
         results = all_candidates[:req.top_k]
 

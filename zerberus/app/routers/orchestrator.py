@@ -295,26 +295,29 @@ async def _rag_search(query: str, settings: Settings) -> list[dict]:
 
         # Per Sub-Query: raw FAISS-Hits (ohne inline-Rerank). Wir reranken
         # am Ende einmal über alle uniquen Kandidaten mit der Original-Query.
+        # Patch 211: VRAM-Slot um den Embedder-Loop.
+        from zerberus.core.gpu_queue import vram_slot
         per_query_k = _RAG_TOP_K * (rerank_multiplier if rerank_enabled else 1)
         all_candidates: list[dict] = []
         seen: set[str] = set()
-        for q in queries:
-            vec = await asyncio.to_thread(rag_encode, q)
-            sub_hits = await asyncio.to_thread(
-                rag_search,
-                vec,
-                per_query_k,
-                min_words,
-                q,
-                False,          # rerank_enabled=False — wir reranken am Ende kombiniert
-                "",
-                rerank_multiplier,
-            )
-            for h in sub_hits:
-                key = (h.get("text", "") or "")[:200]
-                if key and key not in seen:
-                    seen.add(key)
-                    all_candidates.append(h)
+        async with vram_slot("embedder", timeout=30.0):
+            for q in queries:
+                vec = await asyncio.to_thread(rag_encode, q)
+                sub_hits = await asyncio.to_thread(
+                    rag_search,
+                    vec,
+                    per_query_k,
+                    min_words,
+                    q,
+                    False,          # rerank_enabled=False — wir reranken am Ende kombiniert
+                    "",
+                    rerank_multiplier,
+                )
+                for h in sub_hits:
+                    key = (h.get("text", "") or "")[:200]
+                    if key and key not in seen:
+                        seen.add(key)
+                        all_candidates.append(h)
 
         if expand_enabled:
             logger.warning(
@@ -325,9 +328,12 @@ async def _rag_search(query: str, settings: Settings) -> list[dict]:
         # Finaler Rerank über den dedupe'ten Pool mit der ORIGINAL-Query
         if rerank_enabled and rerank_model and all_candidates:
             from zerberus.modules.rag.reranker import rerank as _rerank
-            hits = await asyncio.to_thread(
-                _rerank, query, all_candidates, rerank_model, _RAG_TOP_K
-            )
+            from zerberus.core.gpu_queue import vram_slot
+            # Patch 211: VRAM-Slot um den Reranker-Call.
+            async with vram_slot("reranker", timeout=30.0):
+                hits = await asyncio.to_thread(
+                    _rerank, query, all_candidates, rerank_model, _RAG_TOP_K
+                )
             # Patch 105: Minimum-Reranker-Score — liegt der Top-Score unter
             # der Schwelle, ist KEIN Chunk wirklich relevant (typisch bei
             # Übersetzungs-/Umformulierungs-Aufgaben). RAG-Kontext komplett

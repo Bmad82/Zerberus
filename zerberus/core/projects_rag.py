@@ -47,7 +47,13 @@ from typing import Any, Optional
 
 import numpy as np
 
+from zerberus.core.gpu_queue import vram_slot
+
 logger = logging.getLogger(__name__)
+
+# Patch 211: Wartezeit auf den Embedder-Slot. Embedder ist klein (~1 GB),
+# blockt selten — 30s reicht.
+EMBEDDER_VRAM_TIMEOUT_SECONDS = 30.0
 
 
 RAG_SUBDIR = "_rag"
@@ -450,28 +456,39 @@ async def index_project_file(
     new_vectors: list[list[float]] = []
     new_meta: list[dict[str, Any]] = []
     indexed_at = datetime.utcnow().isoformat()
-    for ci, chunk in enumerate(chunks):
-        chunk_text = chunk.get("content") or ""
-        if not chunk_text.strip():
-            continue
-        try:
-            vec = _embed_text(chunk_text)
-        except Exception as e:
-            logger.warning(
-                f"[RAG-199] Embed-Fehler slug={slug} path={file_meta['relative_path']} chunk={ci}: {e}"
-            )
-            return {"chunks": 0, "skipped": True, "reason": "embed_failed"}
-        new_vectors.append(vec)
-        cmeta = dict(chunk.get("metadata") or {})
-        cmeta.update({
-            "file_id": file_id,
-            "relative_path": file_meta["relative_path"],
-            "sha256": file_meta["sha256"],
-            "chunk_id": ci,
-            "text": chunk_text,
-            "indexed_at": indexed_at,
-        })
-        new_meta.append(cmeta)
+    # Patch 211: ein VRAM-Slot fuer den ganzen Chunk-Loop einer Datei —
+    # vermeidet Acquire-Overhead pro Chunk. Bei Timeout fail-fast mit
+    # ``embed_timeout``-Reason.
+    try:
+        import asyncio as _asyncio
+        async with vram_slot("embedder", timeout=EMBEDDER_VRAM_TIMEOUT_SECONDS):
+            for ci, chunk in enumerate(chunks):
+                chunk_text = chunk.get("content") or ""
+                if not chunk_text.strip():
+                    continue
+                try:
+                    vec = _embed_text(chunk_text)
+                except Exception as e:
+                    logger.warning(
+                        f"[RAG-199] Embed-Fehler slug={slug} path={file_meta['relative_path']} chunk={ci}: {e}"
+                    )
+                    return {"chunks": 0, "skipped": True, "reason": "embed_failed"}
+                new_vectors.append(vec)
+                cmeta = dict(chunk.get("metadata") or {})
+                cmeta.update({
+                    "file_id": file_id,
+                    "relative_path": file_meta["relative_path"],
+                    "sha256": file_meta["sha256"],
+                    "chunk_id": ci,
+                    "text": chunk_text,
+                    "indexed_at": indexed_at,
+                })
+                new_meta.append(cmeta)
+    except _asyncio.TimeoutError:
+        logger.warning(
+            f"[RAG-199] Embedder-Slot Timeout slug={slug} path={file_meta['relative_path']}"
+        )
+        return {"chunks": 0, "skipped": True, "reason": "embed_timeout"}
 
     if not new_vectors:
         return {"chunks": 0, "skipped": True, "reason": "no_chunks"}
@@ -571,8 +588,14 @@ async def query_project_rag(
     vectors, meta = load_index(slug, base_dir)
     if vectors is None or not meta:
         return []
+    # Patch 211: VRAM-Slot um den Query-Embed-Call.
+    import asyncio as _asyncio
     try:
-        qvec = _embed_text(query)
+        async with vram_slot("embedder", timeout=EMBEDDER_VRAM_TIMEOUT_SECONDS):
+            qvec = _embed_text(query)
+    except _asyncio.TimeoutError:
+        logger.warning(f"[RAG-199] Embedder-Slot Timeout slug={slug}")
+        return []
     except Exception as e:
         logger.warning(f"[RAG-199] Query-Embed-Fehler slug={slug}: {e}")
         return []

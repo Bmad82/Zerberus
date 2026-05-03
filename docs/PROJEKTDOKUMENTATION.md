@@ -7787,5 +7787,97 @@ Huginn antwortete wiederholt "Patch 178" auf "bei welchem Patch sind wir?", obwo
 
 ---
 
-*Stand: 2026-05-03, Patch 210 — Huginn-RAG-Auto-Sync. Phase 5a Ziel #18 ABGESCHLOSSEN. 2176 passed (+53), 0 neue Failures.*
+## Patch 211 (2026-05-03) — GPU-Queue für VRAM-Konsumenten (Phase 5a Ziel #11 ABGESCHLOSSEN)
+
+### Worum es ging
+
+Vor P211 liefen Whisper (etwa 4 GB FP16), Gemma E2B (etwa 2 GB), der RAG-Embedder (bis 2 GB für E5-Large) und der Cross-Encoder-Reranker (etwa 512 MB) auf der RTX 3060 (12 GB physisch, etwa 11 GB nutzbar) ohne Koordination. Bei einer typischen Voice-Eingabe, die parallel Whisper, Gemma und den Embedder triggerte (Whisper transkribiert die Voice-Nachricht, Gemma analysiert die Prosodie, der Embedder embeddet die Frage für das Projekt-RAG), konnte die Karte überlaufen und der Server crashte mit `CUDA out of memory`. P211 baut einen kooperativen Token-Bucket: jeder Konsument reserviert vor dem Modell-Aufruf seinen statischen VRAM-Budget-Anteil; passt das in das Restbudget, läuft der Call sofort, sonst wandert er in eine FIFO-Queue.
+
+Phase-5a-Ziel #11 schliesst damit. Damit sind neun von siebzehn ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18 (Huginn-RAG-Auto-Sync, nachträglich aufgenommen).
+
+### Architektur
+
+Modul `zerberus/core/gpu_queue.py` mit drei Schichten:
+
+- **Pure-Function-Schicht.** `compute_vram_budget(consumer_name) -> int` mit statischer Budget-Tabelle `VRAM_BUDGET_MB = {whisper:4000, gemma:2000, embedder:1000, reranker:512}`. Unbekannte Konsumenten bekommen `DEFAULT_CONSUMER_BUDGET_MB=1500` mit Warning-Log — Tippfehler in der Verdrahtung werden so loud sichtbar. `should_queue(active_total_mb, requested_mb, *, total_mb=11000) -> bool` ist der Token-Bucket-Check (`(active + requested) > total`).
+- **Datenklassen.** `GpuSlotInfo` mit `audit_id` (UUID4-hex), `consumer_name`, `requested_mb`, `queue_position` (0=sofort durchgewunken, >0=N-ter Waiter), `waited_at`, `acquired_at`, `released_at`, `timed_out`-Flag. Computed Properties `wait_ms` und `held_ms` für die Audit-Tabelle und den Status-Endpoint.
+- **GpuQueue-Singleton.** Eine globale Instanz pro Prozess, lazy via `get_gpu_queue()`. State: `_active_mb` (aktuell belegt), `_waiters` (FIFO-Liste mit `(consumer_name, requested_mb, asyncio.Future)`-Tupeln), `_lock` (asyncio.Lock für State-Konsistenz), `_active_slots` (Liste der aktuell aktiven Slots für den Status-Endpoint).
+
+Die Acquire-Logik läuft unter dem Lock: passt das Request in das Restbudget → sofort `_active_mb += requested`, Slot zurückgeben. Sonst Future in `_waiters` anhängen, ausserhalb des Locks `await asyncio.wait_for(future, timeout)` (Default 30 Sekunden). Bei einem Timeout wird der Waiter sauber aus der Liste entfernt (kein Leak) und der Caller bekommt einen `asyncio.TimeoutError`.
+
+Die Release-Logik macht zuerst `_active_mb -= requested`, dann läuft sie FIFO durch die Waiter-Liste und weckt jeden Waiter, dessen Request reinpasst. Head-of-Line-Block by design: der erste Waiter blockt alle dahinter, auch wenn ein späterer reinpassen würde. Das ist akzeptabel, weil der typische Workload selten mehr als zwei oder drei parallele Konsumenten hat — ein cleverer Best-Fit-Scheduler wäre Overkill und schwerer zu testen.
+
+Verwendung als async Context-Manager über die Convenience-Funktion `vram_slot(consumer_name, *, timeout=30.0)`:
+
+```python
+async with vram_slot("whisper"):
+    # Whisper-Call läuft hier
+```
+
+### Audit-Tabelle
+
+Neue Tabelle `gpu_queue_audits` in `database.py` mit `audit_id`, `consumer_name`, `requested_mb`, `queue_position`, `wait_ms`, `held_ms`, `timed_out` (0/1 als Integer für SQLite-Portabilität), `created_at`. Best-Effort-Insert via `store_gpu_queue_audit(info)` — DB-Fehler werden verschluckt, der Hauptpfad blockiert nicht.
+
+Die Tabelle ist die Validierungs-Grundlage der statischen Budget-Werte. `SELECT consumer_name, AVG(wait_ms), MAX(wait_ms), COUNT(*) FILTER (WHERE timed_out=1) FROM gpu_queue_audits GROUP BY consumer_name` zeigt nach ein bis zwei Wochen Betrieb direkt, wo die Budget-Annahmen daneben liegen oder wo die Queue zu eng ist.
+
+### Verdrahtung in fünf Stellen
+
+1. **`whisper_client.transcribe`** (`zerberus/utils/whisper_client.py`) — `async with vram_slot("whisper", timeout=60.0)` um den HTTP-Call zum Whisper-Docker. Whisper läuft im Container auf Port 8002, aber auf derselben physischen GPU — der Slot serialisiert.
+2. **`gemma_client.GemmaAudioClient.analyze_audio`** (`zerberus/modules/prosody/gemma_client.py`) — `vram_slot("gemma", timeout=60.0)` um den Backend-Call (CLI oder llama-server). Stub-Modus (`mode == "none"`) skippt den Slot — nichts läuft auf der GPU.
+3. **`projects_rag.index_project_file` und `query_project_rag`** (`zerberus/core/projects_rag.py`) — `vram_slot("embedder", timeout=30.0)` um den `_embed_text`-Aufruf. Bei Index: ein Slot für den ganzen Chunk-Loop einer Datei (vermeidet Per-Chunk-Acquire-Overhead). Timeout-Reason `embed_timeout`.
+4. **`rag/router.py`** `query_documents`-Endpoint — `vram_slot("embedder")` um den `_encode`-Loop und `vram_slot("reranker")` um den `_rerank`-Call.
+5. **`orchestrator.py`** — Embedder-Loop und Reranker-Call analog.
+
+### Status-Endpoint und Hel-Frontend-Toast
+
+Auth-freier Endpoint `GET /v1/gpu/status` (analog `/v1/hitl/*`) liefert einen Snapshot: `{total_mb, active_mb, free_mb, active_slots:[{consumer,requested_mb,held_ms}], waiters:[{consumer,requested_mb}]}`.
+
+Das Hel-Frontend bekommt:
+
+- **CSS** `.gpu-toast` analog `.rag-toast` aus P205, aber `bottom: 20px; left: 20px` statt right — damit beide Toasts nicht kollidieren. Gleiche Kintsugi-Border, 44-Pixel-Touch-Target, Fade-in via `.visible`-Klasse.
+- **DOM-Element** `<div id="gpuToast" class="gpu-toast" role="status" aria-live="polite"></div>`.
+- **JS-IIFE** mit `_pollOnce()` (fetch `/v1/gpu/status` mit `cache: 'no-store'`, fail-quiet bei Netzwerk-Fehlern), `_renderGpuToast(status)` (textContent statt innerHTML — Consumer-Namen kommen aus einer Whitelist `whisper|gemma|embedder|reranker`, kein XSS-Risiko, aber textContent ist die belt-and-braces-Version), `_start()` und `_stop()` für sauberen Lifecycle. Polling-Intervall 4000 Millisekunden via `setInterval`, gestartet beim `load`-Event, gestoppt beim `beforeunload`.
+
+Toast erscheint sobald `waiters.length > 0`: `⏳ GPU wartet auf <Consumer>` plus `Position N in Queue` bei mehreren Wartenden. Klick auf den Toast = Soft-Dismiss (kommt beim nächsten Poll wieder, falls noch jemand wartet).
+
+### Was P211 bewusst nicht macht
+
+- **Dynamische VRAM-Erkennung via `nvidia-smi`** — statisches Budget reicht, ist robust gegen Treiber-Anomalien und tut auch ohne CUDA-Header.
+- **Mehr-GPU-Verteilung** — genug für eine RTX 3060, Multi-GPU wäre für P212+.
+- **Cancel-Outstanding-Slots** — FIFO bleibt stur; bei Timeout entfernt sich der Caller selbst, aber andere Waiter laufen weiter.
+- **Per-Consumer-Lock-Isolation** — globale Queue ist einfacher und ausreichend; Per-Consumer-Lock würde den Token-Spar verspielen.
+- **Sync-Variante des Slots** für Code, der nicht in async lebt — alle vier Konsumenten sind erreichbar via async-Pfade.
+- **Toast im Nala-Frontend** — Hel reicht; Nala-User sieht den Slot-Wait via Antwortzeit, nicht via Toast. Audience-Korrektheit zählt.
+
+### Tests
+
+40 neue Tests in `test_p211_gpu_queue.py`, in zwölf Klassen aufgeteilt:
+
+- `TestComputeVramBudget` (3) — known-consumers / unknown-default / case-insensitive.
+- `TestShouldQueue` (3) — fits / overflow / zero-or-negative.
+- `TestGpuQueueAcquireImmediate` (3) — when-empty / release-frees / parallel-3-consumers (Whisper+Gemma+Embedder = 7 GB ≤ 11 GB → kein Wait).
+- `TestGpuQueueFifo` (2) — overflow-waits-for-release / strict-FIFO-order.
+- `TestGpuQueueTimeout` (2) — raises-TimeoutError / cleans-waiter (no leak after timeout).
+- `TestGpuQueueStatus` (1) — Snapshot reportet aktive Slots und Waiter korrekt.
+- `TestStoreAudit` (1) — silent-when-DB-not-initialized.
+- Verdrahtungs-Source-Audits (10) — Whisper/Gemma/Embedder/Reranker je Imports + Aufruf-Stelle.
+- `TestGpuStatusEndpointSource` (2) + `TestGpuStatusEndpointE2E` (2) — Endpoint-Registration und Snapshot-Schema unter Last.
+- `TestHelFrontendGpuToast` (6) — CSS-Klasse / DOM-Element / Endpoint-URL / textContent / Whitelist / 44px-Touch.
+- `TestJsSyntaxIntegrity` (1) — `node --check` über alle inline `<script>`-Blöcke aus ADMIN_HTML, skipped wenn `node` nicht im PATH.
+- `TestSmoke` (3) — Module-Exports / DB-Tabelle-Schema / KNOWN_CONSUMERS-Konsistenz.
+
+Lokal: 2176 baseline → **2216 passed** (+40 P211), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts` + `test_rag_dual_switch.test_fallback_logic` + `test_patch185_runtime_info` durch `config.yaml`-Drift `deepseek-v4-pro`), 0 NEUE Failures aus P211.
+
+### Lessons (6)
+
+- **Statisches VRAM-Budget schlägt dynamische Detection.** `nvidia-smi`-Polling ist unzuverlässig (Treiber-Caching, Race-Conditions zwischen Read und Allocate, Abhängigkeit zu CUDA-Headern). Statische Tabelle aus produktiven Messungen plus konservativer 11-von-12-GB-Budget liefert die gleiche Schutzwirkung mit 30 Zeilen Code statt 200.
+- **FIFO mit Head-of-Line-Block ist der Sweet-Spot bei kleinen Konsumenten-Sets.** Strikte FIFO-Reihenfolge ist trivial zu implementieren und vorhersehbar. "Smarter" Scheduler (best-fit, priority-queue) sind Overkill bei vier Konsumenten und zwei bis drei typischer Parallelität — und schwerer zu testen.
+- **Pure-Function `should_queue` macht den Token-Bucket testbar ohne asyncio.** `should_queue(active, requested, total) -> bool` ist eine drei-Zeilen-Funktion, aber sie isoliert die Boundary-Logik (`<=` vs. `<` an der Total-Grenze) und macht Property-Tests trivial. Lesson aus P208/P209 auf Async-Resource-Locking übertragen.
+- **Audit-Tabelle ist die Validierung der Hypothese.** Die Budget-Werte sind Schätzungen. `gpu_queue_audits` mit Wartezeit, Halte-Dauer, Queue-Position und Timeout-Flag sammelt die Realdaten — Tuning-Grundlage statt blinder Annahmen.
+- **Hel-Toast statt Nala-Toast — Audience-Korrektheit zählt.** System-Status-Detail gehört ins Admin-Frontend, wo es Operations-Wert hat, nicht ins User-Frontend, wo es nur Verwirrung stiftet.
+- **Verdrahtungs-Source-Audit-Tests fangen Drift zwischen Modul und Verdrahtung.** `'vram_slot("whisper"' in src`-Pattern aus P210 (`TestDocSourceAudit`) auf Code-Verdrahtung übertragen — bei jedem neuen Cross-Cutting-Concern (Audit, Lock, Log) IMMER Source-Audit-Tests schreiben.
+
+---
+
+*Stand: 2026-05-03, Patch 211 — GPU-Queue für VRAM-Konsumenten. Phase 5a Ziel #11 ABGESCHLOSSEN. 2216 passed (+40), 0 neue Failures.*
 

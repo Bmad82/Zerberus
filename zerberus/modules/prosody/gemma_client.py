@@ -30,8 +30,14 @@ from typing import Any
 
 import httpx
 
+from zerberus.core.gpu_queue import vram_slot
+
 logger = logging.getLogger(__name__)
 _LOG_TAG = "[PROSODY-189]"
+
+# Patch 211: Wartezeit auf den GPU-Slot. Hoeher als der CLI-Default-Timeout
+# (30s) — der Slot blockt nur wenn parallel Whisper laeuft, was selten ist.
+GEMMA_VRAM_TIMEOUT_SECONDS = 60.0
 
 
 class GemmaAudioClient:
@@ -60,14 +66,23 @@ class GemmaAudioClient:
         return "none"
 
     async def analyze_audio(self, audio_bytes: bytes, prompt: str) -> dict:
-        """Audio analysieren — routing nach verfügbarem Backend."""
+        """Audio analysieren — routing nach verfügbarem Backend.
+
+        Patch 211: VRAM-Slot um den Backend-Call (CLI oder Server). Stub-
+        Pfad ueberspringt den Slot — nichts laeuft auf der GPU.
+        """
         m = self.mode
-        if m == "server":
-            return await self._analyze_via_server(audio_bytes, prompt)
-        if m == "cli":
-            return await self._analyze_via_cli(audio_bytes, prompt)
-        logger.warning(f"{_LOG_TAG} Kein Gemma-Backend konfiguriert")
-        return self._stub_result()
+        if m == "none":
+            logger.warning(f"{_LOG_TAG} Kein Gemma-Backend konfiguriert")
+            return self._stub_result()
+        try:
+            async with vram_slot("gemma", timeout=GEMMA_VRAM_TIMEOUT_SECONDS):
+                if m == "server":
+                    return await self._analyze_via_server(audio_bytes, prompt)
+                return await self._analyze_via_cli(audio_bytes, prompt)
+        except asyncio.TimeoutError:
+            logger.warning(f"{_LOG_TAG} GPU-Slot Timeout — Stub-Fallback")
+            return self._stub_result()
 
     # ---------------------------------------------------------------
     # Pfad B: llama-server (Zukunft, wenn #21868 gemergt ist)

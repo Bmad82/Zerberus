@@ -557,6 +557,39 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
         .rag-toast.success { border-color: #4ecdc4; }
         .rag-toast.warn { border-color: #ff6b6b; }
+        /* Patch 211 (Phase 5a #11): GPU-Queue-Wartetoast. Erscheint links unten,
+           damit er nicht mit dem RAG-Toast (rechts) kollidiert. Format identisch
+           — fixed, fade-in, klick-dismiss, 44px Touch-Target. Nur sichtbar wenn
+           tatsaechlich Konsumenten warten. */
+        .gpu-toast {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            max-width: calc(100vw - 40px);
+            min-height: 44px;
+            padding: 12px 16px;
+            background: #2d2d2d;
+            border: 1px solid #c8941f;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 14px;
+            line-height: 1.4;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            cursor: pointer;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .gpu-toast.visible {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+        }
     </style>
 </head>
 <body>
@@ -3520,6 +3553,74 @@ ADMIN_HTML = """<!DOCTYPE html>
          Position via CSS fixed (bottom-right). Inhalt wird per textContent gesetzt
          (XSS-immun). Klick + Auto-Timeout dismissen via .visible-Klasse. -->
     <div id="ragToast" class="rag-toast" role="status" aria-live="polite"></div>
+    <!-- Patch 211: GPU-Queue-Wartetoast. Polling alle 4s gegen /v1/gpu/status,
+         eingeblendet sobald mind. ein Konsument in der Queue wartet. textContent
+         (XSS-immun) — Consumer-Namen sind Whitelist (whisper/gemma/embedder/reranker). -->
+    <div id="gpuToast" class="gpu-toast" role="status" aria-live="polite"></div>
+    <script>
+        // Patch 211: GPU-Queue-Polling. Eine Funktion, lazy-startet, kein
+        // doppeltes Interval, sauberer Cleanup beim Page-Unload.
+        (function () {
+            const POLL_INTERVAL_MS = 4000;
+            const CONSUMER_LABEL = {
+                'whisper': 'Whisper',
+                'gemma': 'Gemma',
+                'embedder': 'Embedder',
+                'reranker': 'Reranker'
+            };
+            let _timer = null;
+
+            function _renderGpuToast(status) {
+                const el = document.getElementById('gpuToast');
+                if (!el) return;
+                const waiters = (status && Array.isArray(status.waiters)) ? status.waiters : [];
+                if (waiters.length === 0) {
+                    el.classList.remove('visible');
+                    return;
+                }
+                const first = waiters[0] || {};
+                const name = CONSUMER_LABEL[first.consumer] || (first.consumer || 'GPU-Konsument');
+                let msg = '⏳ GPU wartet auf ' + name;
+                if (waiters.length > 1) {
+                    msg += ' — Position ' + waiters.length + ' in Queue';
+                }
+                // textContent ist XSS-immun. Consumer-Namen kommen aus Whitelist.
+                el.textContent = msg;
+                el.classList.add('visible');
+            }
+
+            function _pollOnce() {
+                fetch('/v1/gpu/status', { method: 'GET', cache: 'no-store' })
+                    .then(function (r) { return r.ok ? r.json() : null; })
+                    .then(function (data) { _renderGpuToast(data); })
+                    .catch(function () { /* fail-quiet */ });
+            }
+
+            function _start() {
+                if (_timer !== null) return;
+                _pollOnce();
+                _timer = setInterval(_pollOnce, POLL_INTERVAL_MS);
+            }
+
+            function _stop() {
+                if (_timer !== null) {
+                    clearInterval(_timer);
+                    _timer = null;
+                }
+            }
+
+            window.addEventListener('load', _start);
+            window.addEventListener('beforeunload', _stop);
+
+            // Klick auf den Toast = Soft-Dismiss (kommt beim naechsten Poll wieder).
+            const el = document.getElementById('gpuToast');
+            if (el) {
+                el.addEventListener('click', function () {
+                    el.classList.remove('visible');
+                });
+            }
+        })();
+    </script>
     <!-- Patch 200: Service-Worker-Registrierung (PWA App-Shell-Cache). -->
     <script>
         if ('serviceWorker' in navigator) {

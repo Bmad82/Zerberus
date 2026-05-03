@@ -1383,6 +1383,33 @@ async def workspace_rollback(
     )
 
 
+# ── /v1/gpu/status ────────────────────────────────────────────────
+#
+# Patch 211 (Phase 5a #11) — GPU-Queue-Status fuer Live-Toast in der UI.
+#
+# Liefert einen Snapshot des Queue-Zustands (aktive Slots, wartende
+# Konsumenten, freies Budget). Auth-frei wie /v1/hitl/* (Dictate-Lane-
+# Invariante). Frontend pollt diesen Endpoint waehrend langer Voice-/
+# RAG-Operationen, um eine Wartezeit-Anzeige einzublenden.
+
+@router.get("/gpu/status")
+async def gpu_status():
+    """Snapshot des GPU-Queue-Zustands.
+
+    Schema::
+
+        {
+            "total_mb": 11000,
+            "active_mb": 4000,
+            "free_mb": 7000,
+            "active_slots": [{"consumer": "whisper", "requested_mb": 4000, "held_ms": 1200}],
+            "waiters": [{"consumer": "gemma", "requested_mb": 2000}]
+        }
+    """
+    from zerberus.core.gpu_queue import get_gpu_queue
+    return await get_gpu_queue().status()
+
+
 # ---------- Audio-Endpunkt ----------
 
 @router.post("/audio/transcriptions")

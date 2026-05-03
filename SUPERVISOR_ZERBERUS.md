@@ -1,10 +1,75 @@
 # SUPERVISOR_ZERBERUS.md – Zerberus Pro 4.0
 *Strategischer Stand für die Supervisor-Instanz (claude.ai Chat)*
-*Letzte Aktualisierung: Patch 210 (2026-05-03) – Huginn-RAG-Auto-Sync (Phase 5a Ziel #18 ABGESCHLOSSEN)*
+*Letzte Aktualisierung: Patch 211 (2026-05-03) – GPU-Queue für VRAM-Konsumenten (Phase 5a Ziel #11 ABGESCHLOSSEN)*
 
 ---
 
 ## Aktueller Patch
+
+**Patch 211** — GPU-Queue für VRAM-Konsumenten / Kooperatives Scheduling (Phase 5a Ziel #11 ABGESCHLOSSEN) (2026-05-03)
+
+Vor P211 liefen Whisper (etwa 4 GB FP16), Gemma E2B (etwa 2 GB), der RAG-Embedder (bis 2 GB für E5-Large) und der Cross-Encoder-Reranker (etwa 512 MB) auf der RTX 3060 (12 GB) ohne Koordination — bei einer typischen Voice-Eingabe, die parallel Whisper, Gemma und den Embedder triggerte, konnte die Karte überlaufen und der Server crashte mit `CUDA out of memory`. P211 baut einen kooperativen Token-Bucket: jeder Konsument reserviert vor dem Modell-Aufruf seinen statischen VRAM-Budget-Anteil; passt das in das Restbudget (Default 11 GB nutzbar), läuft der Call sofort, sonst wandert er in eine FIFO-Queue.
+
+**Architektur: Pure-Function-Schicht plus globaler async Singleton plus Audit-Tabelle plus Status-Endpoint plus Hel-Frontend-Toast.**
+
+- **Modul** [`zerberus/core/gpu_queue.py`](zerberus/core/gpu_queue.py):
+  - **Pure-Function-Schicht** — `compute_vram_budget(consumer_name) -> int` mit statischer Tabelle `VRAM_BUDGET_MB = {whisper:4000, gemma:2000, embedder:1000, reranker:512}`; unbekannte Konsumenten bekommen `DEFAULT_CONSUMER_BUDGET_MB=1500` mit Warning-Log. `should_queue(active_total_mb, requested_mb, *, total_mb=11000) -> bool` als Token-Bucket-Check.
+  - **GpuSlotInfo-Dataclass** — `audit_id` (UUID4-hex), `consumer_name`, `requested_mb`, `queue_position` (0=sofort, >0=N-ter Waiter), `waited_at`/`acquired_at`/`released_at`, `timed_out`, plus computed Properties `wait_ms` und `held_ms`.
+  - **GpuQueue-Singleton** — globale Instanz pro Prozess, lazy via `get_gpu_queue()`. State: `_active_mb` (aktuell belegt), `_waiters` (FIFO-Liste mit `(consumer_name, requested_mb, asyncio.Future)`), `_lock` (asyncio.Lock), `_active_slots` (fuer Status-Snapshot).
+  - **Acquire-Logik unter Lock**: passt das Request → sofort `_active_mb += requested`, Slot zurueck. Sonst Future in `_waiters` anhaengen, ausserhalb des Locks `await asyncio.wait_for(future, timeout)`. Bei Timeout sauber Cleanup (Waiter-Liste filtern, kein Leak).
+  - **Release-Logik**: `_active_mb -= requested`, dann FIFO durch die Waiter-Liste, jeden Waiter dessen Request reinpasst wecken. Head-of-Line-Block by design — der erste Waiter blockt alle dahinter, auch wenn ein spaeterer reinpassen wuerde (akzeptabel: typischer Workload selten >2-3 parallele Konsumenten).
+  - **Convenience** — `vram_slot(consumer_name, *, timeout=30.0)` als async Context-Manager: `async with vram_slot("whisper"): ...`. Identisch zu `get_gpu_queue().slot(...)`, kuerzer fuer Verdrahtung.
+
+- **Audit-Tabelle** `gpu_queue_audits` in [`database.py`](zerberus/core/database.py): `audit_id`/`consumer_name`/`requested_mb`/`queue_position`/`wait_ms`/`held_ms`/`timed_out`/`created_at`. Best-Effort-Insert via `store_gpu_queue_audit(info)` — DB-Fehler verschluckt, Hauptpfad blockiert nicht.
+
+- **Verdrahtung in fuenf Stellen**:
+  1. [`whisper_client.transcribe`](zerberus/utils/whisper_client.py) — `async with vram_slot("whisper", timeout=60.0)` um den HTTP-Call.
+  2. [`gemma_client.GemmaAudioClient.analyze_audio`](zerberus/modules/prosody/gemma_client.py) — `vram_slot("gemma", timeout=60.0)` um den Backend-Call (CLI oder Server). Stub-Pfad skippt den Slot.
+  3. [`projects_rag.index_project_file`](zerberus/core/projects_rag.py) und `query_project_rag` — `vram_slot("embedder", timeout=30.0)` um den `_embed_text`-Aufruf. Bei Index: ein Slot fuer den ganzen Chunk-Loop einer Datei (vermeidet Per-Chunk-Overhead). Timeout-Reason `embed_timeout`.
+  4. [`rag/router.py`](zerberus/modules/rag/router.py) `query_documents`-Endpoint — `vram_slot("embedder")` um den `_encode`-Loop und `vram_slot("reranker")` um den `_rerank`-Call.
+  5. [`orchestrator.py`](zerberus/app/routers/orchestrator.py) — Embedder-Loop und Reranker-Call analog.
+
+- **Status-Endpoint** `GET /v1/gpu/status` (auth-frei wie `/v1/hitl/*`) liefert Snapshot `{total_mb, active_mb, free_mb, active_slots:[{consumer,requested_mb,held_ms}], waiters:[{consumer,requested_mb}]}`.
+
+- **Hel-Frontend-Toast** ([`hel.py`](zerberus/app/routers/hel.py)): CSS `.gpu-toast` (analog `.rag-toast` aus P205, fixed bottom-LEFT statt right damit beide Toasts nicht kollidieren, gleiche Kintsugi-Border, 44px-Touch-Target, fade-in via `.visible`-Klasse). DOM-Element `<div id="gpuToast" ...>`. JS-IIFE mit `_pollOnce()` (fetch `/v1/gpu/status` no-store, fail-quiet) plus `_renderGpuToast(status)` (textContent statt innerHTML — Consumer-Namen aus Whitelist `whisper|gemma|embedder|reranker`, XSS-immun). Toast erscheint sobald `waiters.length > 0`: `⏳ GPU wartet auf <Consumer>` plus Position-Anzeige bei mehreren Wartenden. Polling alle 4s via `setInterval`, sauberer Cleanup beim `beforeunload`. Klick = Soft-Dismiss.
+
+**Was P211 bewusst NICHT macht:**
+
+- **Dynamische VRAM-Erkennung via nvidia-smi** — statisches Budget reicht, ist robust gegen Treiber-Anomalien und tut auch ohne CUDA-Header.
+- **Mehr-GPU-Verteilung** — genug fuer eine RTX 3060, Multi-GPU waere fuer P212+.
+- **Cancel-Outstanding-Slots** — FIFO bleibt stur; bei Timeout wird der Caller selbst entfernt, aber andere Waiters laufen weiter.
+- **Per-Consumer-Lock-Isolation** — globale Queue ist einfacher und ausreichend; Per-Consumer-Lock wuerde Token-Spar verspielen.
+- **Sync-Variante des Slots** fuer Code der nicht in async lebt — alle vier Konsumenten sind erreichbar via async-Pfade.
+- **Toast im Nala-Frontend** — Hel reicht; Nala-User sieht den Slot-Wait via Antwortzeit, nicht via Toast.
+
+**Lessons (5):**
+
+1. **Statisches VRAM-Budget schlaegt dynamische Detection.** `nvidia-smi`-Polling ist unzuverlaessig (Treiber-Caching, Race-Conditions zwischen Read und Allocate) und schafft eine Abhaengigkeit zu CUDA-Headern. Eine statische Tabelle aus produktiven Messungen plus ein konservativer 11-von-12-GB-Budget liefert die gleiche Schutzwirkung mit 30 Zeilen Code statt 200.
+2. **FIFO mit Head-of-Line-Block ist der Sweet-Spot.** Strikte FIFO-Reihenfolge ist trivial zu implementieren und vorhersehbar. "Smarter" Scheduler (best-fit, priority-queue) sind Overkill bei 4 Konsumenten und 2-3 typischer Parallelitaet — und schwerer zu testen.
+3. **Pure-Function `should_queue` macht den Token-Bucket testbar ohne asyncio.** `should_queue(active, requested, total) -> bool` ist eine 3-Zeilen-Funktion, aber sie isoliert die Boundary-Logik (`<=` vs. `<` an der Total-Grenze) und macht einen Property-Test trivial. Lesson aus P208/P209 auf Async-Resource-Locking uebertragen.
+4. **Audit-Tabelle ist die Validierung der Hypothese.** Die Budget-Werte (Whisper=4 GB, Gemma=2 GB, Embedder=1 GB, Reranker=512 MB) sind Schaetzungen. `gpu_queue_audits` mit `wait_ms`/`held_ms`/`queue_position`/`timed_out` sammelt die Realdaten — nach 1-2 Wochen Betrieb laesst sich aus `SELECT consumer_name, AVG(wait_ms) FROM gpu_queue_audits GROUP BY consumer_name` direkt sehen, wo die Annahmen daneben liegen.
+5. **Hel-Toast statt Nala-Toast ist die richtige Trennung.** Nala-User sieht den Slot-Wait durch laengere Antwortzeit; das System-Status-Detail gehoert ins Admin-Frontend, wo es Operations-Wert hat ("welcher Konsument staut sich gerade?"), nicht ins User-Frontend, wo es nur Verwirrung stiftet ("warum sehe ich GPU-Konsumenten?").
+
+**Tests:** 40 in [`test_p211_gpu_queue.py`](zerberus/tests/test_p211_gpu_queue.py).
+
+`TestComputeVramBudget` (3) — known-consumers / unknown-default / case-insensitive.
+`TestShouldQueue` (3) — fits / overflow / zero-or-negative.
+`TestGpuQueueAcquireImmediate` (3) — when-empty / release-frees / parallel-3-consumers.
+`TestGpuQueueFifo` (2) — overflow-waits / strict-fifo-order.
+`TestGpuQueueTimeout` (2) — raises-TimeoutError / cleans-waiter.
+`TestGpuQueueStatus` (1) — reports-active+waiters.
+`TestStoreAudit` (1) — silent-when-no-DB.
+Verdrahtungs-Source-Audits (10) — Whisper/Gemma/Embedder/Reranker je Imports + Aufruf-Stelle.
+`TestGpuStatusEndpointSource` (2) + `TestGpuStatusEndpointE2E` (2) — Endpoint-Registration und Snapshot-Schema.
+`TestHelFrontendGpuToast` (6) — CSS-Klasse / DOM / Endpoint-URL / textContent / Whitelist / 44px.
+`TestJsSyntaxIntegrity` (1) — `node --check` ueber alle inline `<script>`-Bloecke aus ADMIN_HTML, skipped wenn `node` nicht im PATH.
+`TestSmoke` (3) — Module-Exports / DB-Tabelle-Schema / KNOWN_CONSUMERS-Konsistenz.
+
+Lokal: 2176 baseline → **2216 passed** (+40 P211), 4 xfailed pre-existing, 3 failed pre-existing aus Schuldenliste (`edge-tts` + `test_rag_dual_switch.test_fallback_logic` + `test_patch185_runtime_info` durch `config.yaml`-Drift `deepseek-v4-pro`), 0 NEUE Failures aus P211.
+
+---
+
+## Vorheriger Patch
 
 **Patch 210** — Huginn-RAG-Auto-Sync / Selbstwissen-Aktualität (Phase 5a Ziel #18 ABGESCHLOSSEN) (2026-05-03)
 
@@ -239,7 +304,7 @@ Synthese-Gate (P203d-2) erweitert: `if code_execution_payload is not None and no
 
 ---
 
-## Vorheriger Patch
+## Älterer Patch
 
 **Patch 205** — RAG-Toast in Hel-UI nach Datei-Upload (Phase 5a Schuld aus P199) (2026-05-03)
 

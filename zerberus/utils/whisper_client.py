@@ -17,8 +17,11 @@ from typing import Any, Dict, Optional
 import httpx
 
 from zerberus.core.config import WhisperConfig
+from zerberus.core.gpu_queue import vram_slot
 
 logger = logging.getLogger("zerberus.whisper")
+
+WHISPER_VRAM_TIMEOUT_SECONDS = 60.0
 
 
 class WhisperSilenceGuard(Exception):
@@ -80,27 +83,30 @@ async def transcribe(
     # `verify=False` bleibt: der Whisper-Docker laeuft in der Regel auf http://,
     # aber wenn der whisper_url https:// mit Self-Signed-Cert ist (Tailscale),
     # schlaegt der Standard-Verify fehl. Wir reden nur ueber Localhost/Tailscale.
-    async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
-        for attempt in range(max_attempts):
-            try:
-                response = await client.post(whisper_url, files=files, data=data)
-                response.raise_for_status()
-                return response.json()
-            except httpx.ReadTimeout as exc:
-                last_exc = exc
-                if attempt + 1 < max_attempts:
-                    logger.warning(
-                        "[WHISPER-160] Timeout bei Versuch %d, Retry in %.1fs...",
-                        attempt + 1,
-                        whisper_cfg.retry_backoff_seconds,
+    # Patch 211: VRAM-Slot um den HTTP-Call. Whisper-Docker laeuft auf
+    # derselben GPU wie Gemma/Embedder/Reranker — der Slot serialisiert.
+    async with vram_slot("whisper", timeout=WHISPER_VRAM_TIMEOUT_SECONDS):
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+            for attempt in range(max_attempts):
+                try:
+                    response = await client.post(whisper_url, files=files, data=data)
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.ReadTimeout as exc:
+                    last_exc = exc
+                    if attempt + 1 < max_attempts:
+                        logger.warning(
+                            "[WHISPER-160] Timeout bei Versuch %d, Retry in %.1fs...",
+                            attempt + 1,
+                            whisper_cfg.retry_backoff_seconds,
+                        )
+                        await asyncio.sleep(whisper_cfg.retry_backoff_seconds)
+                        continue
+                    logger.error(
+                        "[WHISPER-160] Timeout nach %d Versuchen, gebe auf",
+                        max_attempts,
                     )
-                    await asyncio.sleep(whisper_cfg.retry_backoff_seconds)
-                    continue
-                logger.error(
-                    "[WHISPER-160] Timeout nach %d Versuchen, gebe auf",
-                    max_attempts,
-                )
-                raise
+                    raise
 
     # Unreachable (der Loop gibt entweder zurueck oder raist), aber mypy happy.
     assert last_exc is not None

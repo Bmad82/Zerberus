@@ -2,9 +2,9 @@
 
 ## Aktueller Stand (Stand-Anker für RAG-Lookup)
 
-- **Letzter Patch:** P210 — Huginn-RAG-Auto-Sync (Phase 5a, nachträglich eingeschoben als Ziel #18).
-- **Phase:** 5a (Nala-Projekte). 8 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18.
-- **Tests:** über 2123 grün (Stand 2026-05-03).
+- **Letzter Patch:** P211 — GPU-Queue für VRAM-Konsumenten (Phase 5a Ziel #11 ABGESCHLOSSEN).
+- **Phase:** 5a (Nala-Projekte). 9 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18.
+- **Tests:** 2216 grün (Stand 2026-05-03), +40 P211 aus 2176 baseline.
 - **Datum dieser Datei:** 2026-05-03.
 
 Wer fragt "bei welchem Patch sind wir?" findet die Antwort in diesem Block. Diese Sektion wird bei jedem Patch automatisch durch `scripts/sync_huginn_rag.ps1` (P210) aktualisiert und in den FAISS-Index nachgeladen.

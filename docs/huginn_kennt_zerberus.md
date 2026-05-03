@@ -2,9 +2,9 @@
 
 ## Aktueller Stand (Stand-Anker für RAG-Lookup)
 
-- **Letzter Patch:** P210 — Huginn-RAG-Auto-Sync (Phase 5a, ausserhalb der ursprünglichen 17 Ziele eingeschoben).
-- **Phase:** 5a (Nala-Projekte). 8 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18 (Huginn-Selbstwissen-Sync) als nachträglich aufgenommen.
-- **Tests:** über 2123 grün (Stand 2026-05-03).
+- **Letzter Patch:** P211 — GPU-Queue für VRAM-Konsumenten (Phase 5a Ziel #11 ABGESCHLOSSEN).
+- **Phase:** 5a (Nala-Projekte). 9 von 17 ursprünglichen Phase-5a-Zielen abgeschlossen plus Ziel #18 (Huginn-Selbstwissen-Sync) als nachträglich aufgenommen.
+- **Tests:** 2216 grün (Stand 2026-05-03), +40 P211 aus 2176 baseline.
 - **Datum dieser Datei:** 2026-05-03.
 
 Wer fragt "bei welchem Patch sind wir?" oder "wie ist der aktuelle Stand?", findet die Antwort in diesem Block. Diese Sektion wird bei jedem Patch automatisch durch das Sync-Skript `scripts/sync_huginn_rag.ps1` (P210) aktualisiert und in den FAISS-Index nachgeladen, sodass Huginn keinen veralteten Patch-Stand mehr nennt.
@@ -448,9 +448,9 @@ Es gibt eine Reihe von Begriffen, die nichts mit Zerberus zu tun haben, aber ger
 
 ## Projektstand
 
-- **Aktueller Patch:** 207
-- **Tests:** 2035 lokal grün (4 xfailed pre-existing, 3 failed pre-existing aus der Schuldenliste — `edge-tts`, ein RAG-Dual-Switch-Fallback und ein Patch185-Runtime-Info-Test durch lokalen `config.yaml`-Drift; 0 neue Failures aus den Phase-5a-Patches)
-- **Aktive Phase:** 5a (Nala-Projekte) — Grundgerüst weitgehend fertig, vier Ziele noch offen
+- **Aktueller Patch:** 211
+- **Tests:** 2216 lokal grün (4 xfailed pre-existing, 3 failed pre-existing aus der Schuldenliste — `edge-tts`, ein RAG-Dual-Switch-Fallback und ein Patch185-Runtime-Info-Test durch lokalen `config.yaml`-Drift; 0 neue Failures aus den Phase-5a-Patches)
+- **Aktive Phase:** 5a (Nala-Projekte) — neun Ziele abgeschlossen, drei noch offen
 
 ### Was ist fertig
 
@@ -473,18 +473,24 @@ Es gibt eine Reihe von Begriffen, die nichts mit Zerberus zu tun haben, aber ger
 - **Workspace-Snapshots, Diff-View und Rollback**: Tar-Snapshots vor/nach schreibenden Runs, Diff-Card im Frontend mit Inline-Diff und Rollback-Button, `workspace_snapshots`-Tabelle, Cross-Project-Defense, Tar-Member-Validation gegen Path-Traversal
 - **Spec-Contract / Ambiguitäts-Check vor dem ersten LLM-Call**: Pure-Function-Heuristik schätzt die Ambiguität der User-Eingabe (Score 0.0-1.0 mit Length-Penalty, Pronomen-Dichte, Code-Verb ohne Sprachangabe, Voice-Bonus); bei Score >= 0.65 läuft ein schmaler Probe-LLM-Call (eine Frage), das Frontend zeigt eine Klarstellungs-Karte mit Original-Message + Frage + Textarea + drei Buttons (Antwort senden / Trotzdem versuchen / Abbrechen). Bei "Antwort senden" wird die User-Antwort als `[KLARSTELLUNG]`-Block angehängt; bei "Abbrechen" endet der Chat ohne Haupt-LLM-Call. Long-Poll-Endpoints `/v1/spec/poll` und `/v1/spec/resolve`, `clarifications`-Audit-Tabelle.
 - **Zweite Meinung vor Ausführung / Sancho Panza** (vor dem HitL-Gate): Ein zweites LLM bewertet jeden vom Haupt-Modell generierten Code-Vorschlag mit `PASS` oder `VETO` plus Begründung. `temperature=0.1` für wiederholbare Verdicts. Trigger-Gate als Pure-Function skipt triviale 1-Zeiler ohne Risk-Tokens — Multiline-Code oder Code mit `subprocess`/`eval`/`rm -rf`/`open(`/`requests.post`/`git push --force`/`pickle.load` triggert. Bei `VETO` landet der Code im Wandschlag-Banner mit roter Border und Begründung; kein HitL-Pending, kein Sandbox-Run, kein Snapshot. Bei `PASS` läuft der HitL-Pfad weiter. `code_vetoes`-Audit-Tabelle mit `audit_id`/`session_id`/`project_id`/`verdict`/`latency_ms` als Grundlage für System-Prompt-Tuning.
+- **GPU-Queue für VRAM-Konsumenten** (Phase 5a Ziel #11): Kooperatives Scheduling zwischen Whisper, Gemma, Embedder und Reranker auf der RTX 3060 (12 GB). Vorher konnten alle vier parallel ein Modell auf die GPU laden — bei einer typischen Voice-Eingabe (Whisper plus sofortiger Embedder/Reranker für das Projekt-RAG) reichten 12 GB nicht und der Server crashte mit `CUDA out of memory`. Modul `zerberus/core/gpu_queue.py` mit Pure-Function-Schicht (`compute_vram_budget(consumer)` mit statischem Budget Whisper=4 GB / Gemma=2 GB / Embedder=1 GB / Reranker=512 MB; `should_queue(active_mb, requested_mb)` Token-Bucket-Check gegen `TOTAL_VRAM_MB=11000`) und globalem Async-Singleton `GpuQueue` mit FIFO-Waiter-Liste. Verwendung als Context-Manager: `async with vram_slot("whisper"): ...`. Bei vollem Budget wandert der Caller in eine FIFO-Queue (Head-of-Line akzeptabel — typischer Workload hat selten mehr als 2-3 parallele Konsumenten); Fail-fast bei Timeout (Default 30s). Verdrahtet in `whisper_client.transcribe`, `gemma_client.analyze_audio`, `projects_rag.index_project_file` und `query_project_rag` plus den FAISS-RAG-Pfaden in `rag/router.py` und `orchestrator.py`. Audit-Tabelle `gpu_queue_audits` mit `consumer_name`/`requested_mb`/`queue_position`/`wait_ms`/`held_ms`/`timed_out`/`audit_id` als Grundlage für Budget-Tuning. Endpoint `GET /v1/gpu/status` liefert Snapshot (active_mb, free_mb, active_slots, waiters); Hel-Frontend pollt im 4-Sekunden-Takt und zeigt Toast „⏳ GPU wartet auf Whisper" sobald ein Konsument in der Queue steht.
 
 ### Was kommt als Nächstes
 
-Drei offene Phase-5a-Ziele:
+Zwei offene Phase-5a-Ziele:
 
-- **Zweite Meinung vor Ausführung (Sancho Panza)** — ein zweites Modell (z. B. Mistral Small als Guard) bewertet den vom Hauptmodell generierten Code auf „macht das wirklich was der User will und ist es sicher". Bei Veto landet der Code in einem Wandschlag-Banner statt im HitL-Gate.
-- **GPU-Queue für VRAM-Konsumenten** — kooperatives Scheduling zwischen Whisper, Gemma, Embeddings und Reranker, damit die RTX 3060 nicht crasht.
 - **Secrets bleiben geheim** — verschlüsselte Storage, Sandbox-Injection nur wenn nötig, Output-Maskierung. `.env`-Inhalte dürfen nie in der Antwort landen.
+- **Reasoning-Schritte sichtbar im Chat** — Mobile-first Anzeige der Zwischenschritte des Agenten, damit der User mitverfolgt was passiert.
 
 Phase 5b (Power-Features) folgt danach: Multi-LLM-Evaluation, Bugfix-Workflow mit Test-Agenten Loki/Fenrir/Vidar pro Projekt, Multi-Agent-Orchestrierung, Reasoning-Modi und LLM-Wahl pro Projekt, Cost-Transparency.
 
 Längerfristig kommt der **Rosa/Heimdall**-Layer (Corporate Security), der das System für Unternehmenskontexte tauglich macht — der letzte Schalter vor einem möglichen kommerziellen Einsatz.
+
+---
+
+## GPU-Queue für VRAM-Konsumenten (Patch 211)
+
+Die RTX 3060 hat 12 GB VRAM. Vor P211 liefen Whisper (etwa 4 GB FP16), Gemma E2B (etwa 2 GB), der RAG-Embedder (bis 2 GB für E5-Large) und der Cross-Encoder-Reranker (etwa 512 MB) ohne Koordination — bei einer Voice-Eingabe, die parallel Whisper, Gemma und den Embedder triggerte, konnte die Karte überlaufen und der Server crashte mit `CUDA out of memory`. P211 baut einen kooperativen Token-Bucket: jeder Konsument reserviert vor dem Modell-Aufruf seinen statischen VRAM-Budget-Anteil über `vram_slot("whisper" | "gemma" | "embedder" | "reranker")`; passt das in das Restbudget (Default 11 GB nutzbar), läuft der Call sofort, sonst wandert er in eine FIFO-Queue und bekommt seinen Slot beim Release des Vorgängers. Bei einem Timeout (Default 30 Sekunden) wird der Waiter sauber aus der Queue entfernt und der Caller bekommt einen `asyncio.TimeoutError`. Audit-Tabelle `gpu_queue_audits` erfasst pro Slot Konsument, Wartezeit, Halte-Dauer, Queue-Position und Timeout-Flag — Grundlage für späteres Budget-Tuning. Das Hel-Frontend pollt alle vier Sekunden den auth-freien Endpoint `GET /v1/gpu/status` und zeigt einen Toast „⏳ GPU wartet auf Whisper" sobald ein Konsument wartet, mit Position-Anzeige bei mehreren Wartenden.
 
 ---
 
