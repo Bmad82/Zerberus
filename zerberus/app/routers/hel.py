@@ -5261,12 +5261,31 @@ async def rag_document_delete(source: str):
     """Soft-Delete aller Chunks einer Source. FAISS-Index bleibt intakt;
     Chunks mit `deleted: true` werden beim Reindex weggelassen und in
     `/admin/rag/documents` nicht mehr gelistet.
+
+    P213-pre-Hotfix: Lazy-Init explizit anstossen — analog zu ``rag_documents``
+    und ``rag_status`` (P169). Vorher iterierte der Endpunkt direkt ueber das
+    Modul-Globale ``_metadata``, das beim allerersten Request nach Server-
+    Start noch leer war (Hydrierung passiert in ``_ensure_init``). Folge:
+    Sync-Tool bekam 404, der nachgelagerte UPLOAD-Schritt triggerte dann
+    das Lazy-Init und addierte die neuen Chunks zu den vom Disk geladenen
+    alten — Duplikate im Index.
     """
-    from zerberus.modules.rag.router import _metadata, _resolve_paths, _save_metadata
+    from zerberus.modules.rag.router import (
+        _ensure_init, _metadata, _resolve_paths, _save_metadata, RAG_AVAILABLE,
+    )
     settings = get_settings()
     src = (source or "").strip()
     if not src:
         raise HTTPException(400, "source darf nicht leer sein.")
+
+    rag_cfg = settings.modules.get("rag", {}) or {}
+    if rag_cfg.get("enabled", False) and RAG_AVAILABLE:
+        try:
+            await _ensure_init(settings)
+        except Exception as e:
+            logger.warning("[RAG-213-pre] Lazy-Init im Delete fehlgeschlagen: %s", e)
+    # Re-Import nach Init: das Modul-Globale wurde ggf. gerade befuellt.
+    from zerberus.modules.rag.router import _metadata  # noqa: F811
 
     affected = 0
     for meta in _metadata:

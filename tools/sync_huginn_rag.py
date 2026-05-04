@@ -8,21 +8,40 @@ Hintergrund:
 
 Architektur (analog P209/P208):
     1. **Pure-Function-Schicht** — ``build_sync_plan``, ``validate_doc_header``,
-       ``extract_current_patch``. Kein IO, kein Netzwerk, voll testbar.
+       ``extract_current_patch``, ``should_skip_tls_verify``. Kein IO, kein
+       Netzwerk, voll testbar.
     2. **Async-Wrapper** — ``execute_sync_plan`` mit ``httpx.AsyncClient``,
        fail-soft bei DELETE-404 (Idempotenz), fail-fast bei UPLOAD-Fehler.
+       TLS-Verify Auto-Detect fuer lokale/self-signed Hosts (P213-pre).
     3. **CLI** — ``python -m tools.sync_huginn_rag`` mit ``--source``,
-       ``--base-url``, ``--reindex``. Liest Auth aus ``HUGINN_RAG_AUTH``-
-       Env-Var oder ``.env``-Datei.
+       ``--base-url``, ``--reindex``, ``--insecure``/``--verify-tls``.
+       Liest Auth aus ``HUGINN_RAG_AUTH`` ODER ``ADMIN_USER``+
+       ``ADMIN_PASSWORD`` (P213-pre-Fallback) Env-Var oder ``.env``-Datei.
 
 Endpoints (vom Hel-Admin-Router):
     - ``DELETE /hel/admin/rag/document?source=<name>`` — Soft-Delete (P116).
       404 wenn keine Chunks zur Source existieren — fuer den Sync OK
-      (Erst-Upload-Fall).
+      (Erst-Upload-Fall). Endpoint hat in P213-pre einen Lazy-Init-Fix
+      bekommen, sonst lieferte er auch bei vorhandenen Chunks 404 wenn der
+      Server frisch gestartet war.
     - ``POST /hel/admin/rag/upload`` — Form ``file``, ``category=system``.
       Chunks werden via Prose-Chunker mit ``CHUNK_CONFIGS["system"]`` indexiert.
     - ``POST /hel/admin/rag/reindex`` — Optional. Physische Bereinigung
       soft-deleted Chunks. Default OFF — Soft-Delete reicht fuer Lookup.
+      Achtung: kann beim Crash den Index leeren, siehe P213-pre HANDOVER
+      Folgebug 2.
+
+P213-pre-Hotfix:
+    - Default-URL ``https://localhost:5000`` (vorher ``http://...`` — passte
+      nicht zu ``start.bat`` das den Server mit ``--ssl-keyfile`` startet).
+    - ``ADMIN_USER``+``ADMIN_PASSWORD`` als Auth-Fallback (so dass User
+      nicht zwei Variablen pflegen muss — ``HUGINN_RAG_AUTH`` ist optional).
+    - ``should_skip_tls_verify(base_url)`` Whitelist fuer lokale Hosts
+      (localhost / 127.x / 192.168.x / 10.x / *.ts.net / desktop-*) — die
+      bekommen ``verify=False`` weil Tailscale-Certs / self-signed.
+      Public-HTTPS bekommt weiterhin vollen Verify.
+    - CLI-Flags ``--insecure`` und ``--verify-tls`` als
+      mutually-exclusive-group fuer manuelles Override.
 
 Aufruf:
     Python:    ``python -m tools.sync_huginn_rag``
@@ -81,9 +100,35 @@ class SyncResult:
 
 SYNC_DEFAULT_SOURCE_NAME = "huginn_kennt_zerberus.md"
 SYNC_DEFAULT_CATEGORY = "system"
-SYNC_DEFAULT_BASE_URL = "http://localhost:5000"
+# P213-pre-Hotfix: Default auf HTTPS umgestellt. Der echte Server in
+# ``start.bat`` startet uvicorn mit ``--ssl-keyfile``/``--ssl-certfile`` auf
+# Port 5000. Der alte HTTP-Default produzierte ``RemoteProtocolError: Server
+# disconnected`` weil das Sync-Tool versuchte Plain-HTTP gegen einen TLS-Port
+# zu sprechen. Wer unbedingt HTTP will, setzt ``ZERBERUS_URL=http://...``.
+SYNC_DEFAULT_BASE_URL = "https://localhost:5000"
 SYNC_AUTH_ENV_VAR = "HUGINN_RAG_AUTH"
 SYNC_BASE_URL_ENV_VAR = "ZERBERUS_URL"
+# P213-pre-Hotfix: Server-Auth wird intern via ``ADMIN_USER``/``ADMIN_PASSWORD``
+# in der .env konfiguriert (siehe ``zerberus/app/routers/hel.py::verify_admin``).
+# Wenn ``HUGINN_RAG_AUTH`` nicht gesetzt ist, fallen wir auf diese beiden
+# Werte zurueck — sonst muesste der User die Credentials doppelt pflegen.
+SYNC_ADMIN_USER_ENV_VAR = "ADMIN_USER"
+SYNC_ADMIN_PASSWORD_ENV_VAR = "ADMIN_PASSWORD"
+
+# P213-pre-Hotfix: Hosts fuer die wir TLS-Verify auslassen (self-signed Certs).
+# Tailscale verteilt Maschinen-Certs unter ``<host>.<tailnet>.ts.net``; auf
+# der gleichen Maschine liegt das Cert lokal als Datei und ist im System-Trust-
+# Store nicht. Lokale IPs (127.*, 192.168.*, 10.*) und ``localhost`` sind
+# klassische self-signed-Setups. Alles andere (Public-Domain) bekommt weiterhin
+# vollen TLS-Verify.
+_LOCAL_TLS_HOST_PATTERNS = (
+    re.compile(r"^https://localhost\b", re.IGNORECASE),
+    re.compile(r"^https://127\.", re.IGNORECASE),
+    re.compile(r"^https://192\.168\.", re.IGNORECASE),
+    re.compile(r"^https://10\.", re.IGNORECASE),
+    re.compile(r"^https://[^/]*\.ts\.net\b", re.IGNORECASE),
+    re.compile(r"^https://desktop-", re.IGNORECASE),
+)
 
 _STAND_ANKER_HEADER_RE = re.compile(
     r"^##\s+Aktueller Stand\b", re.MULTILINE
@@ -219,8 +264,13 @@ def load_auth_from_env(
 ) -> Optional[tuple[str, str]]:
     """Auth aus Env-Var ODER ``.env``-Datei lesen.
 
-    Reihenfolge: ``HUGINN_RAG_AUTH`` aus ``env`` (Default ``os.environ``)
-    schlaegt jede ``.env``-Datei. Wenn beides fehlt → ``None``.
+    Reihenfolge:
+      1. ``HUGINN_RAG_AUTH`` aus ``env`` (Process-Env schlaegt File).
+      2. ``ADMIN_USER``+``ADMIN_PASSWORD`` aus ``env`` (P213-pre-Fallback —
+         identisch zu dem was der Hel-Auth-Layer in ``verify_admin`` liest).
+      3. ``HUGINN_RAG_AUTH`` aus ``.env``-Datei.
+      4. ``ADMIN_USER``+``ADMIN_PASSWORD`` aus ``.env``-Datei.
+    Wenn alles fehlt → ``None``.
 
     Pure-Function: ``env`` und ``env_file_path`` injectable fuer Tests.
     """
@@ -229,16 +279,29 @@ def load_auth_from_env(
     auth = parse_auth_string(raw)
     if auth is not None:
         return auth
+    admin_user = (env.get(SYNC_ADMIN_USER_ENV_VAR) or "").strip()
+    admin_pass = env.get(SYNC_ADMIN_PASSWORD_ENV_VAR) or ""
+    if admin_user:
+        return (admin_user, admin_pass)
     if env_file_path is None or not env_file_path.exists():
         return None
+    file_admin_user = ""
+    file_admin_pass = ""
     for raw_line in env_file_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        if key.strip() == SYNC_AUTH_ENV_VAR:
-            value = value.strip().strip('"').strip("'")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key == SYNC_AUTH_ENV_VAR:
             return parse_auth_string(value)
+        if key == SYNC_ADMIN_USER_ENV_VAR:
+            file_admin_user = value
+        elif key == SYNC_ADMIN_PASSWORD_ENV_VAR:
+            file_admin_pass = value
+    if file_admin_user:
+        return (file_admin_user, file_admin_pass)
     return None
 
 
@@ -247,6 +310,28 @@ def resolve_base_url(env: Optional[dict[str, str]] = None) -> str:
     env = env if env is not None else dict(os.environ)
     raw = env.get(SYNC_BASE_URL_ENV_VAR, SYNC_DEFAULT_BASE_URL)
     return (raw or SYNC_DEFAULT_BASE_URL).rstrip("/")
+
+
+def should_skip_tls_verify(base_url: str) -> bool:
+    """Auto-Detection: lokales/self-signed Setup → TLS-Verify aus.
+
+    P213-pre-Hotfix. Pure-Function. Liefert ``True`` fuer:
+    - ``https://localhost`` / ``https://127.x`` / private IPs (192.168.*, 10.*)
+    - ``https://*.ts.net`` (Tailscale-Maschinen-Certs)
+    - ``https://desktop-...`` (Tailscale-Hostnames vor der ts.net-Domain)
+
+    Plain-HTTP-URLs liefern ``False`` (kein TLS zum Verifizieren). Public-
+    HTTPS-Hosts liefern ``False`` (echte Certs erwartet).
+    """
+    if not base_url:
+        return False
+    lower = base_url.strip().lower()
+    if not lower.startswith("https://"):
+        return False
+    for pat in _LOCAL_TLS_HOST_PATTERNS:
+        if pat.search(lower):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -261,16 +346,23 @@ async def execute_sync_plan(
     auth: Optional[tuple[str, str]] = None,
     http_client: Any = None,
     timeout: float = 30.0,
+    verify_tls: Optional[bool] = None,
 ) -> SyncResult:
     """Fuehrt einen Sync-Plan aus. Async, fail-soft bei erlaubten Codes.
 
     Args:
         plan: Liste von ``SyncStep``-Objekten.
-        base_url: Server-Wurzel (z. B. ``http://localhost:5000``).
+        base_url: Server-Wurzel (z. B. ``https://localhost:5000``).
         auth: ``(user, pass)``-Tupel fuer Basic-Auth oder ``None``.
         http_client: Injectable HTTP-Client (httpx.AsyncClient-kompatibel).
             Wenn ``None``, wird ein eigener Client erzeugt und geschlossen.
         timeout: Pro-Request-Timeout in Sekunden.
+        verify_tls: TLS-Verify-Modus (P213-pre-Hotfix). ``None`` = Auto-Detect
+            via ``should_skip_tls_verify(base_url)``: bei lokalen/self-signed
+            Hosts ``False``, sonst ``True``. Explizit gesetzte Werte
+            ueberschreiben die Auto-Detection. Wirkt nur wenn
+            ``http_client is None`` — sonst hat der Caller-Client sein eigenes
+            TLS-Setup.
 
     Returns:
         ``SyncResult`` mit Erfolg/Fehler-Metriken und Server-Antworten.
@@ -293,8 +385,11 @@ async def execute_sync_plan(
                 errors=["httpx nicht installiert — pip install httpx"],
             )
         basic_auth = httpx.BasicAuth(*auth) if auth else None
+        if verify_tls is None:
+            verify_tls = not should_skip_tls_verify(base_url)
         http_client = httpx.AsyncClient(
             base_url=base_url, auth=basic_auth, timeout=timeout,
+            verify=verify_tls,
         )
 
     try:
@@ -424,6 +519,25 @@ def _parse_cli_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Plant nur, fuehrt nichts aus. Validiert Header.",
     )
+    verify_group = parser.add_mutually_exclusive_group()
+    verify_group.add_argument(
+        "--insecure",
+        dest="verify_tls",
+        action="store_const",
+        const=False,
+        help=(
+            "TLS-Verify aus (self-signed Cert). Default ist Auto-Detect: "
+            "lokale/Tailscale-Hosts → aus, Public-HTTPS → an."
+        ),
+    )
+    verify_group.add_argument(
+        "--verify-tls",
+        dest="verify_tls",
+        action="store_const",
+        const=True,
+        help="TLS-Verify erzwingen, auch fuer lokale Hosts.",
+    )
+    parser.set_defaults(verify_tls=None)
     return parser.parse_args(argv)
 
 
@@ -454,12 +568,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     base_url = args.base_url or resolve_base_url()
     auth = load_auth_from_env(env_file_path=args.env_file)
 
+    if args.verify_tls is None:
+        verify_effective = not should_skip_tls_verify(base_url)
+        verify_label = (
+            f"AUTO ({'an' if verify_effective else 'aus, lokaler/self-signed Host'})"
+        )
+    else:
+        verify_label = "AN (--verify-tls)" if args.verify_tls else "AUS (--insecure)"
+
     print(f"[SYNC-210] Quelle: {args.source}")
     print(f"[SYNC-210] Server: {base_url}")
     print(f"[SYNC-210] Source-Name im Index: {args.source_name}")
     print(f"[SYNC-210] Kategorie: {args.category}")
     print(f"[SYNC-210] Reindex nach Upload: {args.reindex}")
     print(f"[SYNC-210] Auth: {'gesetzt' if auth else 'NICHT gesetzt'}")
+    print(f"[SYNC-210] TLS-Verify: {verify_label}")
 
     try:
         plan = build_sync_plan(
@@ -479,7 +602,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     result = asyncio.run(
-        execute_sync_plan(plan, base_url, auth=auth)
+        execute_sync_plan(plan, base_url, auth=auth, verify_tls=args.verify_tls)
     )
     _print_result(result)
     if result.success:

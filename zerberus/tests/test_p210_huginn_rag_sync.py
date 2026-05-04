@@ -303,11 +303,86 @@ class TestLoadAuthFromEnv:
         result = load_auth_from_env(env={}, env_file_path=env_file)
         assert result == ("Chris", "quoted")
 
+    # P213-pre-Hotfix: ADMIN_USER/ADMIN_PASSWORD als Auth-Fallback.
+    def test_admin_fallback_from_env_var(self) -> None:
+        from tools.sync_huginn_rag import load_auth_from_env
+        result = load_auth_from_env(
+            env={"ADMIN_USER": "Chris", "ADMIN_PASSWORD": "Dingsbums!1"},
+        )
+        assert result == ("Chris", "Dingsbums!1")
+
+    def test_admin_fallback_from_env_file(self, tmp_path: Path) -> None:
+        from tools.sync_huginn_rag import load_auth_from_env
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ADMIN_USER=Chris\nADMIN_PASSWORD=Dingsbums!1\n",
+            encoding="utf-8",
+        )
+        result = load_auth_from_env(env={}, env_file_path=env_file)
+        assert result == ("Chris", "Dingsbums!1")
+
+    def test_huginn_env_beats_admin_fallback(self) -> None:
+        # HUGINN_RAG_AUTH gewinnt immer ueber ADMIN_USER/PASSWORD —
+        # damit ein User mit dediziertem Sync-Account die Server-Admin-
+        # Credentials nicht versehentlich preisgibt.
+        from tools.sync_huginn_rag import load_auth_from_env
+        result = load_auth_from_env(
+            env={
+                "HUGINN_RAG_AUTH": "syncbot:s3cret",
+                "ADMIN_USER": "Chris",
+                "ADMIN_PASSWORD": "wrong",
+            },
+        )
+        assert result == ("syncbot", "s3cret")
+
+    def test_huginn_file_beats_admin_file(self, tmp_path: Path) -> None:
+        from tools.sync_huginn_rag import load_auth_from_env
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ADMIN_USER=Chris\nADMIN_PASSWORD=admin_pw\n"
+            "HUGINN_RAG_AUTH=syncbot:huginn_pw\n",
+            encoding="utf-8",
+        )
+        result = load_auth_from_env(env={}, env_file_path=env_file)
+        assert result == ("syncbot", "huginn_pw")
+
+    def test_admin_user_without_password_uses_empty(self) -> None:
+        # Wenn ADMIN_USER da ist aber ADMIN_PASSWORD fehlt, nutzen wir leeres
+        # Passwort. Der Server lehnt das mit 401 ab — Fehler ist transparent,
+        # die Sync-Runtime sieht echte Auth-Werte.
+        from tools.sync_huginn_rag import load_auth_from_env
+        result = load_auth_from_env(env={"ADMIN_USER": "Chris"})
+        assert result == ("Chris", "")
+
+    def test_empty_admin_user_falls_through(self, tmp_path: Path) -> None:
+        # Leerer ADMIN_USER triggert den Fallback NICHT — wir wollen lieber
+        # None zurueckgeben als Auth ohne User aufzubauen.
+        from tools.sync_huginn_rag import load_auth_from_env
+        result = load_auth_from_env(
+            env={"ADMIN_USER": "", "ADMIN_PASSWORD": "x"},
+            env_file_path=tmp_path / "missing.env",
+        )
+        assert result is None
+
+    def test_env_admin_beats_file_huginn(self, tmp_path: Path) -> None:
+        # Process-Env (ADMIN_USER) schlaegt File (HUGINN_RAG_AUTH) — Process-
+        # Env ist die juengere Quelle.
+        from tools.sync_huginn_rag import load_auth_from_env
+        env_file = tmp_path / ".env"
+        env_file.write_text("HUGINN_RAG_AUTH=syncbot:filepw\n", encoding="utf-8")
+        result = load_auth_from_env(
+            env={"ADMIN_USER": "Chris", "ADMIN_PASSWORD": "envpw"},
+            env_file_path=env_file,
+        )
+        assert result == ("Chris", "envpw")
+
 
 class TestResolveBaseUrl:
     def test_default(self) -> None:
+        # P213-pre-Hotfix: Default auf HTTPS umgestellt — start.bat startet
+        # uvicorn immer mit ``--ssl-keyfile``/``--ssl-certfile`` auf Port 5000.
         from tools.sync_huginn_rag import resolve_base_url
-        assert resolve_base_url(env={}) == "http://localhost:5000"
+        assert resolve_base_url(env={}) == "https://localhost:5000"
 
     def test_from_env(self) -> None:
         from tools.sync_huginn_rag import resolve_base_url
@@ -318,6 +393,60 @@ class TestResolveBaseUrl:
         from tools.sync_huginn_rag import resolve_base_url
         result = resolve_base_url(env={"ZERBERUS_URL": "http://x/"})
         assert result == "http://x"
+
+    def test_http_override_still_works(self) -> None:
+        # P213-pre-Hotfix-Backwards-Compat: Wer den alten HTTP-Pfad will,
+        # setzt ``ZERBERUS_URL=http://...`` — wir respektieren das ohne Magic.
+        from tools.sync_huginn_rag import resolve_base_url
+        assert resolve_base_url(
+            env={"ZERBERUS_URL": "http://localhost:5000"}
+        ) == "http://localhost:5000"
+
+
+# ---------------------------------------------------------------------------
+# 3b) Pure-Function: should_skip_tls_verify (P213-pre-Hotfix)
+# ---------------------------------------------------------------------------
+
+
+class TestShouldSkipTlsVerify:
+    def test_localhost_https_skips(self) -> None:
+        from tools.sync_huginn_rag import should_skip_tls_verify
+        assert should_skip_tls_verify("https://localhost:5000") is True
+        assert should_skip_tls_verify("https://LOCALHOST:5000") is True
+
+    def test_loopback_ip_https_skips(self) -> None:
+        from tools.sync_huginn_rag import should_skip_tls_verify
+        assert should_skip_tls_verify("https://127.0.0.1:5000") is True
+
+    def test_private_ips_https_skip(self) -> None:
+        from tools.sync_huginn_rag import should_skip_tls_verify
+        assert should_skip_tls_verify("https://192.168.1.50:5000") is True
+        assert should_skip_tls_verify("https://10.0.0.5:5000") is True
+
+    def test_tailscale_ts_net_skips(self) -> None:
+        from tools.sync_huginn_rag import should_skip_tls_verify
+        assert should_skip_tls_verify(
+            "https://desktop-rmuhi55.tail79500e.ts.net:5000"
+        ) is True
+
+    def test_desktop_prefix_skips(self) -> None:
+        from tools.sync_huginn_rag import should_skip_tls_verify
+        assert should_skip_tls_verify("https://desktop-foo:5000") is True
+
+    def test_public_https_does_not_skip(self) -> None:
+        from tools.sync_huginn_rag import should_skip_tls_verify
+        assert should_skip_tls_verify("https://example.com") is False
+        assert should_skip_tls_verify("https://huginn.app/api") is False
+
+    def test_plain_http_does_not_skip(self) -> None:
+        # Kein TLS zum Verifizieren, ergo kein "skip verify" zu treffen.
+        from tools.sync_huginn_rag import should_skip_tls_verify
+        assert should_skip_tls_verify("http://localhost:5000") is False
+        assert should_skip_tls_verify("http://example.com") is False
+
+    def test_empty_returns_false(self) -> None:
+        from tools.sync_huginn_rag import should_skip_tls_verify
+        assert should_skip_tls_verify("") is False
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +595,125 @@ class TestExecuteSyncPlan:
 
 
 # ---------------------------------------------------------------------------
+# 4b) httpx-Client-Setup: verify_tls-Auto-Detect + Override (P213-pre-Hotfix)
+# ---------------------------------------------------------------------------
+
+
+class _CapturingHttpx:
+    """Captured Setup-Args fuer ``AsyncClient`` und liefert die Mock-Antworten."""
+
+    def __init__(self, responses: list[MockResponse]) -> None:
+        self.captured: dict[str, Any] = {}
+        self.responses = list(responses)
+
+        outer = self
+
+        class _Auth:
+            def __init__(self, *args: Any) -> None:
+                outer.captured["auth_args"] = args
+
+        class _Client:
+            def __init__(self, **kwargs: Any) -> None:
+                outer.captured["client_kwargs"] = kwargs
+                self._calls: list[dict[str, Any]] = []
+
+            async def request(self, method: str, url: str, **kwargs: Any) -> MockResponse:
+                self._calls.append({"method": method, "url": url, **kwargs})
+                if not outer.responses:
+                    raise AssertionError("kein Mock-Response mehr")
+                return outer.responses.pop(0)
+
+            async def aclose(self) -> None:
+                outer.captured["closed"] = True
+
+        self.BasicAuth = _Auth
+        self.AsyncClient = _Client
+
+
+class TestExecuteSyncPlanTlsVerify:
+    def _patch_httpx(self, monkeypatch, fake) -> None:
+        import sys
+        monkeypatch.setitem(sys.modules, "httpx", fake)
+
+    def test_auto_detect_localhost_skips_verify(
+        self, valid_doc: Path, monkeypatch
+    ) -> None:
+        from tools.sync_huginn_rag import build_sync_plan, execute_sync_plan
+        fake = _CapturingHttpx([
+            MockResponse(200, {}), MockResponse(200, {}),
+        ])
+        self._patch_httpx(monkeypatch, fake)
+        plan = build_sync_plan(valid_doc)
+        asyncio.run(execute_sync_plan(plan, "https://localhost:5000"))
+        assert fake.captured["client_kwargs"]["verify"] is False
+
+    def test_auto_detect_public_https_keeps_verify(
+        self, valid_doc: Path, monkeypatch
+    ) -> None:
+        from tools.sync_huginn_rag import build_sync_plan, execute_sync_plan
+        fake = _CapturingHttpx([
+            MockResponse(200, {}), MockResponse(200, {}),
+        ])
+        self._patch_httpx(monkeypatch, fake)
+        plan = build_sync_plan(valid_doc)
+        asyncio.run(execute_sync_plan(plan, "https://example.com"))
+        assert fake.captured["client_kwargs"]["verify"] is True
+
+    def test_explicit_verify_overrides_auto(
+        self, valid_doc: Path, monkeypatch
+    ) -> None:
+        from tools.sync_huginn_rag import build_sync_plan, execute_sync_plan
+        fake = _CapturingHttpx([
+            MockResponse(200, {}), MockResponse(200, {}),
+        ])
+        self._patch_httpx(monkeypatch, fake)
+        plan = build_sync_plan(valid_doc)
+        # Localhost → Auto wuerde False sagen — wir erzwingen True.
+        asyncio.run(
+            execute_sync_plan(
+                plan, "https://localhost:5000", verify_tls=True,
+            )
+        )
+        assert fake.captured["client_kwargs"]["verify"] is True
+
+    def test_explicit_verify_false_overrides_public(
+        self, valid_doc: Path, monkeypatch
+    ) -> None:
+        from tools.sync_huginn_rag import build_sync_plan, execute_sync_plan
+        fake = _CapturingHttpx([
+            MockResponse(200, {}), MockResponse(200, {}),
+        ])
+        self._patch_httpx(monkeypatch, fake)
+        plan = build_sync_plan(valid_doc)
+        asyncio.run(
+            execute_sync_plan(
+                plan, "https://example.com", verify_tls=False,
+            )
+        )
+        assert fake.captured["client_kwargs"]["verify"] is False
+
+    def test_injected_client_ignores_verify_param(
+        self, valid_doc: Path
+    ) -> None:
+        # Wenn der Caller bereits einen Client mitbringt, ist verify_tls ein
+        # No-Op. Der Caller hat sein eigenes TLS-Setup.
+        from tools.sync_huginn_rag import build_sync_plan, execute_sync_plan
+        plan = build_sync_plan(valid_doc)
+        client = MockClient(responses=[
+            MockResponse(200, {}), MockResponse(200, {}),
+        ])
+        result = asyncio.run(
+            execute_sync_plan(
+                plan, "https://localhost:5000",
+                http_client=client, verify_tls=True,
+            )
+        )
+        assert result.success is True
+        # MockClient hat keine ``verify``-Konfiguration — der Param wurde
+        # einfach ignoriert weil owns_client False ist.
+
+
+# ---------------------------------------------------------------------------
 # 5) CLI: main()
 # ---------------------------------------------------------------------------
 
@@ -509,6 +757,71 @@ class TestCli:
             "--dry-run",
         ])
         assert rc == 2
+
+    # P213-pre-Hotfix: --insecure / --verify-tls / Auto-Banner-Anzeige.
+    def test_dry_run_default_shows_auto_verify(
+        self, valid_doc: Path, capsys: pytest.CaptureFixture[str], monkeypatch
+    ) -> None:
+        from tools.sync_huginn_rag import main
+        monkeypatch.delenv("HUGINN_RAG_AUTH", raising=False)
+        rc = main([
+            "--source", str(valid_doc),
+            "--env-file", str(valid_doc.parent / "missing.env"),
+            "--base-url", "https://localhost:5000",
+            "--dry-run",
+        ])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "TLS-Verify: AUTO" in out
+        assert "lokaler/self-signed" in out
+
+    def test_dry_run_insecure_flag_shows_off(
+        self, valid_doc: Path, capsys: pytest.CaptureFixture[str], monkeypatch
+    ) -> None:
+        from tools.sync_huginn_rag import main
+        monkeypatch.delenv("HUGINN_RAG_AUTH", raising=False)
+        rc = main([
+            "--source", str(valid_doc),
+            "--env-file", str(valid_doc.parent / "missing.env"),
+            "--base-url", "https://example.com",
+            "--insecure",
+            "--dry-run",
+        ])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "TLS-Verify: AUS" in out
+
+    def test_dry_run_verify_flag_shows_on(
+        self, valid_doc: Path, capsys: pytest.CaptureFixture[str], monkeypatch
+    ) -> None:
+        from tools.sync_huginn_rag import main
+        monkeypatch.delenv("HUGINN_RAG_AUTH", raising=False)
+        rc = main([
+            "--source", str(valid_doc),
+            "--env-file", str(valid_doc.parent / "missing.env"),
+            "--base-url", "https://localhost:5000",
+            "--verify-tls",
+            "--dry-run",
+        ])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "TLS-Verify: AN" in out
+
+    def test_insecure_and_verify_tls_mutually_exclusive(
+        self, valid_doc: Path, monkeypatch
+    ) -> None:
+        # argparse soll das selbst ablehnen — SystemExit mit Code 2.
+        from tools.sync_huginn_rag import main
+        monkeypatch.delenv("HUGINN_RAG_AUTH", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            main([
+                "--source", str(valid_doc),
+                "--env-file", str(valid_doc.parent / "missing.env"),
+                "--insecure",
+                "--verify-tls",
+                "--dry-run",
+            ])
+        assert exc.value.code == 2
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +883,83 @@ class TestWorkflowSourceAudit:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 7b) Source-Audit: hel.py rag_document_delete ruft _ensure_init auf
+#     (P213-pre-Hotfix gegen Lazy-Init-Bug — siehe Modul-Docstring im Endpoint)
+# ---------------------------------------------------------------------------
+
+
+class TestRagDocumentDeleteLazyInitFix:
+    """Vor P213-pre konnte ein DELETE direkt nach Server-Start den Index ueber
+    eine leere ``_metadata``-Liste iterieren — das Modul-Globale wurde erst
+    durch ``_ensure_init`` aus ``de_meta.json`` / ``metadata.json`` hydriert.
+    Folge: 404 trotz vorhandener Chunks, anschliessender UPLOAD addierte zu
+    den dann doch geladenen Chunks und hinterliess Duplikate.
+    """
+
+    def _read_hel(self) -> str:
+        path = ROOT / "zerberus" / "app" / "routers" / "hel.py"
+        return path.read_text(encoding="utf-8")
+
+    def _delete_endpoint_block(self, source: str) -> str:
+        # Roher Substring-Schnitt ist robust genug — wir suchen den Decorator
+        # und nehmen das naechste ``async def`` als Block-Ende.
+        marker = '@router.delete("/admin/rag/document")'
+        start = source.find(marker)
+        assert start >= 0, "DELETE-Endpoint nicht gefunden — Decorator umbenannt?"
+        # Naechster Decorator/Funktion nach dem Block.
+        next_decor = source.find("@router.", start + len(marker))
+        if next_decor < 0:
+            return source[start:]
+        return source[start:next_decor]
+
+    def test_delete_endpoint_calls_ensure_init(self) -> None:
+        block = self._delete_endpoint_block(self._read_hel())
+        assert "_ensure_init" in block, (
+            "rag_document_delete ruft kein _ensure_init auf — Lazy-Init-"
+            "Fehler wuerde wieder zuschlagen (P213-pre Hotfix)."
+        )
+        assert "await _ensure_init(settings)" in block, (
+            "_ensure_init muss awaited werden — async-Funktion."
+        )
+
+    def test_delete_endpoint_reimports_metadata_after_init(self) -> None:
+        # Nach dem Lazy-Init wurde das Modul-Globale ggf. gerade befuellt.
+        # Re-Import des _metadata-Symbols stellt sicher, dass die Iteration
+        # im Endpoint die hydrierten Eintraege sieht (analog rag_status P169).
+        block = self._delete_endpoint_block(self._read_hel())
+        # Beide Imports muessen vorkommen (top-level + nach _ensure_init).
+        assert block.count("import _metadata") >= 1, (
+            "Nach _ensure_init muss _metadata erneut importiert werden, "
+            "sonst sieht die Iteration die alte (leere) Liste."
+        )
+
+    def test_delete_endpoint_swallows_init_exceptions(self) -> None:
+        # Lazy-Init darf den DELETE-Pfad nicht killen — analog rag_status P169.
+        block = self._delete_endpoint_block(self._read_hel())
+        assert "try:" in block and "except Exception" in block, (
+            "Lazy-Init im DELETE-Endpoint muss in try/except Exception gewickelt "
+            "sein (Best-Effort, fail-soft)."
+        )
+
+    def test_delete_endpoint_iterates_after_init(self) -> None:
+        # Sanity: Die for-Schleife ueber _metadata kommt NACH dem _ensure_init-
+        # Aufruf, sonst greift der Fix nicht.
+        block = self._delete_endpoint_block(self._read_hel())
+        ensure_pos = block.find("await _ensure_init(settings)")
+        loop_pos = block.find("for meta in _metadata:")
+        assert ensure_pos >= 0
+        assert loop_pos > ensure_pos, (
+            "for meta in _metadata muss NACH _ensure_init kommen — sonst "
+            "iteriert der Endpoint weiter ueber die leere Initial-Liste."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8) Smoke: Module-Exports + Konstanten
+# ---------------------------------------------------------------------------
+
+
 class TestSmoke:
     def test_module_exports_callables(self) -> None:
         from tools import sync_huginn_rag as mod
@@ -580,15 +970,21 @@ class TestSmoke:
         assert callable(mod.parse_auth_string)
         assert callable(mod.load_auth_from_env)
         assert callable(mod.resolve_base_url)
+        assert callable(mod.should_skip_tls_verify)  # P213-pre-Hotfix
         assert callable(mod.main)
 
     def test_constants_match_protocol(self) -> None:
         from tools import sync_huginn_rag as mod
         assert mod.SYNC_DEFAULT_SOURCE_NAME == "huginn_kennt_zerberus.md"
         assert mod.SYNC_DEFAULT_CATEGORY == "system"
-        assert mod.SYNC_DEFAULT_BASE_URL == "http://localhost:5000"
+        # P213-pre-Hotfix: Default ist HTTPS, weil start.bat den Server immer
+        # mit ``--ssl-keyfile``/``--ssl-certfile`` startet.
+        assert mod.SYNC_DEFAULT_BASE_URL == "https://localhost:5000"
         assert mod.SYNC_AUTH_ENV_VAR == "HUGINN_RAG_AUTH"
         assert mod.SYNC_BASE_URL_ENV_VAR == "ZERBERUS_URL"
+        # P213-pre-Hotfix: ADMIN_USER/ADMIN_PASSWORD als Fallback-Quelle.
+        assert mod.SYNC_ADMIN_USER_ENV_VAR == "ADMIN_USER"
+        assert mod.SYNC_ADMIN_PASSWORD_ENV_VAR == "ADMIN_PASSWORD"
 
     def test_powershell_wrapper_exists(self) -> None:
         path = ROOT / "scripts" / "sync_huginn_rag.ps1"
