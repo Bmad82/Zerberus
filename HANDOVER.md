@@ -5,8 +5,8 @@
 **Letzter Patch:** P213-pre — Hotfix: Huginn-RAG-Sync zum Laufen gebracht (HTTPS-Default + Auth-Fallback + DELETE-Lazy-Init)
 **Tests:** 2342 passed (+29 P213-pre aus 2313 baseline), 4 xfailed (pre-existing), 4 failed (alle pre-existing — `test_patch185_runtime_info::test_contains_cloud_model_short_name` durch lokalen `config.yaml`-Drift `deepseek-v4-pro`, plus `test_patch169_bugsweep::test_doc_does_not_use_code_blocks` und `test_patch185_runtime_info::test_doc_explains_runtime_block`/`test_doc_does_not_hardcode_cloud_model` — alle drei doku-bezogen, nicht durch P213-pre verursacht; per `git stash`+Re-Run gegen baseline verifiziert)
 **Manuelle Tests:** 1 / 102 ✅
-**Commit:** offen — wird nach diesem HANDOVER vom Marathon-Push-Skript getriggert
-**Repos synchron:** offen — wird nach diesem HANDOVER mit `sync_repos.ps1` + `verify_sync.ps1` validiert
+**Commit:** 9402168 — gepusht zu origin/main
+**Repos synchron:** Zerberus / Ratatoskr / Claude — alle drei gepusht (Ratatoskr `f20a21d`, Claude `f99bf18`, 0 unpushed Commits in allen drei). `verify_sync.ps1` meldet Zerberus working-tree dirty: `system_prompt_chris.json` bleibt unangetastet (Mutzenbacher-Persona-Experiment, vom User am 2026-05-01 als "gedroppt" markiert — Schulden-Liste, Stand identisch zu allen Vorgaenger-HANDOVERS seit P205).
 **Huginn-RAG-Sync:** **TEILWEISE erfolgreich — `/admin/rag/documents` zeigt jetzt 41 aktive Chunks mit P213-Stand-Anker, ABER Live-Search liefert 0 Treffer wegen Dual-Embedder-Storage-Misalignment (separater Architektur-Folgebug, siehe Offenes-Sektion).**
 
 ---
